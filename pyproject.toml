@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evotensile"
+version = "0.1.0"
+description = "Evolutionary algorithm for hipBLASLt TensileLite configs"
+readme = "README.md"
+license = "MIT"
+authors = [{name = "woctordho", email = "woctordho@outlook.com"}]
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+surrogate = [
+  "numpy>=2.4",
+  "scikit-learn>=1.9",
+]
+dev = [
+  "pytest>=9.0",
+  "ruff>=0.15",
+  "ty>=0.0.49",
+]
+
+[project.scripts]
+evotensile = "evotensile.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["evotensile*"]
+
+[tool.ruff]
+exclude = ["*/SOURCE/assembly/"]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.ty.environment]
+python-version = "3.10"

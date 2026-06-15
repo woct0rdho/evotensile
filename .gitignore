@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# EvoTensile generated outputs
+out/
+runs/
+*.sqlite
+*.sqlite-*
+*.db
+
+# Tensile generated outputs
+0_BuildDir/
+1_BenchmarkProblems/
+2_BenchmarkData/
+3_LibraryLogic/
+4_LibraryClient/
+build_tmp/
+
+# Logs
+*.log
