@@ -22,6 +22,7 @@ See `PLAN.md` for the current target-specific tuning plan and remaining work.
 - Cache inspection helpers for identity, status summaries, and missing candidate/shape evaluations.
 - Tolerant validation-aware CSV/log parser and `parse-csv` command for inspecting TensileLite result files.
 - Candidate/shape manifest sidecars and `ingest-csv` for validation-gated SQLite evaluation records.
+- Final-solution YAML mapping from TensileLite `SolutionIndex`/kernel names back to candidate hashes, including rejected/deduplicated candidate handling.
 - `rank-evals` aggregation that ranks only `status=ok` validation-passed observations.
 
 ## Benchmark Protocol
@@ -80,7 +81,7 @@ python3 -m evotensile.cli cache-missing \
   --limit-shapes 100
 ```
 
-Ingest validation-gated TensileLite CSV/log rows, then rank only passing observations:
+Ingest validation-gated TensileLite CSV/log rows, then rank only passing observations. When given a run directory, `ingest-csv` auto-detects TensileLite `*_Final.yaml` / `*_CSVWinner.yaml` files and uses them as the source of truth for candidate mapping.
 
 ```bash
 python3 -m evotensile.cli ingest-csv out/tensilelite_run_000 \
@@ -123,7 +124,7 @@ Additional TensileLite global parameters can be included with repeated `--global
 
 ## Current Limitations
 
-- Candidate/solution mapping currently assumes generated solution order follows EvoTensile `Groups` order; rejected/deduplicated solutions may require stronger mapping from real TensileLite metadata.
+- Cache-aware scheduling is not implemented yet; ingestion can identify valid observations, but scheduling still needs to skip measured `ok` candidate/shape pairs automatically.
 - The batch scheduler for compile-only candidate batches plus serial benchmark execution is not implemented yet.
 - Search modules are prototype proposal engines; they are not yet wired into a full closed-loop scheduler.
 - The current bundled problem type and search-space domains target gfx1151 FP16 NT HHS first.

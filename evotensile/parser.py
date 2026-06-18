@@ -12,6 +12,7 @@ class CsvEvaluation:
     gflops: float | None
     validation: str | None
     raw: dict[str, Any]
+    solution_name: str | None = None
     m: int | None = None
     n: int | None = None
     batch: int | None = None
@@ -138,6 +139,7 @@ def _evaluation_from_row(row: dict[str, str]) -> CsvEvaluation | None:
     if gflops == 0 or gflops is None:
         gflops = _last_nonzero_perf_column(row)
     validation = _first_present(row, ["Validation", "validation"])
+    solution_name = _first_present(row, ["WinnerName", "SolutionName", "KernelName", "solution"])
     m, n, batch, k = _shape_from_row(row)
 
     if solution_index is None and problem_index is None and None in (m, n, batch, k):
@@ -154,6 +156,7 @@ def _evaluation_from_row(row: dict[str, str]) -> CsvEvaluation | None:
         gflops=gflops,
         validation=validation,
         raw=dict(row),
+        solution_name=solution_name,
         m=m,
         n=n,
         batch=batch,
