@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -5,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from .cache import DEFAULT_VERSION_NAME, CacheKey, normalize_version_name
 from .candidate import Candidate, Shape
 
 SCHEMA = """
@@ -31,6 +33,9 @@ CREATE TABLE IF NOT EXISTS shapes (
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY,
   timestamp REAL NOT NULL,
+  version_name TEXT NOT NULL DEFAULT 'unversioned',
+  problem_type_hash TEXT,
+  benchmark_protocol_hash TEXT,
   yaml_path TEXT,
   output_dir TEXT,
   tensile_bin TEXT,
@@ -43,6 +48,9 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE TABLE IF NOT EXISTS evaluations (
   eval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_name TEXT NOT NULL DEFAULT 'unversioned',
+  problem_type_hash TEXT NOT NULL DEFAULT '',
+  benchmark_protocol_hash TEXT NOT NULL DEFAULT '',
   shape_id TEXT NOT NULL,
   candidate_hash TEXT NOT NULL,
   run_id TEXT,
@@ -53,14 +61,17 @@ CREATE TABLE IF NOT EXISTS evaluations (
   solution_index INTEGER,
   raw_csv_row TEXT,
   created_at REAL NOT NULL,
-  UNIQUE(shape_id, candidate_hash, run_id)
+  UNIQUE(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash, run_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_evaluations_cache_key
+  ON evaluations(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash);
 
 CREATE INDEX IF NOT EXISTS idx_evaluations_shape_candidate
   ON evaluations(shape_id, candidate_hash);
 
 CREATE INDEX IF NOT EXISTS idx_evaluations_shape_time
-  ON evaluations(shape_id, time_us);
+  ON evaluations(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, time_us);
 """
 
 
@@ -88,8 +99,6 @@ class EvoTensileDB:
             con.executescript(SCHEMA)
 
     def upsert_candidate(self, candidate: Candidate) -> None:
-        import json
-
         with self.connection() as con:
             con.execute(
                 """
@@ -107,8 +116,6 @@ class EvoTensileDB:
             )
 
     def upsert_shape(self, shape: Shape) -> None:
-        import json
-
         with self.connection() as con:
             con.execute(
                 """
@@ -143,6 +150,9 @@ class EvoTensileDB:
         output_dir: str | None,
         tensile_bin: str | None,
         status: str,
+        version_name: str | None = None,
+        problem_type_hash: str | None = None,
+        benchmark_protocol_hash: str | None = None,
         returncode: int | None = None,
         stdout_path: str | None = None,
         stderr_path: str | None = None,
@@ -152,13 +162,17 @@ class EvoTensileDB:
             con.execute(
                 """
                 INSERT OR REPLACE INTO runs
-                  (run_id, timestamp, yaml_path, output_dir, tensile_bin, status, returncode,
-                   stdout_path, stderr_path, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (run_id, timestamp, version_name, problem_type_hash, benchmark_protocol_hash,
+                   yaml_path, output_dir, tensile_bin, status, returncode, stdout_path, stderr_path,
+                   metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
                     time.time(),
+                    normalize_version_name(version_name),
+                    problem_type_hash,
+                    benchmark_protocol_hash,
                     yaml_path,
                     output_dir,
                     tensile_bin,
@@ -177,6 +191,9 @@ class EvoTensileDB:
         candidate_hash: str,
         run_id: str | None,
         status: str,
+        version_name: str | None = None,
+        problem_type_hash: str = "",
+        benchmark_protocol_hash: str = "",
         time_us: float | None = None,
         gflops: float | None = None,
         validation: str | None = None,
@@ -187,11 +204,14 @@ class EvoTensileDB:
             con.execute(
                 """
                 INSERT OR REPLACE INTO evaluations
-                  (shape_id, candidate_hash, run_id, status, time_us, gflops, validation,
-                   solution_index, raw_csv_row, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
+                   run_id, status, time_us, gflops, validation, solution_index, raw_csv_row, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    normalize_version_name(version_name),
+                    problem_type_hash,
+                    benchmark_protocol_hash,
                     shape_id,
                     candidate_hash,
                     run_id,
@@ -205,9 +225,94 @@ class EvoTensileDB:
                 ),
             )
 
+    def cached_evaluation_count(
+        self,
+        *,
+        version_name: str | None,
+        problem_type_hash: str,
+        benchmark_protocol_hash: str,
+        shape_id: str,
+        candidate_hash: str,
+        statuses: tuple[str, ...] = ("ok",),
+    ) -> int:
+        placeholders = ",".join("?" for _ in statuses)
+        with self.connection() as con:
+            row = con.execute(
+                f"""
+                SELECT COUNT(*) AS n
+                FROM evaluations
+                WHERE version_name = ?
+                  AND problem_type_hash = ?
+                  AND benchmark_protocol_hash = ?
+                  AND shape_id = ?
+                  AND candidate_hash = ?
+                  AND status IN ({placeholders})
+                """,
+                (
+                    normalize_version_name(version_name),
+                    problem_type_hash,
+                    benchmark_protocol_hash,
+                    shape_id,
+                    candidate_hash,
+                    *statuses,
+                ),
+            ).fetchone()
+            return int(row["n"])
+
+    def has_cached_evaluation(self, key: CacheKey, *, min_samples: int = 1) -> bool:
+        return (
+            self.cached_evaluation_count(
+                version_name=key.version_name,
+                problem_type_hash=key.problem_type_hash,
+                benchmark_protocol_hash=key.benchmark_protocol_hash,
+                shape_id=key.shape_id,
+                candidate_hash=key.candidate_hash,
+            )
+            >= min_samples
+        )
+
+    def cache_summary(
+        self,
+        *,
+        version_name: str | None = None,
+        problem_type_hash: str | None = None,
+        benchmark_protocol_hash: str | None = None,
+    ) -> dict[str, int]:
+        clauses = []
+        params: list[str] = []
+        if version_name is not None:
+            clauses.append("version_name = ?")
+            params.append(normalize_version_name(version_name))
+        if problem_type_hash is not None:
+            clauses.append("problem_type_hash = ?")
+            params.append(problem_type_hash)
+        if benchmark_protocol_hash is not None:
+            clauses.append("benchmark_protocol_hash = ?")
+            params.append(benchmark_protocol_hash)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        with self.connection() as con:
+            rows = con.execute(
+                f"""
+                SELECT status, COUNT(*) AS n
+                FROM evaluations
+                {where}
+                GROUP BY status
+                ORDER BY status
+                """,
+                params,
+            ).fetchall()
+            return {row["status"]: int(row["n"]) for row in rows}
+
     def counts(self) -> dict[str, int]:
         with self.connection() as con:
             return {
                 table: con.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
                 for table in ["candidates", "shapes", "runs", "evaluations"]
             }
+
+    def distinct_versions(self) -> list[str]:
+        with self.connection() as con:
+            rows = con.execute(
+                "SELECT DISTINCT version_name FROM runs UNION SELECT DISTINCT version_name FROM evaluations"
+            ).fetchall()
+            return sorted(row["version_name"] or DEFAULT_VERSION_NAME for row in rows)
