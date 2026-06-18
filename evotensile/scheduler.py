@@ -226,7 +226,7 @@ def _is_cached(
     )
 
 
-def missing_shape_subset(
+def _missing_candidate_indices_by_shape(
     db: EvoTensileDB,
     *,
     shapes: list[Shape],
@@ -236,11 +236,11 @@ def missing_shape_subset(
     benchmark_protocol_hash: str,
     min_samples: int,
     ignore_cache: bool = False,
-) -> tuple[list[Shape], int]:
-    missing_pairs = 0
-    missing_shape_ids: set[str] = set()
-    for shape in shapes:
-        for candidate in candidates:
+) -> dict[int, tuple[int, ...]]:
+    missing: dict[int, tuple[int, ...]] = {}
+    for shape_index, shape in enumerate(shapes):
+        missing_indices: list[int] = []
+        for candidate_index, candidate in enumerate(candidates):
             if not _is_cached(
                 db,
                 version_name=version_name,
@@ -251,9 +251,44 @@ def missing_shape_subset(
                 min_samples=min_samples,
                 ignore_cache=ignore_cache,
             ):
-                missing_pairs += 1
-                missing_shape_ids.add(shape.id)
-    return [shape for shape in shapes if shape.id in missing_shape_ids], missing_pairs
+                missing_indices.append(candidate_index)
+        if missing_indices:
+            missing[shape_index] = tuple(missing_indices)
+    return missing
+
+
+def _pair_exact_batches(
+    *,
+    batch_index_start: int,
+    shapes: list[Shape],
+    candidates: list[Candidate],
+    missing_by_shape: dict[int, tuple[int, ...]],
+    max_batches: int | None = None,
+) -> list[PlannedBatch]:
+    grouped_shapes: dict[tuple[int, ...], list[Shape]] = {}
+    for shape_index, missing_indices in missing_by_shape.items():
+        grouped_shapes.setdefault(missing_indices, []).append(shapes[shape_index])
+
+    planned: list[PlannedBatch] = []
+    batch_index = batch_index_start
+    for missing_indices, group_shapes in grouped_shapes.items():
+        group_candidates = [candidates[idx] for idx in missing_indices]
+        # This rectangular cover is exact because every shape in the group has
+        # the same missing candidate subset. Empty-cache runs still collapse to
+        # the dense candidate-chunk x shape-chunk rectangle.
+        planned.append(
+            PlannedBatch(
+                batch_index=batch_index,
+                candidates=group_candidates,
+                shapes=group_shapes,
+                missing_pairs=len(group_candidates) * len(group_shapes),
+                nominal_pairs=len(group_candidates) * len(group_shapes),
+            )
+        )
+        batch_index += 1
+        if max_batches is not None and len(planned) >= max_batches:
+            break
+    return planned
 
 
 def plan_batches(
@@ -275,7 +310,7 @@ def plan_batches(
     batch_index = 0
     for candidate_chunk in _chunks(candidates, candidate_batch_size):
         for shape_chunk in _chunks(shapes, shape_batch_size):
-            missing_shapes, missing_pairs = missing_shape_subset(
+            missing_by_shape = _missing_candidate_indices_by_shape(
                 db,
                 shapes=shape_chunk,
                 candidates=candidate_chunk,
@@ -285,22 +320,17 @@ def plan_batches(
                 min_samples=min_samples,
                 ignore_cache=ignore_cache,
             )
-            if missing_pairs == 0:
+            if not missing_by_shape:
                 continue
-            # Planned batches are shape-granular, not pair-granular: if any
-            # candidate is missing for a shape, the whole candidate chunk is
-            # emitted for that shape. This can re-run cached pairs inside a
-            # mixed chunk, but keeps YAML generation and TensileLite runs simple.
-            planned.append(
-                PlannedBatch(
-                    batch_index=batch_index,
-                    candidates=list(candidate_chunk),
-                    shapes=missing_shapes,
-                    missing_pairs=missing_pairs,
-                    nominal_pairs=len(candidate_chunk) * len(missing_shapes),
-                )
+            new_batches = _pair_exact_batches(
+                batch_index_start=batch_index,
+                shapes=shape_chunk,
+                candidates=candidate_chunk,
+                missing_by_shape=missing_by_shape,
+                max_batches=None if max_batches is None else max_batches - len(planned),
             )
-            batch_index += 1
+            planned.extend(new_batches)
+            batch_index += len(new_batches)
             if max_batches is not None and len(planned) >= max_batches:
                 return planned
     return planned
@@ -399,7 +429,7 @@ def execute_schedule(
     executed: list[ExecutedBatch] = []
     for batch in planned:
         # Recheck just before execution so a resumed run skips observations ingested by earlier batches.
-        batch_shapes, missing_pairs = missing_shape_subset(
+        missing_by_shape = _missing_candidate_indices_by_shape(
             db,
             shapes=batch.shapes,
             candidates=batch.candidates,
@@ -409,72 +439,79 @@ def execute_schedule(
             min_samples=min_samples,
             ignore_cache=ignore_cache,
         )
-        if missing_pairs == 0:
+        if not missing_by_shape:
             continue
-        current = PlannedBatch(
-            batch_index=batch.batch_index,
+        current_batches = _pair_exact_batches(
+            batch_index_start=batch.batch_index,
+            shapes=batch.shapes,
             candidates=batch.candidates,
-            shapes=batch_shapes,
-            missing_pairs=missing_pairs,
-            nominal_pairs=len(batch.candidates) * len(batch_shapes),
+            missing_by_shape=missing_by_shape,
         )
-        yaml_path, manifest_path, run_dir = write_batch_inputs(current, output_root, unique_run_dir=not generate_only)
-        if generate_only:
-            executed.append(ExecutedBatch(current, yaml_path, manifest_path, run_dir))
-            continue
-
-        # Keep compile and benchmark sequential. On Strix Halo the CPU compiler
-        # and integrated GPU share power/thermal headroom, so we avoid deliberate
-        # compile/benchmark overlap even though compilation itself may be threaded.
-        build_result, bench_result = build_then_benchmark(
-            yaml_path,
-            run_dir,
-            tensilelite_bin=tensilelite_bin,
-            db=db,
-            compile_threads=compile_threads,
-            benchmark_threads=benchmark_threads,
-            global_parameters=global_parameters,
-            version_name=version,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            extra_args=extra_args,
-        )
-        ingest: IngestResult | None = None
-        if bench_result is None and len(current.candidates) == 1:
-            _record_batch_status(
-                db,
+        for current in current_batches:
+            yaml_path, manifest_path, run_dir = write_batch_inputs(
                 current,
-                status="build_failed",
-                run_id=build_result.run_id,
-                version_name=version,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
+                output_root,
+                unique_run_dir=not generate_only,
             )
-        if bench_result is not None:
-            ingest = ingest_results(
+            if generate_only:
+                executed.append(ExecutedBatch(current, yaml_path, manifest_path, run_dir))
+                continue
+
+            # Keep compile and benchmark sequential. On Strix Halo the CPU compiler
+            # and integrated GPU share power/thermal headroom, so we avoid deliberate
+            # compile/benchmark overlap even though compilation itself may be threaded.
+            build_result, bench_result = build_then_benchmark(
+                yaml_path,
+                run_dir,
+                tensilelite_bin=tensilelite_bin,
                 db=db,
-                paths=[run_dir],
-                manifest_path=manifest_path,
+                compile_threads=compile_threads,
+                benchmark_threads=benchmark_threads,
+                global_parameters=global_parameters,
                 version_name=version,
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
-                run_id=bench_result.run_id,
-                include_logs=True,
+                extra_args=extra_args,
             )
-        executed.append(
-            ExecutedBatch(
-                planned=current,
-                yaml_path=yaml_path,
-                manifest_path=manifest_path,
-                output_dir=run_dir,
-                build_returncode=build_result.returncode,
-                benchmark_returncode=bench_result.returncode if bench_result is not None else None,
-                ingest=ingest,
+            ingest: IngestResult | None = None
+            if bench_result is None and len(current.candidates) == 1:
+                _record_batch_status(
+                    db,
+                    current,
+                    status="build_failed",
+                    run_id=build_result.run_id,
+                    version_name=version,
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                )
+            if bench_result is not None:
+                ingest = ingest_results(
+                    db=db,
+                    paths=[run_dir],
+                    manifest_path=manifest_path,
+                    version_name=version,
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                    run_id=bench_result.run_id,
+                    include_logs=True,
+                )
+            executed.append(
+                ExecutedBatch(
+                    planned=current,
+                    yaml_path=yaml_path,
+                    manifest_path=manifest_path,
+                    output_dir=run_dir,
+                    build_returncode=build_result.returncode,
+                    benchmark_returncode=bench_result.returncode if bench_result is not None else None,
+                    ingest=ingest,
+                )
             )
-        )
-        failed = (
-            not build_result.ok or bench_result is None or not bench_result.ok or (ingest is not None and not ingest.ok)
-        )
-        if failed and not keep_going:
-            break
+            failed = (
+                not build_result.ok
+                or bench_result is None
+                or not bench_result.ok
+                or (ingest is not None and not ingest.ok)
+            )
+            if failed and not keep_going:
+                return ScheduleResult(planned_batches=planned, executed_batches=executed)
     return ScheduleResult(planned_batches=planned, executed_batches=executed)
