@@ -12,7 +12,7 @@ See `PLAN.md` for the current target-specific tuning plan and remaining work.
 
 - Candidate and shape primitives with stable canonical hashes.
 - Exact-shape helpers and the current 100-shape pilot grid generator.
-- Candidate generation from deterministic seeds, random valid configs, and local mutations around cached elites.
+- Candidate generation from deterministic seeds, random valid configs, local mutations, categorical DE, and GOMEA-style linkage neighborhoods.
 - TensileLite YAML generation using one `ForkParameters: Groups` list of complete candidate dictionaries.
 - Hot-loop benchmark defaults for steady-state inference/training throughput.
 - TensileLite subprocess runner used by the cache-aware scheduler.
@@ -48,14 +48,13 @@ From the repo root:
 python3 -m evotensile.cli summarize-space --num-random 128
 ```
 
-Plan cache-aware batches without running TensileLite:
+Plan cache-aware batches without running TensileLite. By default, `schedule-batches` uses the current 100-shape first-pass proposal: `seed-random-gomea` with `64` random candidates and `64` GOMEA candidates.
 
 ```bash
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/scheduled \
   --version-name gfx1151_hotloop_v0 \
-  --num-random 64 \
   --limit-shapes 100 \
   --candidate-batch-size 32 \
   --shape-batch-size 100 \
@@ -69,7 +68,6 @@ python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/scheduled \
   --version-name gfx1151_hotloop_v0 \
-  --num-random 64 \
   --limit-shapes 100 \
   --candidate-batch-size 32 \
   --shape-batch-size 100 \
@@ -77,17 +75,17 @@ python3 -m evotensile.cli schedule-batches \
   --benchmark-threads 1
 ```
 
-Refine cached winners with local mutations:
+Refine candidates with cached elites and GOMEA-style linkage neighborhoods:
 
 ```bash
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/local_refine \
   --version-name gfx1151_hotloop_v0 \
-  --proposal seed-random-local \
+  --proposal seed-random-gomea \
   --num-random 16 \
   --elite-count 8 \
-  --local-count 48 \
+  --gomea-count 64 \
   --limit-shapes 100
 ```
 
@@ -110,7 +108,7 @@ Additional TensileLite global parameters can be included with repeated `--global
 
 ## Current Limitations
 
-- `schedule-batches` supports seed/random proposal and local mutation from cached elites; richer evolutionary/surrogate proposal is still planned.
+- `schedule-batches` supports seed/random, local mutation, categorical DE, and GOMEA-style proposals; surrogate proposal is still planned.
 - Known rejected/unmapped candidate failures are not yet recorded as reusable negative cache entries.
 - The current bundled problem type and search-space domains target gfx1151 FP16 NT HHS first.
 - Keep `PredictionThreshold: 2.0` for gfx1151 unless Formocast support is added and validated.
