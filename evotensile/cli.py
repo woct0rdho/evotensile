@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -10,7 +11,8 @@ from .cache import (
 )
 from .candidate import Shape
 from .database import EvoTensileDB
-from .parser import find_result_csvs, parse_tensile_csv
+from .manifest import manifest_by_problem_solution, manifest_by_shape_solution, read_manifest, write_manifest
+from .parser import evaluation_status, find_result_csvs, parse_tensile_csv
 from .runner import DEFAULT_TENSILE_BIN, build_then_benchmark, run_tensile
 from .search_space import (
     DOMAINS,
@@ -98,7 +100,10 @@ def cmd_pilot_yaml(args: argparse.Namespace) -> int:
     candidates = _candidates(args)
     shapes = _parse_shapes(args)
     out = write_tensile_yaml(args.output_yaml, candidates, shapes)
+    manifest_path = Path(args.manifest) if args.manifest else Path(args.output_yaml).with_suffix(".manifest.csv")
+    write_manifest(manifest_path, candidates, shapes)
     print(f"Wrote {out}")
+    print(f"Wrote {manifest_path}")
     print(f"  candidates: {len(candidates)}")
     print(f"  shapes: {len(shapes)}")
     print(f"  nominal evaluations: {len(candidates) * len(shapes):,}")
@@ -247,21 +252,108 @@ def cmd_cache_missing(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_parse_csv(args: argparse.Namespace) -> int:
+def cmd_rank_evals(args: argparse.Namespace) -> int:
+    db = EvoTensileDB.connect(args.db)
+    summaries = db.rank_evaluations(
+        version_name=args.version_name,
+        problem_type_hash=args.problem_type_hash,
+        benchmark_protocol_hash=args.benchmark_protocol_hash,
+        shape_id=args.shape_id,
+        min_samples=args.min_samples,
+        limit=args.limit,
+    )
+    print("shape_id,candidate_hash,samples,median_gflops,best_gflops,median_time_us,best_time_us")
+    for summary in summaries:
+        print(
+            f"{summary.shape_id},{summary.candidate_hash},{summary.samples},"
+            f"{summary.median_gflops if summary.median_gflops is not None else ''},"
+            f"{summary.best_gflops if summary.best_gflops is not None else ''},"
+            f"{summary.median_time_us if summary.median_time_us is not None else ''},"
+            f"{summary.best_time_us if summary.best_time_us is not None else ''}"
+        )
+    return 0
+
+
+def _csv_paths(items: list[str], *, include_logs: bool = False) -> list[Path]:
     paths: list[Path] = []
-    for item in args.paths:
+    for item in items:
         p = Path(item)
         if p.is_dir():
-            paths.extend(find_result_csvs(p))
+            paths.extend(find_result_csvs(p, include_logs=include_logs))
         else:
             paths.append(p)
+    return sorted(set(paths))
+
+
+def cmd_parse_csv(args: argparse.Namespace) -> int:
+    paths = _csv_paths(args.paths, include_logs=args.include_logs)
     total = 0
+    status_counts: dict[str, int] = {}
     for path in paths:
         rows = parse_tensile_csv(path)
         total += len(rows)
-        ok = sum(1 for r in rows if r.time_us is not None)
-        print(f"{path}: rows={len(rows)} rows_with_time={ok}")
+        ok = sum(1 for r in rows if evaluation_status(r, require_validation=not args.allow_unknown_validation) == "ok")
+        for row in rows:
+            status = evaluation_status(row, require_validation=not args.allow_unknown_validation)
+            status_counts[status] = status_counts.get(status, 0) + 1
+        print(f"{path}: rows={len(rows)} validation_ok={ok}")
     print(f"total rows: {total}")
+    print("status counts:")
+    for status in sorted(status_counts):
+        print(f"  {status}: {status_counts[status]}")
+    return 0
+
+
+def cmd_ingest_csv(args: argparse.Namespace) -> int:
+    db = EvoTensileDB.connect(args.db)
+    db.init()
+    manifest_entries = read_manifest(args.manifest)
+    by_problem_solution = manifest_by_problem_solution(manifest_entries)
+    by_shape_solution = manifest_by_shape_solution(manifest_entries)
+    version = normalize_version_name(args.version_name)
+    problem_hash = _problem_hash_arg(args)
+    protocol_hash = _protocol_hash_arg(args)
+    paths = _csv_paths(args.paths, include_logs=args.include_logs)
+    inserted = 0
+    unmapped = 0
+    status_counts: dict[str, int] = {}
+    for path in paths:
+        for row in parse_tensile_csv(path):
+            entry = None
+            if row.problem_index is not None and row.solution_index is not None:
+                entry = by_problem_solution.get((row.problem_index, row.solution_index))
+            if entry is None and row.shape_id is not None and row.solution_index is not None:
+                entry = by_shape_solution.get((row.shape_id, row.solution_index))
+            if entry is None:
+                unmapped += 1
+                continue
+            status = evaluation_status(row, require_validation=not args.allow_unknown_validation)
+            status_counts[status] = status_counts.get(status, 0) + 1
+            db.insert_evaluation(
+                shape_id=entry.shape_id,
+                candidate_hash=entry.candidate_hash,
+                run_id=args.run_id,
+                status=status,
+                version_name=version,
+                problem_type_hash=problem_hash,
+                benchmark_protocol_hash=protocol_hash,
+                time_us=row.time_us,
+                gflops=row.gflops,
+                validation=row.validation,
+                solution_index=row.solution_index,
+                raw_csv_row=json.dumps(row.raw, sort_keys=True),
+            )
+            inserted += 1
+    print(f"db: {args.db}")
+    print(f"manifest: {args.manifest}")
+    print(f"version_name: {version}")
+    print(f"problem_type_hash: {problem_hash}")
+    print(f"benchmark_protocol_hash: {protocol_hash}")
+    print(f"inserted evaluations: {inserted}")
+    print(f"unmapped rows: {unmapped}")
+    print("status counts:")
+    for status in sorted(status_counts):
+        print(f"  {status}: {status_counts[status]}")
     return 0
 
 
@@ -280,6 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--seed", type=int, default=1)
     s.add_argument("--limit-shapes", type=int, default=None, help="Use first N pilot shapes")
     s.add_argument("--shapes", nargs="*", help="Explicit shapes as M,N,batch,K or MxNxBxK")
+    s.add_argument("--manifest", default=None, help="Candidate/shape manifest path; defaults to OUTPUT.manifest.csv")
     s.set_defaults(func=cmd_pilot_yaml)
 
     s = sub.add_parser("init-db", help="Initialize an EvoTensile SQLite DB")
@@ -336,9 +429,31 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--print-missing", action="store_true")
     s.set_defaults(func=cmd_cache_missing)
 
-    s = sub.add_parser("parse-csv", help="Parse Tensile CSV files or directories")
+    s = sub.add_parser("rank-evals", help="Rank only validation-passed cached evaluations")
+    s.add_argument("--db", required=True)
+    s.add_argument("--version-name", default=None)
+    s.add_argument("--problem-type-hash", default=None)
+    s.add_argument("--benchmark-protocol-hash", default=None)
+    s.add_argument("--shape-id", default=None)
+    s.add_argument("--min-samples", type=int, default=1)
+    s.add_argument("--limit", type=int, default=20)
+    s.set_defaults(func=cmd_rank_evals)
+
+    s = sub.add_parser("parse-csv", help="Parse Tensile CSV files, logs, or directories")
     s.add_argument("paths", nargs="+")
+    s.add_argument("--include-logs", action="store_true")
+    s.add_argument("--allow-unknown-validation", action="store_true")
     s.set_defaults(func=cmd_parse_csv)
+
+    s = sub.add_parser("ingest-csv", help="Ingest validation-gated Tensile CSV/log rows into SQLite")
+    s.add_argument("paths", nargs="+")
+    s.add_argument("--db", required=True)
+    s.add_argument("--manifest", required=True)
+    s.add_argument("--run-id")
+    s.add_argument("--include-logs", action="store_true")
+    s.add_argument("--allow-unknown-validation", action="store_true")
+    _add_cache_identity_args(s)
+    s.set_defaults(func=cmd_ingest_csv)
 
     return p
 

@@ -9,6 +9,28 @@ from pathlib import Path
 from .cache import DEFAULT_VERSION_NAME, CacheKey, normalize_version_name
 from .candidate import Candidate, Shape
 
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+@dataclass(frozen=True)
+class EvaluationSummary:
+    shape_id: str
+    candidate_hash: str
+    samples: int
+    median_gflops: float | None
+    best_gflops: float | None
+    median_time_us: float | None
+    best_time_us: float | None
+
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 
@@ -60,8 +82,7 @@ CREATE TABLE IF NOT EXISTS evaluations (
   validation TEXT,
   solution_index INTEGER,
   raw_csv_row TEXT,
-  created_at REAL NOT NULL,
-  UNIQUE(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash, run_id)
+  created_at REAL NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_evaluations_cache_key
@@ -203,7 +224,7 @@ class EvoTensileDB:
         with self.connection() as con:
             con.execute(
                 """
-                INSERT OR REPLACE INTO evaluations
+                INSERT INTO evaluations
                   (version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
                    run_id, status, time_us, gflops, validation, solution_index, raw_csv_row, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -270,6 +291,76 @@ class EvoTensileDB:
             )
             >= min_samples
         )
+
+    def rank_evaluations(
+        self,
+        *,
+        version_name: str | None = None,
+        problem_type_hash: str | None = None,
+        benchmark_protocol_hash: str | None = None,
+        shape_id: str | None = None,
+        min_samples: int = 1,
+        limit: int | None = None,
+    ) -> list[EvaluationSummary]:
+        clauses = ["status = 'ok'"]
+        params: list[str] = []
+        if version_name is not None:
+            clauses.append("version_name = ?")
+            params.append(normalize_version_name(version_name))
+        if problem_type_hash is not None:
+            clauses.append("problem_type_hash = ?")
+            params.append(problem_type_hash)
+        if benchmark_protocol_hash is not None:
+            clauses.append("benchmark_protocol_hash = ?")
+            params.append(benchmark_protocol_hash)
+        if shape_id is not None:
+            clauses.append("shape_id = ?")
+            params.append(shape_id)
+        where = "WHERE " + " AND ".join(clauses)
+        with self.connection() as con:
+            rows = con.execute(
+                f"""
+                SELECT shape_id, candidate_hash, time_us, gflops
+                FROM evaluations
+                {where}
+                """,
+                params,
+            ).fetchall()
+        grouped: dict[tuple[str, str], dict[str, list[float]]] = {}
+        for row in rows:
+            key = (row["shape_id"], row["candidate_hash"])
+            bucket = grouped.setdefault(key, {"time_us": [], "gflops": []})
+            if row["time_us"] is not None:
+                bucket["time_us"].append(float(row["time_us"]))
+            if row["gflops"] is not None:
+                bucket["gflops"].append(float(row["gflops"]))
+
+        summaries: list[EvaluationSummary] = []
+        for (sid, chash), bucket in grouped.items():
+            samples = max(len(bucket["time_us"]), len(bucket["gflops"]))
+            if samples < min_samples:
+                continue
+            summaries.append(
+                EvaluationSummary(
+                    shape_id=sid,
+                    candidate_hash=chash,
+                    samples=samples,
+                    median_gflops=_median(bucket["gflops"]),
+                    best_gflops=max(bucket["gflops"]) if bucket["gflops"] else None,
+                    median_time_us=_median(bucket["time_us"]),
+                    best_time_us=min(bucket["time_us"]) if bucket["time_us"] else None,
+                )
+            )
+
+        def sort_key(summary: EvaluationSummary) -> tuple[int, float, float]:
+            if summary.median_gflops is not None:
+                return (1, summary.median_gflops, -(summary.median_time_us or float("inf")))
+            if summary.median_time_us is not None:
+                return (0, -summary.median_time_us, 0.0)
+            return (-1, 0.0, 0.0)
+
+        summaries.sort(key=sort_key, reverse=True)
+        return summaries[:limit] if limit is not None else summaries
 
     def cache_summary(
         self,

@@ -84,7 +84,7 @@ Generic implemented capabilities are summarized in `README.md`.  Target-specific
 - generated YAML uses complete candidate `Groups` rather than independent Cartesian products;
 - runner support exists for direct runs and compile-then-serial-benchmark runs;
 - DB schema includes manual cache namespace fields (`version_name`, `problem_type_hash`, `benchmark_protocol_hash`);
-- cache inspection helpers exist, but CSV result ingestion into `evaluations` is still incomplete;
+- validation-aware CSV/log parsing and SQLite ingestion exist for manifest-mapped evaluations;
 - a real one-shape harness under `ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that random init plus directed local refinement can reproduce the documented `8192^3` winner.
 
 ## 6. Candidate Model
@@ -394,13 +394,13 @@ Done:
 - parse CSV files for inspection;
 - initialize SQLite schema;
 - record run metadata and manual cache identity;
-- query cache identity/status/missing evaluations.
+- query cache identity/status/missing evaluations and rank only validation-passed observations.
 
 Remaining:
 
-- ingest benchmark CSV rows into `evaluations` with a candidate/solution-index sidecar;
+- harden candidate/solution-index sidecar mapping against rejected/deduplicated Tensile solutions;
 - support resume without repeating known `(version, protocol, shape, candidate)` evaluations;
-- classify invalid builds, validation failures, timeouts, and parse failures robustly.
+- classify invalid builds, timeouts, and parse failures robustly beyond validation pass/fail rows.
 
 ### M4: first pilot scan — next major milestone
 
@@ -438,10 +438,9 @@ Remaining:
 
 ## 14. Immediate Next Steps
 
-1. Add candidate manifest/sidecar mapping for generated YAML order to `candidate_hash` and Tensile solution index.
-2. Implement CSV ingestion into SQLite `evaluations` using `(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash)`.
-3. Add cache-aware scheduling so already-measured evaluations are skipped unless the version namespace changes.
-4. Promote the directed-refinement operator from the one-shape harness into reusable search code.
-5. Add a batch scheduler for compile-only candidate batches and serial benchmark execution.
-6. Run the first 100-shape hot-loop pilot scan and produce a winner/near-winner report.
-7. Add final export of selected candidate bundles for later GridBased logic generation/merge.
+1. Validate manifest/solution-index mapping on real multi-candidate TensileLite output and handle rejected/deduplicated solutions.
+2. Add cache-aware scheduling so already-measured `ok` evaluations are skipped unless the version namespace changes.
+3. Promote the directed-refinement operator from the one-shape harness into reusable search code.
+4. Add a batch scheduler for compile-only candidate batches and serial benchmark execution.
+5. Run the first 100-shape hot-loop pilot scan and produce a winner/near-winner report.
+6. Add final export of selected candidate bundles for later GridBased logic generation/merge.
