@@ -12,11 +12,10 @@ See `PLAN.md` for the current target-specific tuning plan and remaining work.
 
 - Candidate and shape primitives with stable canonical hashes.
 - Exact-shape helpers and the current 100-shape pilot grid generator.
-- Candidate generation from deterministic seeds plus random valid configs.
-- Prototype search modules for random, local mutation, differential evolution, GOMEA-style mixing, and LFBO-style surrogate search.
+- Candidate generation from deterministic seeds, random valid configs, and local mutations around cached elites.
 - TensileLite YAML generation using one `ForkParameters: Groups` list of complete candidate dictionaries.
 - Hot-loop benchmark defaults for steady-state inference/training throughput.
-- TensileLite subprocess runner with `run-yaml` and compile-then-serial-benchmark `build-bench-yaml` flows.
+- TensileLite subprocess runner used by the cache-aware scheduler.
 - SQLite schema for candidates, shapes, runs, and evaluations.
 - Manual timing-cache namespace via `--version-name`, plus problem-type and benchmark-protocol hashes.
 - Cache inspection helpers for identity, status summaries, and missing candidate/shape evaluations.
@@ -49,39 +48,6 @@ From the repo root:
 python3 -m evotensile.cli summarize-space --num-random 128
 ```
 
-Generate a TensileLite YAML:
-
-```bash
-python3 -m evotensile.cli pilot-yaml \
-  --output-yaml out/pilot.yaml \
-  --num-random 32 \
-  --seed 1
-```
-
-Initialize a DB and register generated candidates/shapes:
-
-```bash
-python3 -m evotensile.cli init-db --db out/evotensile.sqlite
-python3 -m evotensile.cli register-pilot --db out/evotensile.sqlite --num-random 64
-```
-
-Print the cache identity for a benchmark protocol:
-
-```bash
-python3 -m evotensile.cli cache-key \
-  --version-name gfx1151_hotloop_v0
-```
-
-Check which generated evaluations are missing from the cache:
-
-```bash
-python3 -m evotensile.cli cache-missing \
-  --db out/evotensile.sqlite \
-  --version-name gfx1151_hotloop_v0 \
-  --num-random 64 \
-  --limit-shapes 100
-```
-
 Plan cache-aware batches without running TensileLite:
 
 ```bash
@@ -111,6 +77,20 @@ python3 -m evotensile.cli schedule-batches \
   --benchmark-threads 1
 ```
 
+Refine cached winners with local mutations:
+
+```bash
+python3 -m evotensile.cli schedule-batches \
+  --db out/evotensile.sqlite \
+  --output-dir out/local_refine \
+  --version-name gfx1151_hotloop_v0 \
+  --proposal seed-random-local \
+  --num-random 16 \
+  --elite-count 8 \
+  --local-count 48 \
+  --limit-shapes 100
+```
+
 Ingest validation-gated TensileLite CSV/log rows manually, then rank only passing observations. When given a run directory, `ingest-csv` auto-detects TensileLite `*_Final.yaml` / `*_CSVWinner.yaml` files and uses them as the source of truth for candidate mapping.
 
 ```bash
@@ -126,35 +106,11 @@ python3 -m evotensile.cli rank-evals \
   --min-samples 2
 ```
 
-## Running TensileLite
-
-Run an existing YAML directly:
-
-```bash
-python3 -m evotensile.cli run-yaml \
-  --yaml out/pilot.yaml \
-  --output-dir out/tensilelite_run_000 \
-  --db out/evotensile.sqlite \
-  --version-name gfx1151_hotloop_v0
-```
-
-Compile first, then benchmark serially with TensileLite cache reuse:
-
-```bash
-python3 -m evotensile.cli build-bench-yaml \
-  --yaml out/pilot.yaml \
-  --output-dir out/tensilelite_run_000 \
-  --db out/evotensile.sqlite \
-  --version-name gfx1151_hotloop_v0 \
-  --compile-threads -1 \
-  --benchmark-threads 1
-```
-
 Additional TensileLite global parameters can be included with repeated `--global-parameter KEY=VALUE`. Benchmark-affecting global parameters are included in the benchmark-protocol hash; compile-only settings such as `CpuThreads` are intentionally excluded.
 
 ## Current Limitations
 
-- Search modules are prototype proposal engines; only seed/random candidates are wired into `schedule-batches` so far.
+- `schedule-batches` supports seed/random proposal and local mutation from cached elites; richer evolutionary/surrogate proposal is still planned.
 - Known rejected/unmapped candidate failures are not yet recorded as reusable negative cache entries.
 - The current bundled problem type and search-space domains target gfx1151 FP16 NT HHS first.
 - Keep `PredictionThreshold: 2.0` for gfx1151 unless Formocast support is added and validated.

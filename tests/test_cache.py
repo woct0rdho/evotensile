@@ -1,9 +1,4 @@
-from evotensile.cache import (
-    benchmark_protocol_hash_from_items,
-    cache_keys,
-    normalize_version_name,
-    problem_type_hash,
-)
+from evotensile.cache import CacheKey, benchmark_protocol_hash_from_items, normalize_version_name, problem_type_hash
 from evotensile.database import EvoTensileDB
 from evotensile.search_space import known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
@@ -29,7 +24,13 @@ def test_db_cache_key_lookup(tmp_path):
     shape = pilot_100_shapes()[0]
     p_hash = problem_type_hash()
     b_hash = benchmark_protocol_hash_from_items([])
-    key = cache_keys([shape], [candidate], version_name="v0", problem_hash=p_hash, protocol_hash=b_hash)[0]
+    key = CacheKey(
+        version_name="v0",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+    )
 
     assert not db.has_cached_evaluation(key)
     db.insert_evaluation(

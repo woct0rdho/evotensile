@@ -2,7 +2,7 @@ from pathlib import Path
 
 from evotensile.cache import benchmark_protocol_hash_from_items, normalize_version_name, problem_type_hash
 from evotensile.database import EvoTensileDB
-from evotensile.scheduler import execute_schedule, plan_batches
+from evotensile.scheduler import execute_schedule, plan_batches, propose_candidates
 from evotensile.search_space import known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
 
@@ -39,6 +39,41 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
     assert batches[0].missing_pairs == 3
     assert batches[0].nominal_pairs == 4
     assert batches[0].extra_pairs == 1
+
+
+def test_local_proposal_mutates_cached_elites(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = known_seed_candidates()[:2]
+    shapes = pilot_100_shapes()[:1]
+    p_hash = problem_type_hash()
+    b_hash = benchmark_protocol_hash_from_items([])
+    db.register_candidates(candidates)
+    db.insert_evaluation(
+        shape_id=shapes[0].id,
+        candidate_hash=candidates[0].hash,
+        run_id="cached",
+        status="ok",
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        gflops=10.0,
+    )
+
+    proposed = propose_candidates(
+        db,
+        proposal="local",
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        local_count=1,
+        elite_count=1,
+        seed=7,
+    )
+
+    assert len(proposed) == 1
+    assert proposed[0].source == "mutation"
+    assert proposed[0].parent_hashes == (candidates[0].hash,)
 
 
 def test_execute_schedule_generate_only_writes_batch_inputs(tmp_path: Path):

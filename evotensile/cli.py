@@ -1,29 +1,16 @@
 import argparse
 import sys
-from pathlib import Path
 
-from .cache import (
-    benchmark_protocol_hash_from_items,
-    cache_keys,
-    normalize_version_name,
-    problem_type_hash,
-)
+from .cache import benchmark_protocol_hash_from_items, normalize_version_name, problem_type_hash
 from .candidate import Shape
 from .database import EvoTensileDB
 from .ingest import csv_paths, ingest_results, print_ingest_result
-from .manifest import write_manifest
 from .parser import evaluation_status, parse_tensilelite_csv
-from .runner import DEFAULT_TENSILELITE_BIN, build_then_benchmark, run_tensilelite
-from .scheduler import execute_schedule
-from .search_space import (
-    DOMAINS,
-    MATRIX_INSTRUCTIONS,
-    known_seed_candidates,
-    macro_tile,
-    seed_and_random_candidates,
-)
+from .runner import DEFAULT_TENSILELITE_BIN
+from .scheduler import execute_schedule, propose_candidates
+from .search.random_search import initial_random_batch
+from .search_space import DOMAINS, MATRIX_INSTRUCTIONS, known_seed_candidates, macro_tile
 from .shapes import parse_shape, pilot_100_shapes
-from .yaml_writer import write_tensilelite_yaml
 
 
 def _parse_shapes(args: argparse.Namespace) -> list[Shape]:
@@ -35,7 +22,7 @@ def _parse_shapes(args: argparse.Namespace) -> list[Shape]:
 
 
 def _candidates(args: argparse.Namespace):
-    return seed_and_random_candidates(args.num_random, seed=args.seed)
+    return initial_random_batch(args.num_random, seed=args.seed)
 
 
 def _problem_hash_arg(args: argparse.Namespace) -> str:
@@ -46,12 +33,6 @@ def _protocol_hash_arg(args: argparse.Namespace) -> str:
     return getattr(args, "benchmark_protocol_hash", None) or benchmark_protocol_hash_from_items(
         getattr(args, "global_parameter", None)
     )
-
-
-def _print_cache_identity(args: argparse.Namespace) -> None:
-    print(f"version_name: {normalize_version_name(getattr(args, 'version_name', None))}")
-    print(f"problem_type_hash: {_problem_hash_arg(args)}")
-    print(f"benchmark_protocol_hash: {_protocol_hash_arg(args)}")
 
 
 def _add_candidate_shape_args(parser: argparse.ArgumentParser) -> None:
@@ -97,108 +78,6 @@ def cmd_summarize_space(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_pilot_yaml(args: argparse.Namespace) -> int:
-    candidates = _candidates(args)
-    shapes = _parse_shapes(args)
-    out = write_tensilelite_yaml(args.output_yaml, candidates, shapes)
-    manifest_path = Path(args.manifest) if args.manifest else Path(args.output_yaml).with_suffix(".manifest.csv")
-    write_manifest(manifest_path, candidates, shapes)
-    print(f"Wrote {out}")
-    print(f"Wrote {manifest_path}")
-    print(f"  candidates: {len(candidates)}")
-    print(f"  shapes: {len(shapes)}")
-    print(f"  nominal evaluations: {len(candidates) * len(shapes):,}")
-    return 0
-
-
-def cmd_init_db(args: argparse.Namespace) -> int:
-    db = EvoTensileDB.connect(args.db)
-    db.init()
-    print(f"Initialized {args.db}")
-    print(db.counts())
-    return 0
-
-
-def cmd_register_pilot(args: argparse.Namespace) -> int:
-    db = EvoTensileDB.connect(args.db)
-    db.init()
-    candidates = _candidates(args)
-    shapes = _parse_shapes(args)
-    db.register_candidates(candidates)
-    db.register_shapes(shapes)
-    print(f"Registered into {args.db}")
-    print(f"  candidates: {len(candidates)}")
-    print(f"  shapes: {len(shapes)}")
-    print(db.counts())
-    return 0
-
-
-def cmd_run_yaml(args: argparse.Namespace) -> int:
-    db = EvoTensileDB.connect(args.db) if args.db else None
-    if db is not None:
-        db.init()
-    result = run_tensilelite(
-        args.yaml,
-        args.output_dir,
-        tensilelite_bin=args.tensilelite_bin,
-        db=db,
-        use_cache=args.use_cache,
-        build_only=args.build_only,
-        cpu_threads=args.cpu_threads,
-        global_parameters=args.global_parameter,
-        version_name=args.version_name,
-        problem_type_hash=_problem_hash_arg(args),
-        benchmark_protocol_hash=_protocol_hash_arg(args),
-        extra_args=args.extra_arg,
-    )
-    print(f"run_id: {result.run_id}")
-    print(f"returncode: {result.returncode}")
-    print(f"stdout: {result.stdout_path}")
-    print(f"stderr: {result.stderr_path}")
-    print("command:", " ".join(result.command))
-    print(f"version_name: {result.version_name}")
-    print(f"problem_type_hash: {result.problem_type_hash}")
-    print(f"benchmark_protocol_hash: {result.benchmark_protocol_hash}")
-    return result.returncode
-
-
-def cmd_build_bench_yaml(args: argparse.Namespace) -> int:
-    db = EvoTensileDB.connect(args.db) if args.db else None
-    if db is not None:
-        db.init()
-    build_result, bench_result = build_then_benchmark(
-        args.yaml,
-        args.output_dir,
-        tensilelite_bin=args.tensilelite_bin,
-        db=db,
-        compile_threads=args.compile_threads,
-        benchmark_threads=args.benchmark_threads,
-        global_parameters=args.global_parameter,
-        version_name=args.version_name,
-        problem_type_hash=_problem_hash_arg(args),
-        benchmark_protocol_hash=_protocol_hash_arg(args),
-        extra_args=args.extra_arg,
-    )
-    print("build run_id:", build_result.run_id)
-    print("build returncode:", build_result.returncode)
-    print("build command:", " ".join(build_result.command))
-    print(f"version_name: {build_result.version_name}")
-    print(f"problem_type_hash: {build_result.problem_type_hash}")
-    print(f"benchmark_protocol_hash: {build_result.benchmark_protocol_hash}")
-    if bench_result is None:
-        print("benchmark skipped because build failed")
-        return build_result.returncode
-    print("benchmark run_id:", bench_result.run_id)
-    print("benchmark returncode:", bench_result.returncode)
-    print("benchmark command:", " ".join(bench_result.command))
-    return bench_result.returncode
-
-
-def cmd_cache_key(args: argparse.Namespace) -> int:
-    _print_cache_identity(args)
-    return 0
-
-
 def cmd_cache_summary(args: argparse.Namespace) -> int:
     db = EvoTensileDB.connect(args.db)
     db.init()
@@ -221,35 +100,6 @@ def cmd_cache_summary(args: argparse.Namespace) -> int:
     else:
         print("  <none>")
     print("known versions:", ", ".join(db.distinct_versions()) or "<none>")
-    return 0
-
-
-def cmd_cache_missing(args: argparse.Namespace) -> int:
-    db = EvoTensileDB.connect(args.db)
-    db.init()
-    candidates = _candidates(args)
-    shapes = _parse_shapes(args)
-    problem_hash = _problem_hash_arg(args)
-    protocol_hash = _protocol_hash_arg(args)
-    keys = cache_keys(
-        shapes,
-        candidates,
-        version_name=args.version_name,
-        problem_hash=problem_hash,
-        protocol_hash=protocol_hash,
-    )
-    missing = [key for key in keys if not db.has_cached_evaluation(key, min_samples=args.min_samples)]
-    print(f"version_name: {normalize_version_name(args.version_name)}")
-    print(f"problem_type_hash: {problem_hash}")
-    print(f"benchmark_protocol_hash: {protocol_hash}")
-    print(f"shapes: {len(shapes)}")
-    print(f"candidates: {len(candidates)}")
-    print(f"total evaluations: {len(keys)}")
-    print(f"cached evaluations: {len(keys) - len(missing)}")
-    print(f"missing evaluations: {len(missing)}")
-    if args.print_missing:
-        for key in missing:
-            print(f"{key.shape_id} {key.candidate_hash}")
     return 0
 
 
@@ -322,11 +172,24 @@ def cmd_ingest_csv(args: argparse.Namespace) -> int:
 
 def cmd_schedule_batches(args: argparse.Namespace) -> int:
     db = EvoTensileDB.connect(args.db)
-    candidates = _candidates(args)
-    shapes = _parse_shapes(args)
+    db.init()
     version = normalize_version_name(args.version_name)
     problem_hash = _problem_hash_arg(args)
     protocol_hash = _protocol_hash_arg(args)
+    candidates = propose_candidates(
+        db,
+        proposal=args.proposal,
+        num_random=args.num_random,
+        seed=args.seed,
+        version_name=version,
+        problem_type_hash=problem_hash,
+        benchmark_protocol_hash=protocol_hash,
+        shape_id=args.proposal_shape_id,
+        elite_count=args.elite_count,
+        local_count=args.local_count,
+        mutation_rate=args.mutation_rate,
+    )
+    shapes = _parse_shapes(args)
     result = execute_schedule(
         db,
         shapes=shapes,
@@ -354,6 +217,8 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
     print(f"version_name: {version}")
     print(f"problem_type_hash: {problem_hash}")
     print(f"benchmark_protocol_hash: {protocol_hash}")
+    print(f"proposal: {args.proposal}")
+    print(f"candidates: {len(candidates)}")
     print(f"candidate_batch_size: {args.candidate_batch_size}")
     print(f"shape_batch_size: {args.shape_batch_size}")
     print(f"planned batches: {len(result.planned_batches)}")
@@ -389,55 +254,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--seed", type=int, default=1)
     s.set_defaults(func=cmd_summarize_space)
 
-    s = sub.add_parser("pilot-yaml", help="Generate a TensileLite YAML for pilot shapes")
-    s.add_argument("--output-yaml", required=True)
-    s.add_argument("--num-random", type=int, default=32)
-    s.add_argument("--seed", type=int, default=1)
-    s.add_argument("--limit-shapes", type=int, default=None, help="Use first N pilot shapes")
-    s.add_argument("--shapes", nargs="*", help="Explicit shapes as M,N,batch,K or MxNxBxK")
-    s.add_argument("--manifest", default=None, help="Candidate/shape manifest path; defaults to OUTPUT.manifest.csv")
-    s.set_defaults(func=cmd_pilot_yaml)
-
-    s = sub.add_parser("init-db", help="Initialize an EvoTensile SQLite DB")
-    s.add_argument("--db", required=True)
-    s.set_defaults(func=cmd_init_db)
-
-    s = sub.add_parser("register-pilot", help="Register pilot shapes and generated candidates in DB")
-    s.add_argument("--db", required=True)
-    _add_candidate_shape_args(s)
-    s.set_defaults(func=cmd_register_pilot)
-
-    s = sub.add_parser("run-yaml", help="Run TensileLite on an existing YAML")
-    s.add_argument("--yaml", required=True)
-    s.add_argument("--output-dir", required=True)
-    s.add_argument("--tensilelite-bin", default=DEFAULT_TENSILELITE_BIN)
-    s.add_argument("--db")
-    s.add_argument("--use-cache", action="store_true")
-    s.add_argument("--build-only", action="store_true")
-    s.add_argument("--cpu-threads", type=int, default=None, help="Pass CpuThreads=N to TensileLite")
-    _add_cache_identity_args(s)
-    s.add_argument("--extra-arg", action="append", default=[])
-    s.set_defaults(func=cmd_run_yaml)
-
-    s = sub.add_parser(
-        "build-bench-yaml",
-        help="Compile with --build-only, then benchmark serially with --use-cache",
-    )
-    s.add_argument("--yaml", required=True)
-    s.add_argument("--output-dir", required=True)
-    s.add_argument("--tensilelite-bin", default=DEFAULT_TENSILELITE_BIN)
-    s.add_argument("--db")
-    s.add_argument("--compile-threads", type=int, default=-1)
-    s.add_argument("--benchmark-threads", type=int, default=1)
-    _add_cache_identity_args(s)
-    s.add_argument("--extra-arg", action="append", default=[])
-    s.set_defaults(func=cmd_build_bench_yaml)
-
     s = sub.add_parser("schedule-batches", help="Cache-aware batch scheduling, build/bench, and ingestion")
     s.add_argument("--db", required=True)
     s.add_argument("--output-dir", required=True)
     _add_candidate_shape_args(s)
     _add_cache_identity_args(s)
+    s.add_argument("--proposal", choices=["seed-random", "local", "seed-random-local"], default="seed-random")
+    s.add_argument("--proposal-shape-id", default=None, help="Limit local elite selection to one shape id")
+    s.add_argument("--elite-count", type=int, default=8)
+    s.add_argument("--local-count", type=int, default=32)
+    s.add_argument("--mutation-rate", type=float, default=0.25)
     s.add_argument("--candidate-batch-size", type=int, default=32)
     s.add_argument("--shape-batch-size", type=int, default=100)
     s.add_argument("--min-samples", type=int, default=1)
@@ -452,24 +278,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--keep-going", action="store_true")
     s.set_defaults(func=cmd_schedule_batches)
 
-    s = sub.add_parser("cache-key", help="Print the current timing-cache identity")
-    _add_cache_identity_args(s)
-    s.set_defaults(func=cmd_cache_key)
-
     s = sub.add_parser("cache-summary", help="Summarize cached evaluation statuses")
     s.add_argument("--db", required=True)
     s.add_argument("--version-name", default=None)
     s.add_argument("--problem-type-hash", default=None)
     s.add_argument("--benchmark-protocol-hash", default=None)
     s.set_defaults(func=cmd_cache_summary)
-
-    s = sub.add_parser("cache-missing", help="Count generated candidate/shape evaluations missing in cache")
-    s.add_argument("--db", required=True)
-    _add_candidate_shape_args(s)
-    _add_cache_identity_args(s)
-    s.add_argument("--min-samples", type=int, default=1)
-    s.add_argument("--print-missing", action="store_true")
-    s.set_defaults(func=cmd_cache_missing)
 
     s = sub.add_parser("rank-evals", help="Rank only validation-passed cached evaluations")
     s.add_argument("--db", required=True)

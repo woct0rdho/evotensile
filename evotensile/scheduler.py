@@ -9,6 +9,8 @@ from .database import EvoTensileDB
 from .ingest import IngestResult, ingest_results
 from .manifest import write_manifest
 from .runner import DEFAULT_TENSILELITE_BIN, build_then_benchmark
+from .search.local_search import mutate_elites
+from .search.random_search import initial_random_batch
 from .yaml_writer import write_tensilelite_yaml
 
 
@@ -51,6 +53,50 @@ class ScheduleResult:
 
 
 T = TypeVar("T")
+
+
+def _dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
+    by_hash: dict[str, Candidate] = {}
+    for candidate in candidates:
+        by_hash.setdefault(candidate.hash, candidate)
+    return list(by_hash.values())
+
+
+def propose_candidates(
+    db: EvoTensileDB,
+    *,
+    proposal: str = "seed-random",
+    num_random: int = 32,
+    seed: int = 1,
+    version_name: str | None = None,
+    problem_type_hash: str | None = None,
+    benchmark_protocol_hash: str | None = None,
+    shape_id: str | None = None,
+    elite_count: int = 8,
+    local_count: int = 32,
+    mutation_rate: float = 0.25,
+) -> list[Candidate]:
+    """Build the candidate set for a scheduled run from random seeds and/or cached elites."""
+    if proposal not in {"seed-random", "local", "seed-random-local"}:
+        raise ValueError(f"unknown proposal mode: {proposal}")
+
+    candidates: list[Candidate] = []
+    if proposal in {"seed-random", "seed-random-local"}:
+        candidates.extend(initial_random_batch(num_random, seed=seed))
+
+    if proposal in {"local", "seed-random-local"} and local_count > 0:
+        summaries = db.rank_evaluations(
+            version_name=version_name,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            shape_id=shape_id,
+            min_samples=1,
+            limit=elite_count,
+        )
+        elites = db.get_candidates([summary.candidate_hash for summary in summaries])
+        candidates.extend(mutate_elites(elites, count=local_count, seed=seed + 1009, mutation_rate=mutation_rate))
+
+    return _dedupe_candidates(candidates)
 
 
 def _chunks(items: list[T], size: int) -> list[list[T]]:
