@@ -119,7 +119,7 @@ def benchmark_problem(
 
     ptype = dict(FP16_NT_HHS_PROBLEM_TYPE if problem_type is None else problem_type)
 
-    group_entries = [flow_lists(c.group_entry()) for c in candidates]
+    group_entries = [c.group_entry() for c in candidates]
     problem_sizes = [{"Exact": FlowList(shape.exact_list())} for shape in shapes]
 
     size_group = {
@@ -130,7 +130,8 @@ def benchmark_problem(
         "BenchmarkFinalParameters": [
             {"ProblemSizes": problem_sizes},
             {"BiasTypeArgs": FlowList(["h"])},
-            {"ActivationArgs": [FlowList([{"Enum": "relu"}])]},
+            {"FactorDimArgs": FlowList([0])},
+            {"ActivationArgs": [FlowList([{"Enum": "none"}])]},
         ],
     }
     return [flow_lists(ptype), size_group]

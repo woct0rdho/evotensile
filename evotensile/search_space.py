@@ -42,6 +42,8 @@ DOMAINS: dict[str, list[Any]] = {
     "VectorWidthB": [2, 1],
     "GlobalReadVectorWidthA": [8, 4, 2, 1],
     "GlobalReadVectorWidthB": [8, 4, 2, 1],
+    "StorePriorityOpt": [True, False],
+    "NumElementsPerBatchStore": [4, 8, 10, 12, 16],
 }
 
 FIXED_PARAMS: dict[str, Any] = {
@@ -54,15 +56,19 @@ FIXED_PARAMS: dict[str, Any] = {
     "TransposeLDS": 0,
     "VectorWidthA": 1,
     "LocalReadVectorWidth": 16,
-    "StoreVectorWidth": 1,
+    "StoreVectorWidth": -1,
     "StoreRemapVectorWidth": 0,
-    "StorePriorityOpt": True,
-    "NumElementsPerBatchStore": 8,
     "StoreSyncOpt": 0,
     "GroupLoadStore": False,
-    "AssertFree0ElementMultiple": 1,
-    "AssertFree1ElementMultiple": 1,
-    "AssertSummationElementMultiple": 1,
+    "MIArchVgpr": 1,
+    "ExpandPointerSwap": 0,
+    "LdsBlockSizePerPadA": 0,
+    "LdsBlockSizePerPadB": 0,
+    "LdsPadA": 0,
+    "LdsPadB": 0,
+    "AssertFree0ElementMultiple": 8,
+    "AssertFree1ElementMultiple": 8,
+    "AssertSummationElementMultiple": 16,
 }
 
 
@@ -84,6 +90,10 @@ def cheap_constraints(params: dict[str, Any]) -> bool:
     if params["GlobalSplitU"] > 1 and params["DepthU"] < 32:
         return False
 
+    # TensileLite rejects this combination: PGR0 already uses the single-LDS-buffer path.
+    if params["PrefetchGlobalRead"] == 0 and params["1LDSBuffer"] == 0:
+        return False
+
     # Very small vector reads with DU64 are usually not worth early random budget.
     if params["DepthU"] == 64 and params["GlobalReadVectorWidthA"] == 1 and params["GlobalReadVectorWidthB"] == 1:
         return False
@@ -102,11 +112,11 @@ def make_candidate(overrides: dict[str, Any], *, source: str, parents: Iterable[
 def known_seed_candidates() -> list[Candidate]:
     """Initial deterministic seeds. These are deliberately conservative."""
     seeds: list[dict[str, Any]] = [
-        # 8192^3-center-like family.
+        # 8192^3-center-like rocBLAS baseline family.
         {
             "MatrixInstruction": [16, 16, 16, 1, 1, 4, 4, 2, 2],
             "WorkGroup": [16, 16, 1],
-            "DepthU": 64,
+            "DepthU": 16,
             "GlobalSplitU": 1,
             "PrefetchGlobalRead": 1,
             "PrefetchLocalRead": 1,
@@ -120,6 +130,8 @@ def known_seed_candidates() -> list[Candidate]:
             "VectorWidthB": 2,
             "GlobalReadVectorWidthA": 8,
             "GlobalReadVectorWidthB": 8,
+            "StorePriorityOpt": True,
+            "NumElementsPerBatchStore": 10,
         },
         # Slightly smaller K/pipeline variant.
         {
@@ -199,6 +211,33 @@ def known_seed_candidates() -> list[Candidate]:
         },
     ]
     return [make_candidate(seed, source="seed") for seed in seeds]
+
+
+def documented_winner_candidate() -> Candidate:
+    """Current documented 8192^3 FP16 NT HHS winner, for ground-truth checks only. May change in future."""
+    return make_candidate(
+        {
+            "MatrixInstruction": [16, 16, 16, 1, 1, 4, 4, 2, 2],
+            "WorkGroup": [16, 16, 1],
+            "DepthU": 16,
+            "GlobalSplitU": 1,
+            "PrefetchGlobalRead": 1,
+            "PrefetchLocalRead": 1,
+            "ScheduleIterAlg": 3,
+            "WorkGroupMapping": 8,
+            "StaggerU": 32,
+            "StaggerUMapping": 0,
+            "SourceSwap": 1,
+            "1LDSBuffer": 1,
+            "ClusterLocalRead": 0,
+            "VectorWidthB": 2,
+            "GlobalReadVectorWidthA": 8,
+            "GlobalReadVectorWidthB": 8,
+            "StorePriorityOpt": False,
+            "NumElementsPerBatchStore": 10,
+        },
+        source="documented_winner",
+    )
 
 
 def random_candidate(rng: random.Random, *, source: str = "random") -> Candidate:
