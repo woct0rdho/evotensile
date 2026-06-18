@@ -113,6 +113,39 @@ def test_solution_mapping_ignores_tlds2_derived_buffer_and_local_read_fields():
     assert solution_matches_candidate(solution, candidate.canonical_params())
 
 
+def test_solution_mapping_ignores_inactive_stagger_derived_fields():
+    candidate = Candidate(
+        {
+            **documented_winner_candidate().canonical_params(),
+            "StaggerU": 0,
+            "StaggerUMapping": 1,
+            "StaggerUStride": 256,
+        },
+        source="inactive_stagger",
+    )
+    solution = _final_solution_from_candidate(candidate)
+    solution["StaggerUMapping"] = 0
+    solution["StaggerUStride"] = 64.0
+
+    assert solution_matches_candidate(solution, candidate.canonical_params())
+
+
+def test_solution_mapping_keeps_active_stagger_fields_strict():
+    candidate = Candidate(
+        {
+            **documented_winner_candidate().canonical_params(),
+            "StaggerU": 8,
+            "StaggerUMapping": 1,
+            "StaggerUStride": 256,
+        },
+        source="active_stagger",
+    )
+    solution = _final_solution_from_candidate(candidate)
+    solution["StaggerUMapping"] = 0
+
+    assert not solution_matches_candidate(solution, candidate.canonical_params())
+
+
 def test_cli_ingest_maps_deduped_candidates_from_final_yaml(tmp_path: Path):
     base = documented_winner_candidate()
     deduped = Candidate({**base.canonical_params(), STORE_VECTOR_WIDTH_KEY: 1}, source="dedup_equivalent")

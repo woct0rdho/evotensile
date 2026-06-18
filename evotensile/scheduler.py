@@ -596,6 +596,12 @@ def execute_schedule(
                     include_logs=True,
                     solutions_yaml=[str(path) for path in find_solution_yamls([run_dir])],
                 )
+                if not bench_result.ok and ingest.ok and ingest.inserted > 0:
+                    # TensileLite returns nonzero when any candidate validation
+                    # fails, even though the benchmark produced complete useful
+                    # rows. Keep the returncode, but classify the run as an
+                    # objective-data run rather than an infrastructure failure.
+                    db.update_run_status(bench_result.run_id, status="completed_with_validation_fail")
             executed.append(
                 ExecutedBatch(
                     planned=current,
@@ -607,12 +613,10 @@ def execute_schedule(
                     ingest=ingest,
                 )
             )
-            failed = (
-                not build_result.ok
-                or bench_result is None
-                or not bench_result.ok
-                or (ingest is not None and not ingest.ok)
+            bench_failed_without_data = bench_result is None or (
+                not bench_result.ok and (ingest is None or ingest.inserted == 0 or not ingest.ok)
             )
+            failed = not build_result.ok or bench_failed_without_data or (ingest is not None and not ingest.ok)
             if failed and not keep_going:
                 return ScheduleResult(planned_batches=planned, executed_batches=executed)
     return ScheduleResult(planned_batches=planned, executed_batches=executed)
