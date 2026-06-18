@@ -56,9 +56,12 @@ def _to_float(value: str | None) -> float | None:
     if value is None:
         return None
     try:
-        return float(value.strip())
+        parsed = float(value.strip())
     except ValueError:
         return None
+    if parsed != parsed:
+        return None
+    return parsed
 
 
 def _csv_fields(line: str) -> list[str]:
@@ -128,6 +131,8 @@ def _last_nonzero_perf_column(row: dict[str, str]) -> float | None:
 
 
 def _evaluation_from_row(row: dict[str, str]) -> CsvEvaluation | None:
+    if _first_present(row, ["run"]) is not None and _to_int(_first_present(row, ["run"])) is None:
+        return None
     problem_index = _to_int(
         _first_present(row, ["ProblemIdx", "ProblemIndex", "problem-index", "Problem", "problem-progress"])
     )

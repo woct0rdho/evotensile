@@ -33,6 +33,7 @@ def test_yaml_shape():
     cands = known_seed_candidates()[:2]
     shapes = pilot_100_shapes()[:3]
     data = tensilelite_config(cands, shapes)
+    assert data["GlobalParameters"]["MinimumRequiredVersion"] == "5.0.0"
     assert "BenchmarkProblems" in data
     group = data["BenchmarkProblems"][0][1]["ForkParameters"][0]["Groups"][0]
     assert len(group) == 2

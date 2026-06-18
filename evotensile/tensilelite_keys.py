@@ -23,7 +23,6 @@ DIRECT_SOLUTION_MATCH_KEYS = frozenset(
         "AssertSummationElementMultiple",
         "ClusterLocalRead",
         "DepthU",
-        "ExpandPointerSwap",
         "GlobalReadVectorWidthA",
         "GlobalReadVectorWidthB",
         "GlobalSplitU",
