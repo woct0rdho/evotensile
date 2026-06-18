@@ -15,6 +15,7 @@ from .search.gomea import gomea_candidates, gomea_neighborhood_candidates
 from .search.local_search import mutate_elites
 from .search.random_search import initial_random_batch
 from .shapes import shape_from_id
+from .solution_mapping import find_solution_yamls
 from .yaml_writer import write_tensilelite_yaml
 
 
@@ -580,15 +581,19 @@ def execute_schedule(
                     benchmark_protocol_hash=benchmark_protocol_hash,
                 )
             if bench_result is not None:
+                # Ingest only the benchmark stdout for timing rows. The same run
+                # directory also contains the build-only stdout, and build-only can
+                # emit cold/partial CSV rows that should not enter the hot-loop cache.
                 ingest = ingest_results(
                     db=db,
-                    paths=[run_dir],
+                    paths=[bench_result.stdout_path],
                     manifest_path=manifest_path,
                     version_name=version,
                     problem_type_hash=problem_type_hash,
                     benchmark_protocol_hash=benchmark_protocol_hash,
                     run_id=bench_result.run_id,
                     include_logs=True,
+                    solutions_yaml=[str(path) for path in find_solution_yamls([run_dir])],
                 )
             executed.append(
                 ExecutedBatch(

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .database import EvoTensileDB
 from .manifest import manifest_by_problem_solution, read_manifest
-from .parser import evaluation_status, find_result_csvs, parse_tensilelite_csv
+from .parser import CsvEvaluation, evaluation_status, find_result_csvs, parse_tensilelite_csv
 from .solution_mapping import build_solution_candidate_mapper, find_solution_yamls
 
 
@@ -33,6 +33,71 @@ def csv_paths(items: list[str | Path], *, include_logs: bool = False) -> list[Pa
         else:
             paths.append(p)
     return sorted(set(paths))
+
+
+def _normalized_raw_value(row: CsvEvaluation, name: str) -> str | None:
+    target = name.lower().replace("-", "").replace("_", "").replace(" ", "")
+    for key, value in row.raw.items():
+        normalized = str(key).lower().replace("-", "").replace("_", "").replace(" ", "")
+        if normalized == target:
+            return str(value).strip()
+    return None
+
+
+def _is_tuning_row(row: CsvEvaluation) -> bool:
+    activation_type = _normalized_raw_value(row, "activation-type")
+    if activation_type is not None and activation_type.lower() not in {"", "none"}:
+        # EvoTensile currently emits ActivationArgs: none for the benchmarked
+        # problem. TensileLite later runs a library-client activation smoke (for
+        # example Relu) in the same stdout; those rows are validated diagnostics,
+        # not the hot-loop objective being tuned.
+        return False
+    return True
+
+
+def _row_identity(row: CsvEvaluation) -> tuple:
+    # File CSVs and stdout CSV blocks can describe the same timed sample while
+    # spelling the kernel/solution name differently. Prefer the stable problem,
+    # solution-index, and timing fields so validated stdout can replace the
+    # unvalidated file duplicate.
+    return (
+        row.shape_id,
+        row.solution_index,
+        row.time_us,
+        row.gflops,
+    )
+
+
+@dataclass(frozen=True)
+class _SourcedRow:
+    path: Path
+    row: CsvEvaluation
+
+
+def _ordered_rows(
+    paths: list[str | Path], *, include_logs: bool, allow_unknown_validation: bool
+) -> list[CsvEvaluation]:
+    ordered: list[_SourcedRow] = []
+    indices_by_identity: dict[tuple, list[int]] = {}
+    for path in csv_paths(paths, include_logs=include_logs):
+        for row in parse_tensilelite_csv(path):
+            if not _is_tuning_row(row):
+                continue
+            identity = _row_identity(row)
+            duplicate_index = next(
+                (idx for idx in indices_by_identity.get(identity, []) if ordered[idx].path != path),
+                None,
+            )
+            if duplicate_index is None:
+                indices_by_identity.setdefault(identity, []).append(len(ordered))
+                ordered.append(_SourcedRow(path=path, row=row))
+                continue
+            existing = ordered[duplicate_index].row
+            existing_status = evaluation_status(existing, require_validation=not allow_unknown_validation)
+            new_status = evaluation_status(row, require_validation=not allow_unknown_validation)
+            if existing_status != "ok" and new_status == "ok":
+                ordered[duplicate_index] = _SourcedRow(path=path, row=row)
+    return [item.row for item in ordered]
 
 
 def ingest_results(
@@ -98,40 +163,39 @@ def ingest_results(
             inserted += 1
             rejected += 1
 
-    for path in csv_paths(paths, include_logs=include_logs):
-        for row in parse_tensilelite_csv(path):
-            if mapper is not None:
-                entries = mapper.entries_for(
-                    shape_id=row.shape_id,
-                    solution_index=row.solution_index,
-                    solution_name=row.solution_name,
-                )
-            else:
-                entry = None
-                if row.problem_index is not None and row.solution_index is not None:
-                    entry = by_problem_solution.get((row.problem_index, row.solution_index))
-                entries = [entry] if entry is not None else []
-            if not entries:
-                unmapped += 1
-                continue
-            status = evaluation_status(row, require_validation=not allow_unknown_validation)
-            for entry in entries:
-                status_counts[status] = status_counts.get(status, 0) + 1
-                db.insert_evaluation(
-                    shape_id=entry.shape_id,
-                    candidate_hash=entry.candidate_hash,
-                    run_id=run_id,
-                    status=status,
-                    version_name=version_name,
-                    problem_type_hash=problem_type_hash,
-                    benchmark_protocol_hash=benchmark_protocol_hash,
-                    time_us=row.time_us,
-                    gflops=row.gflops,
-                    validation=row.validation,
-                    solution_index=row.solution_index,
-                    raw_csv_row=json.dumps(row.raw, sort_keys=True),
-                )
-                inserted += 1
+    for row in _ordered_rows(paths, include_logs=include_logs, allow_unknown_validation=allow_unknown_validation):
+        if mapper is not None:
+            entries = mapper.entries_for(
+                shape_id=row.shape_id,
+                solution_index=row.solution_index,
+                solution_name=row.solution_name,
+            )
+        else:
+            entry = None
+            if row.problem_index is not None and row.solution_index is not None:
+                entry = by_problem_solution.get((row.problem_index, row.solution_index))
+            entries = [entry] if entry is not None else []
+        if not entries:
+            unmapped += 1
+            continue
+        status = evaluation_status(row, require_validation=not allow_unknown_validation)
+        for entry in entries:
+            status_counts[status] = status_counts.get(status, 0) + 1
+            db.insert_evaluation(
+                shape_id=entry.shape_id,
+                candidate_hash=entry.candidate_hash,
+                run_id=run_id,
+                status=status,
+                version_name=version_name,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                time_us=row.time_us,
+                gflops=row.gflops,
+                validation=row.validation,
+                solution_index=row.solution_index,
+                raw_csv_row=json.dumps(row.raw, sort_keys=True),
+            )
+            inserted += 1
 
     return IngestResult(
         inserted=inserted,

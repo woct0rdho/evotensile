@@ -75,7 +75,7 @@ HOT_LOOP_BENCHMARK_PARAMETERS: dict[str, Any] = {
 
 
 DEFAULT_GLOBAL_PARAMETERS: dict[str, Any] = {
-    "MinimumRequiredVersion": "0.0.0",
+    "MinimumRequiredVersion": "5.0.0",
     "RuntimeLanguage": "HIP",
     **HOT_LOOP_BENCHMARK_PARAMETERS,
     "DataInitTypeA": 3,
@@ -107,7 +107,10 @@ DEFAULT_GLOBAL_PARAMETERS: dict[str, Any] = {
 LIBRARY_LOGIC_GRIDBASED_GFX1151: dict[str, Any] = {
     "ScheduleName": "gfx1151",
     "DeviceNames": ["Device 150e", "Device 150f", "Device 1510", "Device 1511"],
-    "ArchitectureName": {"Architecture": "gfx1151", "CUCount": 16},
+    # Keep CUCount out of the generated logic predicate: Strix Halo gfx1151 can
+    # report 20 CUs, while some source examples use 16. A CUCount predicate makes
+    # TensileLite's post-benchmark library-client pass print WRONG_HARDWARE/nan.
+    "ArchitectureName": "gfx1151",
     "LibraryType": "GridBased",
 }
 

@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ class RunResult:
     version_name: str
     problem_type_hash: str
     benchmark_protocol_hash: str
+    duration_s: float
 
     @property
     def ok(self) -> bool:
@@ -132,6 +134,7 @@ def run_tensilelite(
     if extra_args:
         cmd.extend(extra_args)
 
+    start = time.perf_counter()
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
         proc = subprocess.run(
             cmd,
@@ -141,6 +144,7 @@ def run_tensilelite(
             env=_merged_env(env),
             check=False,
         )
+    duration_s = time.perf_counter() - start
 
     result = RunResult(
         run_id=run_id,
@@ -152,6 +156,7 @@ def run_tensilelite(
         version_name=version,
         problem_type_hash=ptype_hash,
         benchmark_protocol_hash=proto_hash,
+        duration_s=duration_s,
     )
     if db is not None:
         db.insert_run(
@@ -172,6 +177,7 @@ def run_tensilelite(
                     "version_name": version,
                     "problem_type_hash": ptype_hash,
                     "benchmark_protocol_hash": proto_hash,
+                    "duration_s": duration_s,
                 },
                 sort_keys=True,
             ),

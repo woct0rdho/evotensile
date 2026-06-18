@@ -79,6 +79,15 @@ def test_solution_mapping_uses_final_yaml_not_group_order(tmp_path: Path):
     assert {entry.candidate_hash for entry in entries} == {base.hash, deduped.hash}
 
 
+def test_solution_mapping_ignores_derived_expand_pointer_swap():
+    candidate = documented_winner_candidate()
+    solution = _final_solution_from_candidate(candidate)
+    solution["ExpandPointerSwap"] = True
+
+    assert candidate.canonical_params()["ExpandPointerSwap"] == 0
+    assert solution_matches_candidate(solution, candidate.canonical_params())
+
+
 def test_cli_ingest_maps_deduped_candidates_from_final_yaml(tmp_path: Path):
     base = documented_winner_candidate()
     deduped = Candidate({**base.canonical_params(), STORE_VECTOR_WIDTH_KEY: 1}, source="dedup_equivalent")

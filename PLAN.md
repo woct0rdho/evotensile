@@ -468,7 +468,22 @@ python3 -m evotensile.cli schedule-batches \
   --keep-going
 ```
 
-## 14. Open Questions
+## 14. Pilot Timing Data
+
+Measured pre-full-run data on Radeon 8060S gfx1151 with the standalone TensileLite client and `--compile-threads 4 --benchmark-threads 1`:
+- 1 shape x 1 candidate smoke: wall `13.28s`; build `4.464s`; benchmark `8.529s`; inserted `10 ok`; summed recorded GEMM time `0.000144s`; non-GEMM runner time `12.993s`.
+- 2 shapes x 2 candidates smoke: wall `11.34s`; build `4.284s`; benchmark `6.623s`; inserted `20 ok` and `2 rejected`; summed recorded GEMM time `0.000352s`; non-GEMM runner time `10.907s`.
+- 10 shapes x 8 candidates medium probe: wall `19.50s`; build `4.428s`; benchmark `7.655s`; inserted `700 ok` and `10 rejected`; summed recorded GEMM time `0.03047s`; non-GEMM runner time `12.053s`.
+
+Pre-full-run estimate:
+- The default 100-shape plan is `135` candidates x `100` shapes = `13,500` candidate-shape pairs in `5` batches (`32,32,32,32,7` candidates x `100` shapes).
+- Raw GEMM work per candidate across the 100-shape grid is `131,063,611,392` FLOPs; at 10-20 TFLOP/s, 135 candidates x 10 benchmark samples would be only `8.85-17.69s` of kernel time.
+- The medium probe shows orchestration/validation/logging dominates small and medium batches: recorded GEMM time was `0.030s` out of `12.083s` runner time.
+- A conservative full-grid wall estimate before running is `20-35 minutes`, dominated by TensileLite client validation/logging and code-object/build orchestration rather than matmul kernel time.
+
+Full-grid actual timing will be added after the `grid100_full_20260618` run completes.
+
+## 15. Open Questions
 
 - Best batch size for TensileLite compile/run overhead on the target machine.
 - How much candidate union across shapes is acceptable before wasted cross-evaluation dominates.
