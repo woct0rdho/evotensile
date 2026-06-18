@@ -86,6 +86,15 @@ def _matrix_instruction_matches(candidate_mi: Any, solution: dict[str, Any]) -> 
     return True
 
 
+_INACTIVE_STAGGER_DERIVED_KEYS = frozenset({"StaggerUMapping", "StaggerUStride"})
+
+
+def _inactive_stagger_derived_key(key: str, solution: dict[str, Any], candidate_params: dict[str, Any]) -> bool:
+    if key not in _INACTIVE_STAGGER_DERIVED_KEYS:
+        return False
+    return _value_equal(candidate_params.get("StaggerU"), 0) and _value_equal(solution.get("StaggerU"), 0)
+
+
 def solution_matches_candidate(solution: dict[str, Any], candidate_params: dict[str, Any]) -> bool:
     """Return True if a final TensileLite solution came from a candidate.
 
@@ -102,6 +111,11 @@ def solution_matches_candidate(solution: dict[str, Any], candidate_params: dict[
 
     for key in sorted(DIRECT_SOLUTION_MATCH_KEYS):
         if key not in candidate_params:
+            continue
+        if _inactive_stagger_derived_key(key, solution, candidate_params):
+            # TensileLite may normalize StaggerUMapping/StaggerUStride even when
+            # StaggerU=0 disables staggering, so those inactive fields are not
+            # reliable evidence that the final solution came from another input.
             continue
         if key not in solution:
             return False

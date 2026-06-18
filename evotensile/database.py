@@ -250,6 +250,17 @@ class EvoTensileDB:
                 ),
             )
 
+    def update_run_status(self, run_id: str, *, status: str) -> None:
+        with self.connection() as con:
+            con.execute(
+                """
+                UPDATE runs
+                SET status = ?
+                WHERE run_id = ?
+                """,
+                (status, run_id),
+            )
+
     def insert_evaluation(
         self,
         *,

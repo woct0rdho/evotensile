@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 from evotensile.cache import benchmark_protocol_hash_from_items, normalize_version_name, problem_type_hash
@@ -285,6 +286,67 @@ def test_seed_random_gomea_reproduces_documented_winner_without_hindsight(tmp_pa
     winner_index = hashes.index(documented_winner_candidate().hash)
     assert winner_index + 1 <= 32
     assert proposed[winner_index].source == "gomea"
+
+
+def test_execute_schedule_continues_after_benchmark_validation_fail_with_rows(tmp_path: Path):
+    fake_tensile = tmp_path / "fake_tensile.py"
+    fake_tensile.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, yaml\n"
+        "from pathlib import Path\n"
+        "config_path, out = Path(sys.argv[1]), Path(sys.argv[2])\n"
+        "out.mkdir(parents=True, exist_ok=True)\n"
+        "if '--build-only' in sys.argv:\n"
+        "    sys.exit(0)\n"
+        "config = yaml.safe_load(config_path.read_text())\n"
+        "problem = config['BenchmarkProblems'][0][1]\n"
+        "solution = dict(problem['ForkParameters'][0]['Groups'][0][0])\n"
+        "mi = solution['MatrixInstruction']\n"
+        "solution['MatrixInstruction'] = mi[:4]\n"
+        "solution['MIWaveTile'] = [mi[5], mi[6]]\n"
+        "solution['MIWaveGroup'] = [mi[7], mi[8]]\n"
+        "solution['SolutionIndex'] = 0\n"
+        "solution['KernelNameMin'] = 'Kernel0'\n"
+        "problem_sizes = problem['BenchmarkFinalParameters'][0]['ProblemSizes']\n"
+        "exact = problem_sizes[0]['Exact'][:4]\n"
+        "final_yaml = [\n"
+        "    {'MinimumRequiredVersion': '5.0.0'},\n"
+        "    {'ProblemSizes': problem_sizes},\n"
+        "    solution,\n"
+        "]\n"
+        "(out / '00_Final.yaml').write_text(yaml.safe_dump(final_yaml, sort_keys=False))\n"
+        "validation = 'PASSED' if exact[3] == 256 else 'FAILED'\n"
+        "print('run,problem-progress,solution-progress,operation,problem-sizes,solution,validation,time-us,gflops')\n"
+        "print(f'0,0/0,0/0,Contraction,\\\"({exact[0]},{exact[1]},{exact[2]},{exact[3]})\\\",Kernel0,{validation},10.0,1000.0')\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    fake_tensile.chmod(0o755)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidate = known_seed_candidates()[0]
+    shapes = pilot_100_shapes()[:2]
+    p_hash = problem_type_hash()
+    b_hash = benchmark_protocol_hash_from_items([])
+
+    result = execute_schedule(
+        db,
+        shapes=shapes,
+        candidates=[candidate],
+        output_root=tmp_path / "batches",
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+    )
+
+    assert len(result.executed_batches) == 2
+    assert [batch.benchmark_returncode for batch in result.executed_batches] == [1, 1]
+    assert db.cache_summary(version_name="vtest") == {"ok": 1, "validation_fail": 1}
+    with sqlite3.connect(tmp_path / "sched.sqlite") as con:
+        statuses = [row[0] for row in con.execute("SELECT status FROM runs WHERE returncode = 1 ORDER BY timestamp")]
+    assert statuses == ["completed_with_validation_fail", "completed_with_validation_fail"]
 
 
 def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path):
