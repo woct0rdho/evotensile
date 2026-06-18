@@ -287,6 +287,10 @@ def plan_batches(
             )
             if missing_pairs == 0:
                 continue
+            # Planned batches are shape-granular, not pair-granular: if any
+            # candidate is missing for a shape, the whole candidate chunk is
+            # emitted for that shape. This can re-run cached pairs inside a
+            # mixed chunk, but keeps YAML generation and TensileLite runs simple.
             planned.append(
                 PlannedBatch(
                     batch_index=batch_index,
@@ -419,6 +423,9 @@ def execute_schedule(
             executed.append(ExecutedBatch(current, yaml_path, manifest_path, run_dir))
             continue
 
+        # Keep compile and benchmark sequential. On Strix Halo the CPU compiler
+        # and integrated GPU share power/thermal headroom, so we avoid deliberate
+        # compile/benchmark overlap even though compilation itself may be threaded.
         build_result, bench_result = build_then_benchmark(
             yaml_path,
             run_dir,

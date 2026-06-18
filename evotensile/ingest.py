@@ -74,6 +74,9 @@ def ingest_results(
     rejected = 0
     status_counts: dict[str, int] = {}
     if mapper is not None:
+        # Final TensileLite YAML is the source of truth: manifest entries that
+        # never map to a final solution were rejected or deduplicated away before
+        # the client could emit timing rows for them.
         mapped_keys = {
             (entry.shape_id, entry.candidate_hash) for entries in mapper.by_shape_solution.values() for entry in entries
         }

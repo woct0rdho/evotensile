@@ -1,5 +1,6 @@
 from evotensile.cache import CacheKey, benchmark_protocol_hash_from_items, normalize_version_name, problem_type_hash
 from evotensile.database import EvoTensileDB
+from evotensile.runner import serial_benchmark_global_parameters, serial_benchmark_protocol_hash
 from evotensile.search_space import known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
 
@@ -15,6 +16,13 @@ def test_protocol_hash_changes_with_timing_params_not_cpu_threads():
     cpu_only = benchmark_protocol_hash_from_items(["CpuThreads=16"])
     assert base != changed
     assert base == cpu_only
+
+
+def test_serial_benchmark_globals_override_parallel_gpu_execution():
+    params = serial_benchmark_global_parameters(["ParallelGpuExecution=0", "NumWarmups=5"])
+
+    assert params == ["NumWarmups=5", "ParallelGpuExecution=1"]
+    assert serial_benchmark_protocol_hash(["ParallelGpuExecution=0"]) == serial_benchmark_protocol_hash([])
 
 
 def test_db_cache_key_lookup(tmp_path):
