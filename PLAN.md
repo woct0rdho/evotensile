@@ -1,6 +1,6 @@
 # EvoTensile Plan
 
-EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The initial target is gfx1151 FP16 NT HHS non-AuxH GridBased GEMM tuning for the 100-shape pilot grid described in `ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, then expansion to finer/larger shape grids.
+EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The initial target is gfx1151 FP16 NT HHS non-AuxH GridBased GEMM tuning for the 100-shape pilot grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, then expansion to finer/larger shape grids.
 
 ## 1. Motivation
 
@@ -55,23 +55,12 @@ The pilot may benchmark more than 10 configs per shape. Initial budget target: r
 
 ## 4. Design Principles
 
-1. **External orchestration first**
-   EvoTensile generates candidate batches, emits TensileLite YAML with `Groups`, runs TensileLite, parses outputs, and records results.
-
-2. **Canonical candidate hashes**
-   Every candidate config gets a stable canonical representation and hash. This enables deduplication, caching, and reproducibility.
-
-3. **Persistent result database**
-   Every attempted `(shape, candidate, environment)` should be stored, including invalid builds, correctness failures, timeouts, and benchmark results.
-
-4. **Batch evaluation**
-   Avoid per-candidate/per-shape process launches. Emit batches of candidates into `Groups` and evaluate shape buckets in one TensileLite run when possible.
-
-5. **Search data is valuable**
-   The pilot should produce a reusable dataset for later nearest-shape seeding and surrogate training.
-
-6. **Hot-loop throughput is the tuning objective**
-   Search-time and final timings should both use a hot-loop protocol that represents steady-state long-running inference/training throughput. Cold-loop behavior is not tracked during tuning because it increases wall time; analyze it later only if first-request or bursty-idle latency becomes important.
+- External orchestration first. EvoTensile generates candidate batches, emits TensileLite YAML with `Groups`, runs TensileLite, parses outputs, and records results.
+- Canonical candidate hashes. Every candidate config gets a stable canonical representation and hash. This enables deduplication, caching, and reproducibility.
+- Persistent result database. Every attempted `(shape, candidate, environment)` should be stored, including invalid builds, correctness failures, timeouts, and benchmark results.
+- Batch evaluation. Avoid per-candidate/per-shape process launches. Emit batches of candidates into `Groups` and evaluate shape buckets in one TensileLite run when possible.
+- Search data is valuable. The pilot should produce a reusable dataset for later nearest-shape seeding and surrogate training.
+- Hot-loop throughput is the tuning objective. Search-time and final timings should both use a hot-loop protocol that represents steady-state long-running inference/training throughput. Cold-loop behavior is not tracked during tuning because it increases wall time; analyze it later only if first-request or bursty-idle latency becomes important.
 
 ## 5. Current Implementation Status
 
@@ -83,7 +72,7 @@ Generic implemented capabilities are summarized in `README.md`. Target-specific 
 - DB schema includes manual cache namespace fields (`version_name`, `problem_type_hash`, `benchmark_protocol_hash`);
 - validation-aware CSV/log parsing and SQLite ingestion exist, using TensileLite final solution YAML as the source of truth for candidate mapping;
 - cache-aware batch scheduling exists for missing `ok` observations, with compile-only, serial benchmark, and immediate ingestion phases;
-- a real one-shape harness under `ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that random init plus directed local refinement can reproduce the documented `8192^3` winner.
+- a real one-shape harness under `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that random init plus directed local refinement can reproduce the documented `8192^3` winner.
 
 ## 6. Candidate Model
 
@@ -175,12 +164,8 @@ Avoid normal multi-valued `ForkParameters` except when a Cartesian product is in
 ### Batching
 
 Two useful batch modes:
-
-1. **Candidate-batch x shape-bucket**
-   Evaluate a batch of candidates over a bucket of shapes. Good for broad scans.
-
-2. **Shape-local candidate batch**
-   Evaluate a candidate batch specific to a single shape or small shape cluster. Useful for refinement.
+- Candidate-batch x shape-bucket: Evaluate a batch of candidates over a bucket of shapes. Good for broad scans.
+- Shape-local candidate batch: Evaluate a candidate batch specific to a single shape or small shape cluster. Useful for refinement.
 
 The scheduler should choose batch sizes to balance code-object build overhead, process overhead, and wasted cross-evaluation.
 
@@ -260,6 +245,8 @@ Index `(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, cand
 Implemented now:
 - deterministic conservative seeds;
 - random valid generator;
+- local mutation around cached DB elites;
+- scheduler proposal modes for seed/random, local-only, and seed/random plus local refinement;
 - a ground-truth documented-winner helper for checks, not as a default random-init seed.
 
 Still planned:
@@ -269,13 +256,10 @@ Still planned:
 
 ### Phase B: local/evolutionary search
 
-Prototype modules exist for:
-- local mutation around top-k winners;
-- differential evolution over encoded categorical values;
-- GOMEA-like linkage-aware mixing inspired by `~/rocm_wmma_gemm/rocm_wmma_gemm/config/tune.py`.
-
 Still needed:
-- scheduler integration;
+- shape-aware candidate proposal beyond optional `--proposal-shape-id` filtering;
+- differential evolution over encoded categorical values;
+- GOMEA-like linkage-aware mixing inspired by `~/rocm_wmma_gemm/rocm_wmma_gemm/config/tune.py`;
 - crossover between near-winners;
 - directed/refinement operators promoted from the one-shape harness into generic search code;
 - robust failure-aware candidate filtering.
@@ -306,16 +290,15 @@ Classic Gaussian-process Bayesian optimization is not the first choice because t
 ## 10. Shape Transfer Strategy
 
 For finer grids:
-
-1. Represent each shape in log/ratio feature space.
-2. Find nearest tuned shapes.
-3. Seed new shape with:
-   - nearest winners;
-   - nearest near-winners;
-   - mutations around nearest winners;
-   - a few global robust candidates;
-   - a few random exploratory candidates.
-4. Run a smaller budget, e.g. 16-64 configs/shape, then retime finalists.
+- Represent each shape in log/ratio feature space.
+- Find nearest tuned shapes.
+- Seed new shape with:
+  - nearest winners;
+  - nearest near-winners;
+  - mutations around nearest winners;
+  - a few global robust candidates;
+  - a few random exploratory candidates.
+- Run a smaller budget, e.g. 16-64 configs/shape, then retime finalists.
 
 Shape features:
 
@@ -397,7 +380,7 @@ Remaining:
 
 ### M5: local/evolutionary refinement
 
-- Wire local mutation, differential evolution, GOMEA-like mixing, and directed refinement into the scheduler.
+- Extend the current local-mutation scheduler path with differential evolution, GOMEA-like mixing, and directed refinement.
 - Add elite crossover and failure-aware mutations.
 - Run 1-3 refinement rounds on pilot shapes.
 
@@ -424,8 +407,8 @@ Remaining:
 
 ## 14. Immediate Next Steps
 
-1. Validate final-solution YAML mapping and `schedule-batches` on a real multi-candidate TensileLite run with known rejected/deduplicated candidates.
-2. Record rejected/unmapped/build-failed candidates as reusable non-`ok` observations.
-3. Promote the directed-refinement operator from the one-shape harness into reusable search code.
-4. Run the first 100-shape hot-loop pilot scan and produce a winner/near-winner report.
-5. Add final export of selected candidate bundles for later GridBased logic generation/merge.
+- Validate final-solution YAML mapping and `schedule-batches` on a real multi-candidate TensileLite run with known rejected/deduplicated candidates.
+- Record rejected/unmapped/build-failed candidates as reusable non-`ok` observations.
+- Promote the directed-refinement operator from the one-shape harness into reusable search code.
+- Run the first 100-shape hot-loop pilot scan and produce a winner/near-winner report.
+- Add final export of selected candidate bundles for later GridBased logic generation/merge.

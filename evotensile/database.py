@@ -163,6 +163,29 @@ class EvoTensileDB:
         for shape in shapes:
             self.upsert_shape(shape)
 
+    def get_candidates(self, candidate_hashes: list[str]) -> list[Candidate]:
+        if not candidate_hashes:
+            return []
+        placeholders = ",".join("?" for _ in candidate_hashes)
+        with self.connection() as con:
+            rows = con.execute(
+                f"""
+                SELECT candidate_hash, candidate_json
+                FROM candidates
+                WHERE candidate_hash IN ({placeholders})
+                """,
+                candidate_hashes,
+            ).fetchall()
+        by_hash: dict[str, Candidate] = {}
+        for row in rows:
+            payload = json.loads(row["candidate_json"])
+            by_hash[row["candidate_hash"]] = Candidate(
+                params=payload["params"],
+                source=payload.get("source", "db"),
+                parent_hashes=tuple(payload.get("parent_hashes", [])),
+            )
+        return [by_hash[h] for h in candidate_hashes if h in by_hash]
+
     def insert_run(
         self,
         run_id: str,

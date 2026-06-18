@@ -15,10 +15,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-surrogate = [
-  "numpy>=2.4",
-  "scikit-learn>=1.9",
-]
 dev = [
   "pytest>=9.0",
   "ruff>=0.15",

@@ -3,7 +3,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from .candidate import Candidate, Shape, stable_hash
+from .candidate import stable_hash
 from .yaml_writer import DEFAULT_GLOBAL_PARAMETERS, FP16_NT_HHS_PROBLEM_TYPE
 
 DEFAULT_VERSION_NAME = "unversioned"
@@ -93,25 +93,3 @@ def benchmark_protocol_hash(global_parameters: dict[str, Any] | None = None) -> 
 
 def benchmark_protocol_hash_from_items(items: Iterable[str] | None = None) -> str:
     return benchmark_protocol_hash(parse_global_parameter_items(items))
-
-
-def cache_keys(
-    shapes: Iterable[Shape],
-    candidates: Iterable[Candidate],
-    *,
-    version_name: str | None,
-    problem_hash: str,
-    protocol_hash: str,
-) -> list[CacheKey]:
-    version = normalize_version_name(version_name)
-    return [
-        CacheKey(
-            version_name=version,
-            problem_type_hash=problem_hash,
-            benchmark_protocol_hash=protocol_hash,
-            shape_id=shape.id,
-            candidate_hash=candidate.hash,
-        )
-        for shape in shapes
-        for candidate in candidates
-    ]
