@@ -128,6 +128,95 @@ def test_local_proposal_mutates_cached_elites(tmp_path: Path):
     assert proposed[0].parent_hashes == (candidates[0].hash,)
 
 
+def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = known_seed_candidates()[:3]
+    target = pilot_100_shapes()[0]
+    near_shape = pilot_100_shapes()[1]
+    far_shape = pilot_100_shapes()[-1]
+    p_hash = problem_type_hash()
+    b_hash = benchmark_protocol_hash_from_items([])
+    db.register_candidates(candidates)
+    for shape, candidate, gflops in ((near_shape, candidates[1], 200.0), (far_shape, candidates[2], 300.0)):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            version_name="vtest",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            gflops=gflops,
+        )
+
+    proposed = propose_candidates(
+        db,
+        proposal="seed-random-gomea",
+        num_random=0,
+        gomea_count=0,
+        target_shapes=[target],
+        transfer_shape_count=1,
+        transfer_per_shape=1,
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+
+    transfer = [candidate for candidate in proposed if candidate.source == "transfer"]
+    assert [candidate.hash for candidate in transfer] == [candidates[1].hash]
+    assert transfer[0].parent_hashes == (candidates[1].hash,)
+
+
+def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = known_seed_candidates()[:2]
+    target = pilot_100_shapes()[0]
+    exact_shape = pilot_100_shapes()[1]
+    transfer_shape = pilot_100_shapes()[2]
+    p_hash = problem_type_hash()
+    b_hash = benchmark_protocol_hash_from_items([])
+    db.register_candidates(candidates)
+    db.insert_evaluation(
+        shape_id=exact_shape.id,
+        candidate_hash=candidates[0].hash,
+        run_id="cached",
+        status="ok",
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        gflops=100.0,
+    )
+    db.insert_evaluation(
+        shape_id=transfer_shape.id,
+        candidate_hash=candidates[1].hash,
+        run_id="cached",
+        status="ok",
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        gflops=200.0,
+    )
+
+    proposed = propose_candidates(
+        db,
+        proposal="gomea",
+        gomea_count=4,
+        target_shapes=[target],
+        shape_id=exact_shape.id,
+        transfer_shape_count=4,
+        transfer_per_shape=1,
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+
+    assert all(candidate.source != "transfer" for candidate in proposed)
+    assert {candidates[0].hash} & {parent for candidate in proposed for parent in candidate.parent_hashes}
+    assert candidates[1].hash not in {parent for candidate in proposed for parent in candidate.parent_hashes}
+
+
 def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()

@@ -1,6 +1,9 @@
+import re
 from collections.abc import Iterable
 
 from .candidate import Shape
+
+_SHAPE_ID_RE = re.compile(r"^m(?P<m>\d+)_n(?P<n>\d+)_b(?P<batch>\d+)_k(?P<k>\d+)$")
 
 PILOT_M = [512, 640, 896, 1024]
 PILOT_N = [128, 256, 512, 768, 1024]
@@ -21,6 +24,18 @@ def parse_shape(text: str) -> Shape:
     if len(parts) != 4:
         raise ValueError(f"shape must have 4 fields M,N,batch,K: {text!r}")
     return Shape(m=parts[0], n=parts[1], batch=parts[2], k=parts[3])
+
+
+def shape_from_id(shape_id: str) -> Shape:
+    match = _SHAPE_ID_RE.match(shape_id)
+    if not match:
+        raise ValueError(f"invalid EvoTensile shape id: {shape_id!r}")
+    return Shape(
+        m=int(match.group("m")),
+        n=int(match.group("n")),
+        batch=int(match.group("batch")),
+        k=int(match.group("k")),
+    )
 
 
 def shape_bucket(shape: Shape) -> str:

@@ -12,7 +12,7 @@ See `PLAN.md` for the current target-specific tuning plan and remaining work.
 
 - Candidate and shape primitives with stable canonical hashes.
 - Exact-shape helpers and the current 100-shape pilot grid generator.
-- Candidate generation from deterministic seeds, random valid configs, local mutations, categorical DE, and GOMEA-style linkage neighborhoods.
+- Candidate generation from deterministic seeds, nearest-shape winner transfer, random valid configs, local mutations, categorical DE, and GOMEA-style linkage neighborhoods.
 - Expanded gfx1151 FP16 NT HHS domains for the 100-shape grid, including artifact-backed TLDS/LDS-pad, store-batch, store-sync, WGM/stagger, and small/skinny tile seed families.
 - TensileLite YAML generation using one `ForkParameters: Groups` list of complete candidate dictionaries.
 - Hot-loop benchmark defaults for steady-state inference/training throughput.
@@ -49,7 +49,7 @@ From the repo root:
 python3 -m evotensile.cli summarize-space --num-random 128
 ```
 
-Plan cache-aware batches without running TensileLite. By default, `schedule-batches` uses the current 100-shape first-pass proposal: `seed-random-gomea` with `64` random candidates and `64` GOMEA candidates.
+Plan cache-aware batches without running TensileLite. By default, `schedule-batches` uses the current 100-shape first-pass proposal: nearest-shape cached winner transfer, `seed-random-gomea` with `64` random candidates, and `64` GOMEA candidates.
 
 ```bash
 python3 -m evotensile.cli schedule-batches \
@@ -76,7 +76,7 @@ python3 -m evotensile.cli schedule-batches \
   --benchmark-threads 1
 ```
 
-Refine candidates with cached elites and GOMEA-style linkage neighborhoods:
+Refine candidates with cached elites, nearest-shape winners, and GOMEA-style linkage neighborhoods. Set `--transfer-shapes 0` to disable nearby-shape transfer for an ablation.
 
 ```bash
 python3 -m evotensile.cli schedule-batches \
@@ -87,6 +87,8 @@ python3 -m evotensile.cli schedule-batches \
   --num-random 16 \
   --elite-count 8 \
   --gomea-count 64 \
+  --transfer-shapes 4 \
+  --transfer-per-shape 2 \
   --limit-shapes 100
 ```
 
