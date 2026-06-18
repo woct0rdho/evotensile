@@ -72,7 +72,7 @@ Generic implemented capabilities are summarized in `README.md`. Target-specific 
 - DB schema includes manual cache namespace fields (`version_name`, `problem_type_hash`, `benchmark_protocol_hash`);
 - validation-aware CSV/log parsing and SQLite ingestion exist, using TensileLite final solution YAML as the source of truth for candidate mapping;
 - cache-aware batch scheduling exists for missing `ok` observations, with compile-only, serial benchmark, and immediate ingestion phases;
-- a real one-shape harness under `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that random init plus directed local refinement can reproduce the documented `8192^3` winner.
+- a real one-shape harness under `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that hindsight-directed local refinement can reproduce the documented `8192^3` winner, but this operator is not part of the generic scheduler because it bakes in the known winner neighborhood.
 
 ## 6. Candidate Model
 
@@ -246,7 +246,7 @@ Implemented now:
 - deterministic conservative seeds;
 - random valid generator;
 - local mutation around cached DB elites;
-- scheduler proposal modes for seed/random, local-only, and seed/random plus local refinement;
+- scheduler proposal modes for seed/random, local-only, seed/random plus local refinement, categorical DE, GOMEA, and combined evolutionary batches;
 - a ground-truth documented-winner helper for checks, not as a default random-init seed.
 
 Still planned:
@@ -256,12 +256,16 @@ Still planned:
 
 ### Phase B: local/evolutionary search
 
+Implemented now:
+- categorical DE-style mutation/crossover over encoded TensileLite domain values;
+- GOMEA-style linkage neighborhoods and linkage-tree mixing inspired by `~/rocm_wmma_gemm/rocm_wmma_gemm/config/tune.py`;
+- generic seed/random plus GOMEA reproduction of the documented `8192^3` winner at candidate position `32`, without inserting the documented winner or using the hindsight-directed operator;
+- `schedule-batches` now defaults to the recommended 100-shape first-pass settings: `--proposal seed-random-gomea`, `--num-random 64`, and `--gomea-count 64`.
+
 Still needed:
 - shape-aware candidate proposal beyond optional `--proposal-shape-id` filtering;
-- differential evolution over encoded categorical values;
-- GOMEA-like linkage-aware mixing inspired by `~/rocm_wmma_gemm/rocm_wmma_gemm/config/tune.py`;
-- crossover between near-winners;
-- directed/refinement operators promoted from the one-shape harness into generic search code;
+- richer crossover between near-winners;
+- generic refinement operators that do not bake in known-winner hindsight;
 - robust failure-aware candidate filtering.
 
 For the pilot, a simple version is enough:
@@ -286,6 +290,43 @@ After enough observations exist:
 - include diversity penalty to avoid evaluating near-duplicates.
 
 Classic Gaussian-process Bayesian optimization is not the first choice because the space is high-dimensional, discrete/categorical, constrained, and noisy.
+
+### Previous 8192^3 Reproduction Run Context
+
+Source artifacts:
+- `/home/wd/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/run_one_shape_random_repro.py`
+- `/home/wd/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/runs/random12_local8_control/summary.json`
+- `/home/wd/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/runs/random12_local8_directed_repro/summary.json`
+- `/home/wd/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/runs/random12_local8_directed_repro/hot_loop_summary.json`
+- Pi session references in `/home/wd/.pi/agent/sessions/--home-wd-ComfyUI-FeatherOps--/2026-06-14T18-41-11-918Z_019ec770-14ee-77c7-a27b-fbb854a5d83f.jsonl`.
+
+Prior plain-random/local baseline:
+- shape: `m8192_n8192_b1_k8192`;
+- command from Pi session line 519: `run_one_shape_random_repro.py --run-name random12_local8_control --seed 1151 --num-random 12 --num-local 8 --num-benchmarks 2 --num-warmups 1 --include-documented-winner`;
+- approximate wall time from Pi command/result timestamps: `2026-06-18T08:10:00.340Z` to `2026-06-18T08:12:10.832Z`, about `130.5 s`;
+- initial search budget: `12` random candidates plus `8` naive local mutations;
+- one documented-winner control was benchmarked separately, so `summary.json` has `num_total=21` and `documented_winner_in_random_or_local=false`;
+- plain random/local did not generate `cand_4bde2d3af447f757`;
+- best non-control generated candidate was `cand_93149cee63b2ead1_MT128x128x16_SIA3_PGR2_PLR0_VWB2_NEPBS16_SPO1`, row `19` in `results.csv`;
+- hot-loop retime for that best non-control was `34976.1 GFLOP/s` median;
+- documented winner hot-loop retime was `46698.1 GFLOP/s` median, so the plain random/local best was `25.1%` slower (`74.9%` of winner throughput, winner `1.335x` faster).
+
+Prior hindsight-directed-refinement run, retained only as context:
+- command from Pi session line 536: `run_one_shape_random_repro.py --run-name random12_local8_directed_repro --seed 1151 --num-random 12 --num-local 8 --num-benchmarks 2 --num-warmups 1 --directed-refine`;
+- approximate wall time from Pi command/result timestamps: `2026-06-18T08:20:22.541Z` to `2026-06-18T08:24:55.875Z`, about `273.3 s`;
+- same `12` random plus `8` naive local starting point, followed by compact directed refinement from random/local elites;
+- `summary.json` has `num_total=38`, `num_ok=27`, and `documented_winner_in_random_or_local=true`;
+- directed refinement generated the documented winner `cand_4bde2d3af447f757_MT128x128x16_SIA3_PGR1_PLR1_VWB2_NEPBS10_SPO0` without inserting it as a control;
+- because that operator stages candidates into the already-known 8192^3 winner neighborhood, it is treated as a non-generic hindsight baseline and should not be used for normal unknown-shape search;
+- the documented winner was row `34` in `results.csv`, so reproduction happened after `34` benchmarked candidates in that run;
+- cool-loop screening ranked the `NEPBS16` sibling first and the documented `NEPBS10` winner third;
+- hot-loop retime reversed that order: documented `NEPBS10` median `46698.1 GFLOP/s`, sibling `NEPBS16` median `45205.2 GFLOP/s`.
+
+Current non-hindsight evolutionary reproduction check:
+- `propose_candidates(... proposal="seed-random-gomea", num_random=12, gomea_count=64, seed=1151)` generates the documented winner at candidate position `32` from an empty DB;
+- when seeded with the prior plain random/local observations excluding the documented control, `seed-random-gomea` still generates the winner at proposal position `32`, requiring `20` new uncached candidates before the winner if the previous `20` non-control evaluations are treated as cached;
+- pure categorical DE did not generate the exact winner in the checked budgets, so GOMEA-style linked schedule/store neighborhood expansion is currently the useful generic evolutionary operator for this reproduction case;
+- this is generic in the sense that it sweeps linked categorical groups around seeds/parents and uses the documented winner only as an external success predicate.
 
 ## 10. Shape Transfer Strategy
 
@@ -380,7 +421,7 @@ Remaining:
 
 ### M5: local/evolutionary refinement
 
-- Extend the current local-mutation scheduler path with differential evolution, GOMEA-like mixing, and directed refinement.
+- Improve the current DE/GOMEA scheduler path with shape-aware parent selection and non-hindsight refinement.
 - Add elite crossover and failure-aware mutations.
 - Run 1-3 refinement rounds on pilot shapes.
 
@@ -409,6 +450,6 @@ Remaining:
 
 - Validate final-solution YAML mapping and `schedule-batches` on a real multi-candidate TensileLite run with known rejected/deduplicated candidates.
 - Record rejected/unmapped/build-failed candidates as reusable non-`ok` observations.
-- Promote the directed-refinement operator from the one-shape harness into reusable search code.
+- Add non-hindsight refinement operators that learn from cached winners/near-winners without hard-coding the documented `8192^3` neighborhood.
 - Run the first 100-shape hot-loop pilot scan and produce a winner/near-winner report.
 - Add final export of selected candidate bundles for later GridBased logic generation/merge.

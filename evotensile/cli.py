@@ -7,7 +7,20 @@ from .database import EvoTensileDB
 from .ingest import csv_paths, ingest_results, print_ingest_result
 from .parser import evaluation_status, parse_tensilelite_csv
 from .runner import DEFAULT_TENSILELITE_BIN
-from .scheduler import execute_schedule, propose_candidates
+from .scheduler import (
+    DEFAULT_CROSSOVER_RATE,
+    DEFAULT_DE_COUNT,
+    DEFAULT_ELITE_COUNT,
+    DEFAULT_GOMEA_COUNT,
+    DEFAULT_LOCAL_COUNT,
+    DEFAULT_MUTATION_RATE,
+    DEFAULT_NUM_RANDOM,
+    DEFAULT_PROPOSAL,
+    DEFAULT_RANDOM_GENE_RATE,
+    PROPOSAL_MODES,
+    execute_schedule,
+    propose_candidates,
+)
 from .search.random_search import initial_random_batch
 from .search_space import DOMAINS, MATRIX_INSTRUCTIONS, known_seed_candidates, macro_tile
 from .shapes import parse_shape, pilot_100_shapes
@@ -36,7 +49,7 @@ def _protocol_hash_arg(args: argparse.Namespace) -> str:
 
 
 def _add_candidate_shape_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--num-random", type=int, default=32)
+    parser.add_argument("--num-random", type=int, default=DEFAULT_NUM_RANDOM)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--limit-shapes", type=int, default=None)
     parser.add_argument("--shapes", nargs="*")
@@ -187,7 +200,11 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         shape_id=args.proposal_shape_id,
         elite_count=args.elite_count,
         local_count=args.local_count,
+        de_count=args.de_count,
+        gomea_count=args.gomea_count,
         mutation_rate=args.mutation_rate,
+        crossover_rate=args.crossover_rate,
+        random_gene_rate=args.random_gene_rate,
     )
     shapes = _parse_shapes(args)
     result = execute_schedule(
@@ -250,7 +267,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("summarize-space", help="Print search-space and generated-candidate summary")
-    s.add_argument("--num-random", type=int, default=32)
+    s.add_argument("--num-random", type=int, default=DEFAULT_NUM_RANDOM)
     s.add_argument("--seed", type=int, default=1)
     s.set_defaults(func=cmd_summarize_space)
 
@@ -259,11 +276,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--output-dir", required=True)
     _add_candidate_shape_args(s)
     _add_cache_identity_args(s)
-    s.add_argument("--proposal", choices=["seed-random", "local", "seed-random-local"], default="seed-random")
-    s.add_argument("--proposal-shape-id", default=None, help="Limit local elite selection to one shape id")
-    s.add_argument("--elite-count", type=int, default=8)
-    s.add_argument("--local-count", type=int, default=32)
-    s.add_argument("--mutation-rate", type=float, default=0.25)
+    s.add_argument("--proposal", choices=PROPOSAL_MODES, default=DEFAULT_PROPOSAL)
+    s.add_argument("--proposal-shape-id", default=None, help="Limit cached elite selection to one shape id")
+    s.add_argument("--elite-count", type=int, default=DEFAULT_ELITE_COUNT)
+    s.add_argument("--local-count", type=int, default=DEFAULT_LOCAL_COUNT)
+    s.add_argument("--de-count", type=int, default=DEFAULT_DE_COUNT)
+    s.add_argument("--gomea-count", type=int, default=DEFAULT_GOMEA_COUNT)
+    s.add_argument("--mutation-rate", type=float, default=DEFAULT_MUTATION_RATE)
+    s.add_argument("--crossover-rate", type=float, default=DEFAULT_CROSSOVER_RATE)
+    s.add_argument("--random-gene-rate", type=float, default=DEFAULT_RANDOM_GENE_RATE)
     s.add_argument("--candidate-batch-size", type=int, default=32)
     s.add_argument("--shape-batch-size", type=int, default=100)
     s.add_argument("--min-samples", type=int, default=1)

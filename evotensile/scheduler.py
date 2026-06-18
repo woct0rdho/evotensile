@@ -9,6 +9,8 @@ from .database import EvoTensileDB
 from .ingest import IngestResult, ingest_results
 from .manifest import write_manifest
 from .runner import DEFAULT_TENSILELITE_BIN, build_then_benchmark
+from .search.differential_evolution import differential_evolution_candidates
+from .search.gomea import gomea_candidates, gomea_neighborhood_candidates
 from .search.local_search import mutate_elites
 from .search.random_search import initial_random_batch
 from .yaml_writer import write_tensilelite_yaml
@@ -54,6 +56,26 @@ class ScheduleResult:
 
 T = TypeVar("T")
 
+PROPOSAL_MODES = (
+    "seed-random",
+    "local",
+    "seed-random-local",
+    "de",
+    "seed-random-de",
+    "gomea",
+    "seed-random-gomea",
+    "evolutionary",
+)
+DEFAULT_PROPOSAL = "seed-random-gomea"
+DEFAULT_NUM_RANDOM = 64
+DEFAULT_ELITE_COUNT = 8
+DEFAULT_LOCAL_COUNT = 32
+DEFAULT_DE_COUNT = 32
+DEFAULT_GOMEA_COUNT = 64
+DEFAULT_MUTATION_RATE = 0.25
+DEFAULT_CROSSOVER_RATE = 0.8
+DEFAULT_RANDOM_GENE_RATE = 0.1
+
 
 def _dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
     by_hash: dict[str, Candidate] = {}
@@ -62,39 +84,113 @@ def _dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
     return list(by_hash.values())
 
 
+def _ranked_elites(
+    db: EvoTensileDB,
+    *,
+    version_name: str | None,
+    problem_type_hash: str | None,
+    benchmark_protocol_hash: str | None,
+    shape_id: str | None,
+    elite_count: int,
+) -> list[Candidate]:
+    summaries = db.rank_evaluations(
+        version_name=version_name,
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+        shape_id=shape_id,
+        min_samples=1,
+        limit=elite_count,
+    )
+    return db.get_candidates([summary.candidate_hash for summary in summaries])
+
+
 def propose_candidates(
     db: EvoTensileDB,
     *,
-    proposal: str = "seed-random",
-    num_random: int = 32,
+    proposal: str = DEFAULT_PROPOSAL,
+    num_random: int = DEFAULT_NUM_RANDOM,
     seed: int = 1,
     version_name: str | None = None,
     problem_type_hash: str | None = None,
     benchmark_protocol_hash: str | None = None,
     shape_id: str | None = None,
-    elite_count: int = 8,
-    local_count: int = 32,
-    mutation_rate: float = 0.25,
+    elite_count: int = DEFAULT_ELITE_COUNT,
+    local_count: int = DEFAULT_LOCAL_COUNT,
+    de_count: int = DEFAULT_DE_COUNT,
+    gomea_count: int = DEFAULT_GOMEA_COUNT,
+    mutation_rate: float = DEFAULT_MUTATION_RATE,
+    crossover_rate: float = DEFAULT_CROSSOVER_RATE,
+    random_gene_rate: float = DEFAULT_RANDOM_GENE_RATE,
 ) -> list[Candidate]:
     """Build the candidate set for a scheduled run from random seeds and/or cached elites."""
-    if proposal not in {"seed-random", "local", "seed-random-local"}:
+    if proposal not in PROPOSAL_MODES:
         raise ValueError(f"unknown proposal mode: {proposal}")
 
     candidates: list[Candidate] = []
-    if proposal in {"seed-random", "seed-random-local"}:
+    include_random = proposal.startswith("seed-random") or proposal == "evolutionary"
+    if include_random:
         candidates.extend(initial_random_batch(num_random, seed=seed))
 
-    if proposal in {"local", "seed-random-local"} and local_count > 0:
-        summaries = db.rank_evaluations(
+    needs_elites = proposal in {
+        "local",
+        "seed-random-local",
+        "de",
+        "seed-random-de",
+        "gomea",
+        "seed-random-gomea",
+        "evolutionary",
+    }
+    elites = (
+        _ranked_elites(
+            db,
             version_name=version_name,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
             shape_id=shape_id,
-            min_samples=1,
-            limit=elite_count,
+            elite_count=elite_count,
         )
-        elites = db.get_candidates([summary.candidate_hash for summary in summaries])
+        if needs_elites
+        else []
+    )
+
+    if proposal in {"local", "seed-random-local", "evolutionary"} and local_count > 0:
         candidates.extend(mutate_elites(elites, count=local_count, seed=seed + 1009, mutation_rate=mutation_rate))
+
+    if proposal in {"de", "seed-random-de", "evolutionary"} and de_count > 0:
+        parents = _dedupe_candidates([*elites, *candidates])
+        candidates.extend(
+            differential_evolution_candidates(
+                parents,
+                count=de_count,
+                seed=seed + 2003,
+                crossover_rate=crossover_rate,
+                random_gene_rate=random_gene_rate,
+                exclude={candidate.hash for candidate in candidates},
+            )
+        )
+
+    if proposal in {"gomea", "seed-random-gomea", "evolutionary"} and gomea_count > 0:
+        parents = _dedupe_candidates([*elites, *candidates])
+        neighborhood_parents = _dedupe_candidates([*candidates, *elites])
+        gomea_budget = max(0, gomea_count)
+        neighborhood_budget = gomea_budget // 2
+        candidates.extend(
+            gomea_neighborhood_candidates(
+                neighborhood_parents,
+                count=neighborhood_budget,
+                max_elites=None,
+                exclude={candidate.hash for candidate in candidates},
+            )
+        )
+        candidates.extend(
+            gomea_candidates(
+                parents,
+                count=gomea_budget - neighborhood_budget,
+                seed=seed + 3001,
+                elite_count=elite_count,
+                exclude={candidate.hash for candidate in candidates},
+            )
+        )
 
     return _dedupe_candidates(candidates)
 

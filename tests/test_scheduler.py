@@ -1,9 +1,17 @@
 from pathlib import Path
 
 from evotensile.cache import benchmark_protocol_hash_from_items, normalize_version_name, problem_type_hash
+from evotensile.cli import build_parser
 from evotensile.database import EvoTensileDB
-from evotensile.scheduler import execute_schedule, plan_batches, propose_candidates
-from evotensile.search_space import known_seed_candidates
+from evotensile.scheduler import (
+    DEFAULT_GOMEA_COUNT,
+    DEFAULT_NUM_RANDOM,
+    DEFAULT_PROPOSAL,
+    execute_schedule,
+    plan_batches,
+    propose_candidates,
+)
+from evotensile.search_space import documented_winner_candidate, known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
 
 
@@ -74,6 +82,75 @@ def test_local_proposal_mutates_cached_elites(tmp_path: Path):
     assert len(proposed) == 1
     assert proposed[0].source == "mutation"
     assert proposed[0].parent_hashes == (candidates[0].hash,)
+
+
+def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = known_seed_candidates()[:3]
+    shape = pilot_100_shapes()[0]
+    p_hash = problem_type_hash()
+    b_hash = benchmark_protocol_hash_from_items([])
+    db.register_candidates(candidates)
+    for idx, candidate in enumerate(candidates):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            version_name="vtest",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            gflops=100.0 - idx,
+        )
+
+    proposed = propose_candidates(
+        db,
+        proposal="evolutionary",
+        num_random=2,
+        local_count=2,
+        de_count=2,
+        gomea_count=2,
+        elite_count=3,
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        seed=7,
+    )
+
+    sources = {candidate.source for candidate in proposed}
+    assert {"seed", "random", "mutation", "de", "gomea"} & sources == {
+        "seed",
+        "random",
+        "mutation",
+        "de",
+        "gomea",
+    }
+
+
+def test_schedule_cli_uses_grid100_evolutionary_defaults():
+    args = build_parser().parse_args(["schedule-batches", "--db", "db.sqlite", "--output-dir", "out"])
+
+    assert args.proposal == DEFAULT_PROPOSAL == "seed-random-gomea"
+    assert args.num_random == DEFAULT_NUM_RANDOM == 64
+    assert args.gomea_count == DEFAULT_GOMEA_COUNT == 64
+
+
+def test_seed_random_gomea_reproduces_documented_winner_without_hindsight(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+
+    proposed = propose_candidates(
+        db,
+        proposal="seed-random-gomea",
+        num_random=12,
+        gomea_count=64,
+        seed=1151,
+    )
+
+    hashes = [candidate.hash for candidate in proposed]
+    assert hashes.index(documented_winner_candidate().hash) + 1 == 32
+    assert proposed[31].source == "gomea"
 
 
 def test_execute_schedule_generate_only_writes_batch_inputs(tmp_path: Path):
