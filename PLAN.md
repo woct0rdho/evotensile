@@ -101,8 +101,8 @@ Candidate = {
     "ScheduleIterAlg": 1 | 2 | 3,
 
     # spatial ordering / cache behavior
-    "WorkGroupMapping": 5 | 8,
-    "StaggerU": 0 | 8 | 32,
+    "WorkGroupMapping": 4 | 5 | 8 | 16,
+    "StaggerU": 0 | 8 | 16 | 32 | 64,
     "StaggerUStride": 256,
     "StaggerUMapping": 0 | 1,
 
@@ -110,7 +110,7 @@ Candidate = {
     "SourceSwap": 0 | 1,
     "1LDSBuffer": 0 | 1,
     "ClusterLocalRead": 0 | 1,
-    "TransposeLDS": 0,
+    "TransposeLDS": 0 | 2,
 
     # vectorization
     "VectorWidthA": 1,
@@ -120,12 +120,14 @@ Candidate = {
     "LocalReadVectorWidth": 16,
 
     # stores / assertions
-    "StoreVectorWidth": -1,
+    "StoreVectorWidth": -1 | 1,
     "StoreRemapVectorWidth": 0,
     "StorePriorityOpt": True | False,
-    "NumElementsPerBatchStore": 4 | 8 | 10 | 12 | 16,
-    "StoreSyncOpt": 0,
-    "GroupLoadStore": False,
+    "NumElementsPerBatchStore": 0 | 1 | 2 | 4 | 6 | 8 | 10 | 12 | 14 | 16 | 20 | 24 | 32,
+    "StoreSyncOpt": 0 | 1 | 2 | 4,
+    "GroupLoadStore": False | True,
+    "LdsBlockSizePerPadA/B": 0 | 128 | 256 | 512 | 1024 | 2048,
+    "LdsPadA/B": 0 | 4 | 8 | 16,
     "AssertFree0ElementMultiple": 8,
     "AssertFree1ElementMultiple": 8,
     "AssertSummationElementMultiple": 16,
@@ -136,6 +138,7 @@ The search space should support conditional constraints and linked mutations. Ex
 - mutate `MatrixInstruction`, `WorkGroup`, and macro-tile-related choices together;
 - mutate `DepthU` with vector-width / prefetch choices;
 - mutate `WorkGroupMapping`, `StaggerU`, and `StaggerUMapping` together;
+- keep LDS padding as linked artifact-backed profiles instead of independent random padding choices;
 - keep known-invalid or repeatedly failing combinations out of later batches.
 
 ## 7. TensileLite Evaluation Strategy
@@ -243,7 +246,7 @@ Index `(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, cand
 ### Phase A: baseline generators
 
 Implemented now:
-- deterministic conservative seeds;
+- deterministic conservative seeds, including large-square, TLDS2/LDS-pad, and small/skinny checked-in-style NT seed families;
 - random valid generator;
 - local mutation around cached DB elites;
 - scheduler proposal modes for seed/random, local-only, seed/random plus local refinement, categorical DE, GOMEA, and combined evolutionary batches;
@@ -259,7 +262,7 @@ Still planned:
 Implemented now:
 - categorical DE-style mutation/crossover over encoded TensileLite domain values;
 - GOMEA-style linkage neighborhoods and linkage-tree mixing inspired by `~/rocm_wmma_gemm/rocm_wmma_gemm/config/tune.py`;
-- generic seed/random plus GOMEA reproduction of the documented `8192^3` winner at candidate position `32`, without inserting the documented winner or using the hindsight-directed operator;
+- generic seed/random plus GOMEA reproduction of the documented `8192^3` winner within the first 32 proposals, without inserting the documented winner or using the hindsight-directed operator;
 - `schedule-batches` now defaults to the recommended 100-shape first-pass settings: `--proposal seed-random-gomea`, `--num-random 64`, and `--gomea-count 64`.
 
 Still needed:
@@ -294,11 +297,10 @@ Classic Gaussian-process Bayesian optimization is not the first choice because t
 ### Previous 8192^3 Reproduction Run Context
 
 Source artifacts:
-- `/home/wd/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/run_one_shape_random_repro.py`
-- `/home/wd/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/runs/random12_local8_control/summary.json`
-- `/home/wd/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/runs/random12_local8_directed_repro/summary.json`
-- `/home/wd/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/runs/random12_local8_directed_repro/hot_loop_summary.json`
-- Pi session references in `/home/wd/.pi/agent/sessions/--home-wd-ComfyUI-FeatherOps--/2026-06-14T18-41-11-918Z_019ec770-14ee-77c7-a27b-fbb854a5d83f.jsonl`.
+- `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/run_one_shape_random_repro.py`
+- `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/runs/random12_local8_control/summary.json`
+- `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/runs/random12_local8_directed_repro/summary.json`
+- `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/runs/random12_local8_directed_repro/hot_loop_summary.json`
 
 Prior plain-random/local baseline:
 - shape: `m8192_n8192_b1_k8192`;
@@ -443,6 +445,8 @@ Remaining:
 ## 13. Pre-Pilot Review Notes
 
 Remaining risks to track before/during the first 100-shape run:
+- The `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md` plan is still applicable: start with the 100-shape NT HHS non-AuxH grid, use hot-loop retiming from `tensile_fp16_nt_hhs.md`, and treat the `8192^3` winner as a center-point seed/evidence rather than a shape-generic conclusion.
+- Search-space review expanded the first-pass domain from the grid vocabulary plus observed NT artifacts: TLDS2/LDS-pad profiles, `NumElementsPerBatchStore=0/14/20/24/32`, `StoreSyncOpt=1/2/4`, `GroupLoadStore=True`, WGM `4/16`, stagger `16/64`, and checked-in-style small/skinny seed families.
 - Pair-level cache inefficiency has a first fix: scheduler now groups shapes by exact missing candidate subset within each candidate/shape chunk, so planned batches do not deliberately re-run cached pairs. Future dense-merge heuristics may allow a small number of `ok` extras if compile overhead dominates.
 - APU thermal coupling: compile and benchmark are sequential, but a highly threaded compile can heat Strix Halo immediately before GPU timing. Default policy is still no deliberate compile/benchmark overlap and no deliberate cool-down sleep; reduce `--compile-threads` if pilot timings look thermally biased.
 - Multi-candidate build failure attribution: only single-candidate build failures are negative-cached today. If a multi-candidate batch fails, isolate with `--candidate-batch-size 1` before marking candidates bad.
