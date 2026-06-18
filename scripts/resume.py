@@ -1,4 +1,4 @@
 #!/usr/bin/env python3
 
 
-print("Resume orchestration is planned after cache-aware scheduling is implemented.")
+print("Use `python3 -m evotensile.cli schedule-batches ...` for cache-aware resume orchestration.")

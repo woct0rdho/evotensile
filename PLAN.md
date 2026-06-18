@@ -82,6 +82,7 @@ Generic implemented capabilities are summarized in `README.md`. Target-specific 
 - runner support exists for direct runs and compile-then-serial-benchmark runs;
 - DB schema includes manual cache namespace fields (`version_name`, `problem_type_hash`, `benchmark_protocol_hash`);
 - validation-aware CSV/log parsing and SQLite ingestion exist, using TensileLite final solution YAML as the source of truth for candidate mapping;
+- cache-aware batch scheduling exists for missing `ok` observations, with compile-only, serial benchmark, and immediate ingestion phases;
 - a real one-shape harness under `ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that random init plus directed local refinement can reproduce the documented `8192^3` winner.
 
 ## 6. Candidate Model
@@ -381,11 +382,11 @@ Done:
 - parse CSV files for inspection;
 - initialize SQLite schema;
 - record run metadata and manual cache identity;
-- query cache identity/status/missing evaluations and rank only validation-passed observations.
+- query cache identity/status/missing evaluations and rank only validation-passed observations;
+- schedule missing `ok` observations into candidate/shape batches and ingest each completed batch.
 
 Remaining:
-- support resume without repeating known `(version, protocol, shape, candidate)` evaluations;
-- classify invalid builds, timeouts, and parse failures robustly beyond validation pass/fail rows.
+- classify invalid builds, timeouts, rejected candidates, and parse failures robustly beyond validation pass/fail rows.
 
 ### M4: first pilot scan - next major milestone
 
@@ -423,9 +424,8 @@ Remaining:
 
 ## 14. Immediate Next Steps
 
-1. Validate final-solution YAML mapping on a real multi-candidate TensileLite run with known rejected/deduplicated candidates.
-2. Add cache-aware scheduling so already-measured `ok` evaluations are skipped unless the version namespace changes.
+1. Validate final-solution YAML mapping and `schedule-batches` on a real multi-candidate TensileLite run with known rejected/deduplicated candidates.
+2. Record rejected/unmapped/build-failed candidates as reusable non-`ok` observations.
 3. Promote the directed-refinement operator from the one-shape harness into reusable search code.
-4. Add a batch scheduler for compile-only candidate batches and serial benchmark execution.
-5. Run the first 100-shape hot-loop pilot scan and produce a winner/near-winner report.
-6. Add final export of selected candidate bundles for later GridBased logic generation/merge.
+4. Run the first 100-shape hot-loop pilot scan and produce a winner/near-winner report.
+5. Add final export of selected candidate bundles for later GridBased logic generation/merge.
