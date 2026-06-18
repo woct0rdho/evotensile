@@ -440,7 +440,29 @@ Remaining:
 - Add smaller-budget local refinement for new shapes.
 - Add surrogate-assisted proposal once enough data exists.
 
-## 13. Open Questions
+## 13. Pre-Pilot Review Notes
+
+Remaining risks to track before/during the first 100-shape run:
+- Pair-level cache inefficiency: scheduler batches are shape-granular rather than pair-granular, so resumed mixed candidate chunks can re-run cached candidate/shape pairs. This is correct but can waste benchmark time.
+- APU thermal coupling: compile and benchmark are sequential, but a highly threaded compile can heat Strix Halo immediately before GPU timing. Default policy is still no deliberate compile/benchmark overlap and no deliberate cool-down sleep; reduce `--compile-threads` if pilot timings look thermally biased.
+- Multi-candidate build failure attribution: only single-candidate build failures are negative-cached today. If a multi-candidate batch fails, isolate with `--candidate-batch-size 1` before marking candidates bad.
+- Search-time validation is partial: `NumElementsToValidate=128` is acceptable for screening, but final winners should be retimed with stronger/full validation before trusting them.
+- Real mapping smoke is still needed: run a small multi-candidate schedule with accepted, rejected, and deduplicated candidates before the full grid to validate final-YAML mapping and ingestion behavior on actual TensileLite output.
+
+Suggested pre-grid smoke:
+
+```bash
+python3 -m evotensile.cli schedule-batches \
+  --db out/evotensile.sqlite \
+  --output-dir out/pregrid_smoke \
+  --version-name gfx1151_hotloop_pregrid_smoke \
+  --limit-shapes 2 \
+  --candidate-batch-size 4 \
+  --max-batches 1 \
+  --keep-going
+```
+
+## 14. Open Questions
 
 - Best batch size for TensileLite compile/run overhead on the target machine.
 - How much candidate union across shapes is acceptable before wasted cross-evaluation dominates.
@@ -449,7 +471,7 @@ Remaining:
 - Whether any subset of Origami features is useful as a weak feature for surrogate training.
 - How to export final results into the existing hipBLASLt GridBased logic workflow with minimal manual steps.
 
-## 14. Immediate Next Steps
+## 15. Immediate Next Steps
 
 - Validate final-solution YAML mapping and `schedule-batches` on a real multi-candidate TensileLite run with known rejected/deduplicated candidates.
 - Add timeout and multi-candidate build-failure attribution once failure signatures are better understood.

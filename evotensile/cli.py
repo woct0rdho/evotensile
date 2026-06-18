@@ -1,12 +1,12 @@
 import argparse
 import sys
 
-from .cache import benchmark_protocol_hash_from_items, normalize_version_name, problem_type_hash
+from .cache import normalize_version_name, problem_type_hash
 from .candidate import Shape
 from .database import EvoTensileDB
 from .ingest import csv_paths, ingest_results, print_ingest_result
 from .parser import evaluation_status, parse_tensilelite_csv
-from .runner import DEFAULT_TENSILELITE_BIN
+from .runner import DEFAULT_TENSILELITE_BIN, serial_benchmark_protocol_hash
 from .scheduler import (
     DEFAULT_CROSSOVER_RATE,
     DEFAULT_DE_COUNT,
@@ -43,8 +43,11 @@ def _problem_hash_arg(args: argparse.Namespace) -> str:
 
 
 def _protocol_hash_arg(args: argparse.Namespace) -> str:
-    return getattr(args, "benchmark_protocol_hash", None) or benchmark_protocol_hash_from_items(
-        getattr(args, "global_parameter", None)
+    # EvoTensile benchmark ingestion assumes serial GPU execution, matching
+    # schedule-batches' forced ParallelGpuExecution=1 benchmark command.
+    return serial_benchmark_protocol_hash(
+        getattr(args, "global_parameter", None),
+        benchmark_protocol_hash=getattr(args, "benchmark_protocol_hash", None),
     )
 
 

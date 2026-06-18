@@ -42,13 +42,40 @@ def _merged_env(env: dict[str, str] | None) -> dict[str, str] | None:
     return merged
 
 
+def _without_global_parameter(global_parameters: list[str] | None, key: str) -> list[str]:
+    key_prefix = f"{key}="
+    return [item for item in global_parameters or [] if not item.strip().startswith(key_prefix)]
+
+
+def serial_benchmark_global_parameters(global_parameters: list[str] | None) -> list[str]:
+    params = _without_global_parameter(global_parameters, "ParallelGpuExecution")
+    # TensileLite's name is unintuitive: ParallelGpuExecution is a GPU count,
+    # so 1 means serial execution and 0 means auto-detect/use multiple GPUs.
+    params.append("ParallelGpuExecution=1")
+    return params
+
+
+def serial_benchmark_protocol_hash(
+    global_parameters: list[str] | None,
+    *,
+    benchmark_protocol_hash: str | None = None,
+) -> str:
+    if benchmark_protocol_hash:
+        return benchmark_protocol_hash
+    # Hash the effective benchmark command, not the user input before the
+    # forced-serial ParallelGpuExecution override.
+    return benchmark_protocol_hash_from_items(serial_benchmark_global_parameters(global_parameters))
+
+
 def _global_parameter_args(
     global_parameters: list[str] | None,
     *,
     cpu_threads: int | None,
 ) -> list[str]:
-    params = list(global_parameters or [])
+    params = _without_global_parameter(global_parameters, "CpuThreads")
     if cpu_threads is not None:
+        # CpuThreads is phase-specific: compile may use many CPU threads, while
+        # benchmark intentionally uses one to avoid parallel client execution.
         params.append(f"CpuThreads={cpu_threads}")
     if not params:
         return []
@@ -168,6 +195,10 @@ def build_then_benchmark(
     env: dict[str, str] | None = None,
 ) -> tuple[RunResult, RunResult | None]:
     """Compile with --build-only, then benchmark serially with --use-cache."""
+    effective_benchmark_protocol_hash = serial_benchmark_protocol_hash(
+        global_parameters,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+    )
     build_result = run_tensilelite(
         yaml_path,
         output_dir,
@@ -178,15 +209,14 @@ def build_then_benchmark(
         global_parameters=global_parameters,
         version_name=version_name,
         problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
+        benchmark_protocol_hash=effective_benchmark_protocol_hash,
         extra_args=extra_args,
         env=env,
     )
     if not build_result.ok:
         return build_result, None
 
-    benchmark_globals = list(global_parameters or [])
-    benchmark_globals.append("ParallelGpuExecution=1")
+    benchmark_globals = serial_benchmark_global_parameters(global_parameters)
     bench_result = run_tensilelite(
         yaml_path,
         output_dir,
@@ -197,7 +227,7 @@ def build_then_benchmark(
         global_parameters=benchmark_globals,
         version_name=version_name,
         problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
+        benchmark_protocol_hash=effective_benchmark_protocol_hash,
         extra_args=extra_args,
         env=env,
     )
