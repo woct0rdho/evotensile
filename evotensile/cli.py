@@ -1,5 +1,4 @@
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -11,9 +10,11 @@ from .cache import (
 )
 from .candidate import Shape
 from .database import EvoTensileDB
-from .manifest import manifest_by_problem_solution, read_manifest, write_manifest
-from .parser import evaluation_status, find_result_csvs, parse_tensilelite_csv
+from .ingest import csv_paths, ingest_results, print_ingest_result
+from .manifest import write_manifest
+from .parser import evaluation_status, parse_tensilelite_csv
 from .runner import DEFAULT_TENSILELITE_BIN, build_then_benchmark, run_tensilelite
+from .scheduler import execute_schedule
 from .search_space import (
     DOMAINS,
     MATRIX_INSTRUCTIONS,
@@ -22,7 +23,6 @@ from .search_space import (
     seed_and_random_candidates,
 )
 from .shapes import parse_shape, pilot_100_shapes
-from .solution_mapping import build_solution_candidate_mapper, find_solution_yamls
 from .yaml_writer import write_tensilelite_yaml
 
 
@@ -275,19 +275,8 @@ def cmd_rank_evals(args: argparse.Namespace) -> int:
     return 0
 
 
-def _csv_paths(items: list[str], *, include_logs: bool = False) -> list[Path]:
-    paths: list[Path] = []
-    for item in items:
-        p = Path(item)
-        if p.is_dir():
-            paths.extend(find_result_csvs(p, include_logs=include_logs))
-        else:
-            paths.append(p)
-    return sorted(set(paths))
-
-
 def cmd_parse_csv(args: argparse.Namespace) -> int:
-    paths = _csv_paths(args.paths, include_logs=args.include_logs)
+    paths = csv_paths(args.paths, include_logs=args.include_logs)
     total = 0
     status_counts: dict[str, int] = {}
     for path in paths:
@@ -308,77 +297,86 @@ def cmd_parse_csv(args: argparse.Namespace) -> int:
 def cmd_ingest_csv(args: argparse.Namespace) -> int:
     db = EvoTensileDB.connect(args.db)
     db.init()
-    manifest_entries = read_manifest(args.manifest)
     version = normalize_version_name(args.version_name)
     problem_hash = _problem_hash_arg(args)
     protocol_hash = _protocol_hash_arg(args)
-    paths = _csv_paths(args.paths, include_logs=args.include_logs)
-    solution_yamls = [Path(p) for p in args.solutions_yaml] if args.solutions_yaml else find_solution_yamls(args.paths)
-
-    mapper = None
-    by_problem_solution = {}
-    if solution_yamls:
-        mapper = build_solution_candidate_mapper(manifest_entries, solution_yamls)
-    elif args.allow_manifest_order_fallback:
-        by_problem_solution = manifest_by_problem_solution(manifest_entries)
-    else:
-        print(
-            "error: no TensileLite final solution YAML found; pass --solutions-yaml or ingest a run directory",
-            file=sys.stderr,
-        )
-        print("       use --allow-manifest-order-fallback only for debugging old artifacts", file=sys.stderr)
-        return 2
-
-    inserted = 0
-    unmapped = 0
-    status_counts: dict[str, int] = {}
-    for path in paths:
-        for row in parse_tensilelite_csv(path):
-            if mapper is not None:
-                entries = mapper.entries_for(
-                    shape_id=row.shape_id,
-                    solution_index=row.solution_index,
-                    solution_name=row.solution_name,
-                )
-            else:
-                entry = None
-                if row.problem_index is not None and row.solution_index is not None:
-                    entry = by_problem_solution.get((row.problem_index, row.solution_index))
-                entries = [entry] if entry is not None else []
-            if not entries:
-                unmapped += 1
-                continue
-            status = evaluation_status(row, require_validation=not args.allow_unknown_validation)
-            for entry in entries:
-                status_counts[status] = status_counts.get(status, 0) + 1
-                db.insert_evaluation(
-                    shape_id=entry.shape_id,
-                    candidate_hash=entry.candidate_hash,
-                    run_id=args.run_id,
-                    status=status,
-                    version_name=version,
-                    problem_type_hash=problem_hash,
-                    benchmark_protocol_hash=protocol_hash,
-                    time_us=row.time_us,
-                    gflops=row.gflops,
-                    validation=row.validation,
-                    solution_index=row.solution_index,
-                    raw_csv_row=json.dumps(row.raw, sort_keys=True),
-                )
-                inserted += 1
-    print(f"db: {args.db}")
-    print(f"manifest: {args.manifest}")
-    print(f"solution_yamls: {len(solution_yamls)}")
-    if mapper is not None and mapper.unmatched_solutions:
-        print(f"unmatched final solutions: {len(mapper.unmatched_solutions)}")
+    result = ingest_results(
+        db=db,
+        paths=args.paths,
+        manifest_path=args.manifest,
+        version_name=version,
+        problem_type_hash=problem_hash,
+        benchmark_protocol_hash=protocol_hash,
+        run_id=args.run_id,
+        include_logs=args.include_logs,
+        solutions_yaml=args.solutions_yaml,
+        allow_manifest_order_fallback=args.allow_manifest_order_fallback,
+        allow_unknown_validation=args.allow_unknown_validation,
+    )
+    print_ingest_result(result, db_path=args.db, manifest_path=args.manifest)
     print(f"version_name: {version}")
     print(f"problem_type_hash: {problem_hash}")
     print(f"benchmark_protocol_hash: {protocol_hash}")
-    print(f"inserted evaluations: {inserted}")
-    print(f"unmapped rows: {unmapped}")
-    print("status counts:")
-    for status in sorted(status_counts):
-        print(f"  {status}: {status_counts[status]}")
+    return 0 if result.ok else 2
+
+
+def cmd_schedule_batches(args: argparse.Namespace) -> int:
+    db = EvoTensileDB.connect(args.db)
+    candidates = _candidates(args)
+    shapes = _parse_shapes(args)
+    version = normalize_version_name(args.version_name)
+    problem_hash = _problem_hash_arg(args)
+    protocol_hash = _protocol_hash_arg(args)
+    result = execute_schedule(
+        db,
+        shapes=shapes,
+        candidates=candidates,
+        output_root=args.output_dir,
+        version_name=version,
+        problem_type_hash=problem_hash,
+        benchmark_protocol_hash=protocol_hash,
+        min_samples=args.min_samples,
+        candidate_batch_size=args.candidate_batch_size,
+        shape_batch_size=args.shape_batch_size,
+        ignore_cache=args.ignore_cache,
+        max_batches=args.max_batches,
+        dry_run=args.dry_run,
+        generate_only=args.generate_only,
+        tensilelite_bin=args.tensilelite_bin,
+        compile_threads=args.compile_threads,
+        benchmark_threads=args.benchmark_threads,
+        global_parameters=args.global_parameter,
+        extra_args=args.extra_arg,
+        keep_going=args.keep_going,
+    )
+    print(f"db: {args.db}")
+    print(f"output_dir: {args.output_dir}")
+    print(f"version_name: {version}")
+    print(f"problem_type_hash: {problem_hash}")
+    print(f"benchmark_protocol_hash: {protocol_hash}")
+    print(f"candidate_batch_size: {args.candidate_batch_size}")
+    print(f"shape_batch_size: {args.shape_batch_size}")
+    print(f"planned batches: {len(result.planned_batches)}")
+    print(f"planned missing evaluations: {result.missing_pairs}")
+    print(f"planned nominal evaluations: {result.nominal_pairs}")
+    for batch in result.planned_batches:
+        print(
+            f"batch {batch.batch_index:04d}: candidates={len(batch.candidates)} "
+            f"shapes={len(batch.shapes)} missing={batch.missing_pairs} nominal={batch.nominal_pairs} "
+            f"extra={batch.extra_pairs}"
+        )
+    if args.dry_run:
+        return 0
+    print(f"executed batches: {len(result.executed_batches)}")
+    for executed in result.executed_batches:
+        ingest = executed.ingest
+        inserted = ingest.inserted if ingest is not None else 0
+        unmapped = ingest.unmapped if ingest is not None else 0
+        print(
+            f"executed {executed.planned.batch_index:04d}: build={executed.build_returncode} "
+            f"bench={executed.benchmark_returncode} inserted={inserted} unmapped={unmapped} "
+            f"yaml={executed.yaml_path}"
+        )
     return 0
 
 
@@ -434,6 +432,25 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cache_identity_args(s)
     s.add_argument("--extra-arg", action="append", default=[])
     s.set_defaults(func=cmd_build_bench_yaml)
+
+    s = sub.add_parser("schedule-batches", help="Cache-aware batch scheduling, build/bench, and ingestion")
+    s.add_argument("--db", required=True)
+    s.add_argument("--output-dir", required=True)
+    _add_candidate_shape_args(s)
+    _add_cache_identity_args(s)
+    s.add_argument("--candidate-batch-size", type=int, default=32)
+    s.add_argument("--shape-batch-size", type=int, default=100)
+    s.add_argument("--min-samples", type=int, default=1)
+    s.add_argument("--ignore-cache", action="store_true")
+    s.add_argument("--max-batches", type=int, default=None)
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--generate-only", action="store_true")
+    s.add_argument("--tensilelite-bin", default=DEFAULT_TENSILELITE_BIN)
+    s.add_argument("--compile-threads", type=int, default=-1)
+    s.add_argument("--benchmark-threads", type=int, default=1)
+    s.add_argument("--extra-arg", action="append", default=[])
+    s.add_argument("--keep-going", action="store_true")
+    s.set_defaults(func=cmd_schedule_batches)
 
     s = sub.add_parser("cache-key", help="Print the current timing-cache identity")
     _add_cache_identity_args(s)
