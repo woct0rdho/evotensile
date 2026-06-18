@@ -11,7 +11,7 @@ from .cache import (
 )
 from .candidate import Shape
 from .database import EvoTensileDB
-from .manifest import manifest_by_problem_solution, manifest_by_shape_solution, read_manifest, write_manifest
+from .manifest import manifest_by_problem_solution, read_manifest, write_manifest
 from .parser import evaluation_status, find_result_csvs, parse_tensilelite_csv
 from .runner import DEFAULT_TENSILELITE_BIN, build_then_benchmark, run_tensilelite
 from .search_space import (
@@ -22,6 +22,7 @@ from .search_space import (
     seed_and_random_candidates,
 )
 from .shapes import parse_shape, pilot_100_shapes
+from .solution_mapping import build_solution_candidate_mapper, find_solution_yamls
 from .yaml_writer import write_tensilelite_yaml
 
 
@@ -308,44 +309,68 @@ def cmd_ingest_csv(args: argparse.Namespace) -> int:
     db = EvoTensileDB.connect(args.db)
     db.init()
     manifest_entries = read_manifest(args.manifest)
-    by_problem_solution = manifest_by_problem_solution(manifest_entries)
-    by_shape_solution = manifest_by_shape_solution(manifest_entries)
     version = normalize_version_name(args.version_name)
     problem_hash = _problem_hash_arg(args)
     protocol_hash = _protocol_hash_arg(args)
     paths = _csv_paths(args.paths, include_logs=args.include_logs)
+    solution_yamls = [Path(p) for p in args.solutions_yaml] if args.solutions_yaml else find_solution_yamls(args.paths)
+
+    mapper = None
+    by_problem_solution = {}
+    if solution_yamls:
+        mapper = build_solution_candidate_mapper(manifest_entries, solution_yamls)
+    elif args.allow_manifest_order_fallback:
+        by_problem_solution = manifest_by_problem_solution(manifest_entries)
+    else:
+        print(
+            "error: no TensileLite final solution YAML found; pass --solutions-yaml or ingest a run directory",
+            file=sys.stderr,
+        )
+        print("       use --allow-manifest-order-fallback only for debugging old artifacts", file=sys.stderr)
+        return 2
+
     inserted = 0
     unmapped = 0
     status_counts: dict[str, int] = {}
     for path in paths:
         for row in parse_tensilelite_csv(path):
-            entry = None
-            if row.problem_index is not None and row.solution_index is not None:
-                entry = by_problem_solution.get((row.problem_index, row.solution_index))
-            if entry is None and row.shape_id is not None and row.solution_index is not None:
-                entry = by_shape_solution.get((row.shape_id, row.solution_index))
-            if entry is None:
+            if mapper is not None:
+                entries = mapper.entries_for(
+                    shape_id=row.shape_id,
+                    solution_index=row.solution_index,
+                    solution_name=row.solution_name,
+                )
+            else:
+                entry = None
+                if row.problem_index is not None and row.solution_index is not None:
+                    entry = by_problem_solution.get((row.problem_index, row.solution_index))
+                entries = [entry] if entry is not None else []
+            if not entries:
                 unmapped += 1
                 continue
             status = evaluation_status(row, require_validation=not args.allow_unknown_validation)
-            status_counts[status] = status_counts.get(status, 0) + 1
-            db.insert_evaluation(
-                shape_id=entry.shape_id,
-                candidate_hash=entry.candidate_hash,
-                run_id=args.run_id,
-                status=status,
-                version_name=version,
-                problem_type_hash=problem_hash,
-                benchmark_protocol_hash=protocol_hash,
-                time_us=row.time_us,
-                gflops=row.gflops,
-                validation=row.validation,
-                solution_index=row.solution_index,
-                raw_csv_row=json.dumps(row.raw, sort_keys=True),
-            )
-            inserted += 1
+            for entry in entries:
+                status_counts[status] = status_counts.get(status, 0) + 1
+                db.insert_evaluation(
+                    shape_id=entry.shape_id,
+                    candidate_hash=entry.candidate_hash,
+                    run_id=args.run_id,
+                    status=status,
+                    version_name=version,
+                    problem_type_hash=problem_hash,
+                    benchmark_protocol_hash=protocol_hash,
+                    time_us=row.time_us,
+                    gflops=row.gflops,
+                    validation=row.validation,
+                    solution_index=row.solution_index,
+                    raw_csv_row=json.dumps(row.raw, sort_keys=True),
+                )
+                inserted += 1
     print(f"db: {args.db}")
     print(f"manifest: {args.manifest}")
+    print(f"solution_yamls: {len(solution_yamls)}")
+    if mapper is not None and mapper.unmatched_solutions:
+        print(f"unmatched final solutions: {len(mapper.unmatched_solutions)}")
     print(f"version_name: {version}")
     print(f"problem_type_hash: {problem_hash}")
     print(f"benchmark_protocol_hash: {protocol_hash}")
@@ -451,6 +476,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--manifest", required=True)
     s.add_argument("--run-id")
     s.add_argument("--include-logs", action="store_true")
+    s.add_argument(
+        "--solutions-yaml",
+        action="append",
+        default=[],
+        help="TensileLite *_Final.yaml/_CSVWinner.yaml; auto-detected for directories",
+    )
+    s.add_argument(
+        "--allow-manifest-order-fallback",
+        action="store_true",
+        help="Debug-only fallback when final solution YAML is unavailable",
+    )
     s.add_argument("--allow-unknown-validation", action="store_true")
     _add_cache_identity_args(s)
     s.set_defaults(func=cmd_ingest_csv)

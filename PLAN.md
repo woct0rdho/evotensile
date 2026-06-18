@@ -81,7 +81,7 @@ Generic implemented capabilities are summarized in `README.md`. Target-specific 
 - generated YAML uses complete candidate `Groups` rather than independent Cartesian products;
 - runner support exists for direct runs and compile-then-serial-benchmark runs;
 - DB schema includes manual cache namespace fields (`version_name`, `problem_type_hash`, `benchmark_protocol_hash`);
-- validation-aware CSV/log parsing and SQLite ingestion exist for manifest-mapped evaluations;
+- validation-aware CSV/log parsing and SQLite ingestion exist, using TensileLite final solution YAML as the source of truth for candidate mapping;
 - a real one-shape harness under `ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that random init plus directed local refinement can reproduce the documented `8192^3` winner.
 
 ## 6. Candidate Model
@@ -384,7 +384,6 @@ Done:
 - query cache identity/status/missing evaluations and rank only validation-passed observations.
 
 Remaining:
-- harden candidate/solution-index sidecar mapping against rejected/deduplicated TensileLite solutions;
 - support resume without repeating known `(version, protocol, shape, candidate)` evaluations;
 - classify invalid builds, timeouts, and parse failures robustly beyond validation pass/fail rows.
 
@@ -424,7 +423,7 @@ Remaining:
 
 ## 14. Immediate Next Steps
 
-1. Validate manifest/solution-index mapping on real multi-candidate TensileLite output and handle rejected/deduplicated solutions.
+1. Validate final-solution YAML mapping on a real multi-candidate TensileLite run with known rejected/deduplicated candidates.
 2. Add cache-aware scheduling so already-measured `ok` evaluations are skipped unless the version namespace changes.
 3. Promote the directed-refinement operator from the one-shape harness into reusable search code.
 4. Add a batch scheduler for compile-only candidate batches and serial benchmark execution.

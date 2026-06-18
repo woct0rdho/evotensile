@@ -1,0 +1,115 @@
+from pathlib import Path
+
+import yaml
+
+from evotensile.candidate import Candidate
+from evotensile.cli import main
+from evotensile.database import EvoTensileDB
+from evotensile.manifest import write_manifest
+from evotensile.search_space import documented_winner_candidate
+from evotensile.shapes import Shape
+from evotensile.solution_mapping import build_solution_candidate_mapper, solution_matches_candidate
+from evotensile.tensilelite_keys import (
+    EXACT_KEY,
+    KERNEL_NAME_MIN_KEY,
+    MATRIX_INSTRUCTION_KEY,
+    MI_WAVE_GROUP_KEY,
+    MI_WAVE_TILE_KEY,
+    PROBLEM_SIZES_KEY,
+    SOLUTION_INDEX_KEY,
+    STORE_VECTOR_WIDTH_KEY,
+    WORK_GROUP_KEY,
+)
+
+
+def _final_solution_from_candidate(candidate: Candidate, *, solution_index: int = 0) -> dict:
+    params = candidate.canonical_params()
+    mi = params[MATRIX_INSTRUCTION_KEY]
+    solution = {
+        SOLUTION_INDEX_KEY: solution_index,
+        KERNEL_NAME_MIN_KEY: f"Kernel{solution_index}",
+        MATRIX_INSTRUCTION_KEY: mi[:4],
+        MI_WAVE_TILE_KEY: [mi[5], mi[6]],
+        MI_WAVE_GROUP_KEY: [mi[7], mi[8]],
+        WORK_GROUP_KEY: [32, 4, 1],
+        STORE_VECTOR_WIDTH_KEY: 1,
+    }
+    for key, value in params.items():
+        if key in {MATRIX_INSTRUCTION_KEY, WORK_GROUP_KEY, STORE_VECTOR_WIDTH_KEY}:
+            continue
+        solution[key] = value
+    solution["MIArchVgpr"] = bool(solution["MIArchVgpr"])
+    return solution
+
+
+def _write_solution_yaml(path: Path, shape: Shape, solution: dict) -> None:
+    data = [
+        {"MinimumRequiredVersion": "5.0.0"},
+        {
+            PROBLEM_SIZES_KEY: [
+                {EXACT_KEY: [shape.m, shape.n, shape.batch, shape.k, shape.m, shape.m, shape.k, shape.k]}
+            ]
+        },
+        {"BiasTypeArgs": [[4]]},
+        {"ActivationArgs": [[{"Enum": "None"}]]},
+        solution,
+    ]
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def test_solution_mapping_uses_final_yaml_not_group_order(tmp_path: Path):
+    base = documented_winner_candidate()
+    deduped = Candidate({**base.canonical_params(), STORE_VECTOR_WIDTH_KEY: 1}, source="dedup_equivalent")
+    rejected = Candidate({**base.canonical_params(), "DepthU": 32}, source="rejected_or_different")
+    shape = Shape(512, 128, 1, 256)
+    manifest = tmp_path / "manifest.csv"
+    write_manifest(manifest, [base, rejected, deduped], [shape])
+    final_yaml = tmp_path / "00_Final.yaml"
+    solution = _final_solution_from_candidate(base, solution_index=0)
+    _write_solution_yaml(final_yaml, shape, solution)
+
+    assert solution_matches_candidate(solution, base.canonical_params())
+    assert solution_matches_candidate(solution, deduped.canonical_params())
+    assert not solution_matches_candidate(solution, rejected.canonical_params())
+
+    from evotensile.manifest import read_manifest
+
+    mapper = build_solution_candidate_mapper(read_manifest(manifest), [final_yaml])
+    entries = mapper.entries_for(shape_id=shape.id, solution_index=0)
+    assert {entry.candidate_hash for entry in entries} == {base.hash, deduped.hash}
+
+
+def test_cli_ingest_maps_deduped_candidates_from_final_yaml(tmp_path: Path):
+    base = documented_winner_candidate()
+    deduped = Candidate({**base.canonical_params(), STORE_VECTOR_WIDTH_KEY: 1}, source="dedup_equivalent")
+    rejected = Candidate({**base.canonical_params(), "DepthU": 32}, source="rejected_or_different")
+    shape = Shape(512, 128, 1, 256)
+    manifest = tmp_path / "manifest.csv"
+    write_manifest(manifest, [base, rejected, deduped], [shape])
+    final_yaml = tmp_path / "00_Final.yaml"
+    _write_solution_yaml(final_yaml, shape, _final_solution_from_candidate(base, solution_index=0))
+
+    log = tmp_path / "client.log"
+    log.write_text(
+        "run,problem-progress,solution-progress,operation,problem-sizes,solution,validation,time-us,gflops\n"
+        '0,0/0,0/0,Contraction,"(512,128,1,256)",Kernel0,PASSED,10.0,1000.0\n',
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "evals.sqlite"
+    rc = main(
+        [
+            "ingest-csv",
+            str(log),
+            "--db",
+            str(db_path),
+            "--manifest",
+            str(manifest),
+            "--solutions-yaml",
+            str(final_yaml),
+            "--version-name",
+            "vtest",
+        ]
+    )
+    assert rc == 0
+    db = EvoTensileDB.connect(db_path)
+    assert db.cache_summary(version_name="vtest") == {"ok": 2}
