@@ -88,6 +88,31 @@ def test_solution_mapping_ignores_derived_expand_pointer_swap():
     assert solution_matches_candidate(solution, candidate.canonical_params())
 
 
+def test_solution_mapping_ignores_tlds2_derived_buffer_and_local_read_fields():
+    candidate = Candidate(
+        {
+            **documented_winner_candidate().canonical_params(),
+            "1LDSBuffer": 0,
+            "PrefetchGlobalRead": 2,
+            "PrefetchLocalRead": 0,
+            "TransposeLDS": 2,
+            "VectorWidthB": 1,
+            "LdsBlockSizePerPadA": 128,
+            "LdsBlockSizePerPadB": 128,
+            "LdsPadA": 8,
+            "LdsPadB": 8,
+        },
+        source="tlds2",
+    )
+    solution = _final_solution_from_candidate(candidate)
+    solution["1LDSBuffer"] = 1
+    solution["PrefetchLocalRead"] = 1
+
+    assert candidate.canonical_params()["1LDSBuffer"] == 0
+    assert candidate.canonical_params()["PrefetchLocalRead"] == 0
+    assert solution_matches_candidate(solution, candidate.canonical_params())
+
+
 def test_cli_ingest_maps_deduped_candidates_from_final_yaml(tmp_path: Path):
     base = documented_winner_candidate()
     deduped = Candidate({**base.canonical_params(), STORE_VECTOR_WIDTH_KEY: 1}, source="dedup_equivalent")

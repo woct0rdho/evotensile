@@ -6,7 +6,7 @@ from typing import TypeVar
 
 from .cache import CacheKey, normalize_version_name
 from .candidate import Candidate, Shape, stable_hash
-from .database import EvoTensileDB
+from .database import EvaluationInsert, EvoTensileDB
 from .ingest import IngestResult, ingest_results
 from .manifest import write_manifest
 from .runner import DEFAULT_TENSILELITE_BIN, build_then_benchmark
@@ -463,20 +463,21 @@ def _record_batch_status(
     problem_type_hash: str,
     benchmark_protocol_hash: str,
 ) -> int:
-    inserted = 0
-    for shape in batch.shapes:
-        for candidate in batch.candidates:
-            db.insert_evaluation(
-                shape_id=shape.id,
-                candidate_hash=candidate.hash,
-                run_id=run_id,
-                status=status,
-                version_name=version_name,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
-            )
-            inserted += 1
-    return inserted
+    evaluations = [
+        EvaluationInsert(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id=run_id,
+            status=status,
+            version_name=version_name,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+        )
+        for shape in batch.shapes
+        for candidate in batch.candidates
+    ]
+    db.insert_evaluations(evaluations)
+    return len(evaluations)
 
 
 def execute_schedule(

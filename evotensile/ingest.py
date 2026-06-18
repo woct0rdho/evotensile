@@ -3,7 +3,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .database import EvoTensileDB
+from .database import EvaluationInsert, EvoTensileDB
 from .manifest import manifest_by_problem_solution, read_manifest
 from .parser import CsvEvaluation, evaluation_status, find_result_csvs, parse_tensilelite_csv
 from .solution_mapping import build_solution_candidate_mapper, find_solution_yamls
@@ -134,6 +134,7 @@ def ingest_results(
             errors=errors,
         )
 
+    pending_inserts: list[EvaluationInsert] = []
     inserted = 0
     unmapped = 0
     rejected = 0
@@ -149,16 +150,18 @@ def ingest_results(
             if (entry.shape_id, entry.candidate_hash) in mapped_keys:
                 continue
             status_counts["rejected"] = status_counts.get("rejected", 0) + 1
-            db.insert_evaluation(
-                shape_id=entry.shape_id,
-                candidate_hash=entry.candidate_hash,
-                run_id=run_id,
-                status="rejected",
-                version_name=version_name,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
-                solution_index=entry.solution_index,
-                raw_csv_row=json.dumps({"reason": "missing_from_final_solution_yaml"}, sort_keys=True),
+            pending_inserts.append(
+                EvaluationInsert(
+                    shape_id=entry.shape_id,
+                    candidate_hash=entry.candidate_hash,
+                    run_id=run_id,
+                    status="rejected",
+                    version_name=version_name,
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                    solution_index=entry.solution_index,
+                    raw_csv_row=json.dumps({"reason": "missing_from_final_solution_yaml"}, sort_keys=True),
+                )
             )
             inserted += 1
             rejected += 1
@@ -181,21 +184,25 @@ def ingest_results(
         status = evaluation_status(row, require_validation=not allow_unknown_validation)
         for entry in entries:
             status_counts[status] = status_counts.get(status, 0) + 1
-            db.insert_evaluation(
-                shape_id=entry.shape_id,
-                candidate_hash=entry.candidate_hash,
-                run_id=run_id,
-                status=status,
-                version_name=version_name,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
-                time_us=row.time_us,
-                gflops=row.gflops,
-                validation=row.validation,
-                solution_index=row.solution_index,
-                raw_csv_row=json.dumps(row.raw, sort_keys=True),
+            pending_inserts.append(
+                EvaluationInsert(
+                    shape_id=entry.shape_id,
+                    candidate_hash=entry.candidate_hash,
+                    run_id=run_id,
+                    status=status,
+                    version_name=version_name,
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                    time_us=row.time_us,
+                    gflops=row.gflops,
+                    validation=row.validation,
+                    solution_index=row.solution_index,
+                    raw_csv_row=json.dumps(row.raw, sort_keys=True),
+                )
             )
             inserted += 1
+
+    db.insert_evaluations(pending_inserts)
 
     return IngestResult(
         inserted=inserted,

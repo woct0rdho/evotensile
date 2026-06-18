@@ -483,6 +483,8 @@ Pre-full-run estimate:
 
 Full-grid actual timing will be added after the `grid100_full_20260618` run completes.
 
+After the 100-shape run is finished and analyzed, build a purpose-specific EvoTensile benchmark runner before scaling to the 9,681-shape grid. The runner should keep TensileLite codegen/build artifacts but replace the generic TensileLite client/library-client execution path with a small structured hot-loop runner, likely C++/HIP adapted from TensileLite `client/src` and driven by Python. Goals: avoid stdout archaeology, skip unrelated `LibraryClient` activation diagnostics, emit direct `shape_id`/`candidate_hash`/sample records, make validation status explicit, reduce DB ingestion overhead, and make matmul vs non-matmul timing decomposition reliable.
+
 ## 15. Open Questions
 
 - Best batch size for TensileLite compile/run overhead on the target machine.

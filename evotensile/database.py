@@ -27,6 +27,22 @@ def _median(values: list[float]) -> float | None:
 
 
 @dataclass(frozen=True)
+class EvaluationInsert:
+    shape_id: str
+    candidate_hash: str
+    run_id: str | None
+    status: str
+    version_name: str | None = None
+    problem_type_hash: str = ""
+    benchmark_protocol_hash: str = ""
+    time_us: float | None = None
+    gflops: float | None = None
+    validation: str | None = None
+    solution_index: int | None = None
+    raw_csv_row: str | None = None
+
+
+@dataclass(frozen=True)
 class EvaluationSummary:
     shape_id: str
     candidate_hash: str
@@ -273,6 +289,38 @@ class EvoTensileDB:
                     raw_csv_row,
                     time.time(),
                 ),
+            )
+
+    def insert_evaluations(self, evaluations: list[EvaluationInsert]) -> None:
+        if not evaluations:
+            return
+        now = time.time()
+        with self.connection() as con:
+            con.executemany(
+                """
+                INSERT INTO evaluations
+                  (version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
+                   run_id, status, time_us, gflops, validation, solution_index, raw_csv_row, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        normalize_version_name(evaluation.version_name),
+                        evaluation.problem_type_hash,
+                        evaluation.benchmark_protocol_hash,
+                        evaluation.shape_id,
+                        evaluation.candidate_hash,
+                        evaluation.run_id,
+                        evaluation.status,
+                        evaluation.time_us,
+                        evaluation.gflops,
+                        evaluation.validation,
+                        evaluation.solution_index,
+                        evaluation.raw_csv_row,
+                        now,
+                    )
+                    for evaluation in evaluations
+                ],
             )
 
     def cached_evaluation_count(
