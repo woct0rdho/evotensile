@@ -49,6 +49,46 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
     assert batches[0].extra_pairs == 1
 
 
+def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = known_seed_candidates()[:2]
+    shapes = pilot_100_shapes()[:1]
+    p_hash = problem_type_hash()
+    b_hash = benchmark_protocol_hash_from_items([])
+    db.insert_evaluation(
+        shape_id=shapes[0].id,
+        candidate_hash=candidates[0].hash,
+        run_id="cached",
+        status="rejected",
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+    db.insert_evaluation(
+        shape_id=shapes[0].id,
+        candidate_hash=candidates[1].hash,
+        run_id="cached",
+        status="build_failed",
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+
+    batches = plan_batches(
+        db,
+        shapes=shapes,
+        candidates=candidates,
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        candidate_batch_size=2,
+        shape_batch_size=1,
+    )
+
+    assert batches == []
+
+
 def test_local_proposal_mutates_cached_elites(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -151,6 +191,46 @@ def test_seed_random_gomea_reproduces_documented_winner_without_hindsight(tmp_pa
     hashes = [candidate.hash for candidate in proposed]
     assert hashes.index(documented_winner_candidate().hash) + 1 == 32
     assert proposed[31].source == "gomea"
+
+
+def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path):
+    fake_tensile = tmp_path / "fake_tensile.py"
+    fake_tensile.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n", encoding="utf-8")
+    fake_tensile.chmod(0o755)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidate = known_seed_candidates()[0]
+    shape = pilot_100_shapes()[0]
+    p_hash = problem_type_hash()
+    b_hash = benchmark_protocol_hash_from_items([])
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=[candidate],
+        output_root=tmp_path / "batches",
+        version_name="vtest",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+    )
+
+    assert len(result.executed_batches) == 1
+    assert db.cache_summary(version_name="vtest") == {"build_failed": 1}
+    assert (
+        plan_batches(
+            db,
+            shapes=[shape],
+            candidates=[candidate],
+            version_name="vtest",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            candidate_batch_size=1,
+            shape_batch_size=1,
+        )
+        == []
+    )
 
 
 def test_execute_schedule_generate_only_writes_batch_inputs(tmp_path: Path):

@@ -108,7 +108,6 @@ Additional TensileLite global parameters can be included with repeated `--global
 
 ## Current Limitations
 
-- `schedule-batches` supports seed/random, local mutation, categorical DE, and GOMEA-style proposals; surrogate proposal is still planned.
-- Known rejected/unmapped candidate failures are not yet recorded as reusable negative cache entries.
+- Surrogate algorithms are not yet implemented.
 - The current bundled problem type and search-space domains target gfx1151 FP16 NT HHS first.
-- Keep `PredictionThreshold: 2.0` for gfx1151 unless Formocast support is added and validated.
+- Keep `PredictionThreshold: 2.0` to disable heuristics like Formocast and Origami in TensileLite, until they're accurate enough on gfx1151.

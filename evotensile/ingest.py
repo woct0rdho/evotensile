@@ -16,6 +16,7 @@ class IngestResult:
     status_counts: dict[str, int]
     solution_yamls: list[Path]
     unmatched_final_solutions: int = 0
+    rejected: int = 0
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -70,7 +71,30 @@ def ingest_results(
 
     inserted = 0
     unmapped = 0
+    rejected = 0
     status_counts: dict[str, int] = {}
+    if mapper is not None:
+        mapped_keys = {
+            (entry.shape_id, entry.candidate_hash) for entries in mapper.by_shape_solution.values() for entry in entries
+        }
+        for entry in manifest_entries:
+            if (entry.shape_id, entry.candidate_hash) in mapped_keys:
+                continue
+            status_counts["rejected"] = status_counts.get("rejected", 0) + 1
+            db.insert_evaluation(
+                shape_id=entry.shape_id,
+                candidate_hash=entry.candidate_hash,
+                run_id=run_id,
+                status="rejected",
+                version_name=version_name,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                solution_index=entry.solution_index,
+                raw_csv_row=json.dumps({"reason": "missing_from_final_solution_yaml"}, sort_keys=True),
+            )
+            inserted += 1
+            rejected += 1
+
     for path in csv_paths(paths, include_logs=include_logs):
         for row in parse_tensilelite_csv(path):
             if mapper is not None:
@@ -112,6 +136,7 @@ def ingest_results(
         status_counts=status_counts,
         solution_yamls=solution_yamls,
         unmatched_final_solutions=len(mapper.unmatched_solutions) if mapper is not None else 0,
+        rejected=rejected,
     )
 
 
@@ -122,6 +147,7 @@ def print_ingest_result(result: IngestResult, *, db_path: str | Path, manifest_p
     if result.unmatched_final_solutions:
         print(f"unmatched final solutions: {result.unmatched_final_solutions}")
     print(f"inserted evaluations: {result.inserted}")
+    print(f"rejected candidates: {result.rejected}")
     print(f"unmapped rows: {result.unmapped}")
     print("status counts:")
     for status in sorted(result.status_counts):

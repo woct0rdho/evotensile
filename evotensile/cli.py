@@ -253,10 +253,11 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
     for executed in result.executed_batches:
         ingest = executed.ingest
         inserted = ingest.inserted if ingest is not None else 0
+        rejected = ingest.rejected if ingest is not None else 0
         unmapped = ingest.unmapped if ingest is not None else 0
         print(
             f"executed {executed.planned.batch_index:04d}: build={executed.build_returncode} "
-            f"bench={executed.benchmark_returncode} inserted={inserted} unmapped={unmapped} "
+            f"bench={executed.benchmark_returncode} inserted={inserted} rejected={rejected} unmapped={unmapped} "
             f"yaml={executed.yaml_path}"
         )
     return 0

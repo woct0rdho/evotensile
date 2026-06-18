@@ -7,6 +7,9 @@ from .candidate import stable_hash
 from .yaml_writer import DEFAULT_GLOBAL_PARAMETERS, FP16_NT_HHS_PROBLEM_TYPE
 
 DEFAULT_VERSION_NAME = "unversioned"
+POSITIVE_CACHE_STATUSES = ("ok",)
+NEGATIVE_CACHE_STATUSES = ("rejected", "validation_fail", "build_failed")
+REUSABLE_CACHE_STATUSES = (*POSITIVE_CACHE_STATUSES, *NEGATIVE_CACHE_STATUSES)
 
 # Keep this explicit so changing unrelated YAML fields does not invalidate timing data.
 BENCHMARK_PROTOCOL_KEYS = [

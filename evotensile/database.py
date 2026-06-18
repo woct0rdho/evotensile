@@ -6,7 +6,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cache import DEFAULT_VERSION_NAME, CacheKey, normalize_version_name
+from .cache import (
+    DEFAULT_VERSION_NAME,
+    POSITIVE_CACHE_STATUSES,
+    REUSABLE_CACHE_STATUSES,
+    CacheKey,
+    normalize_version_name,
+)
 from .candidate import Candidate, Shape
 
 
@@ -277,7 +283,7 @@ class EvoTensileDB:
         benchmark_protocol_hash: str,
         shape_id: str,
         candidate_hash: str,
-        statuses: tuple[str, ...] = ("ok",),
+        statuses: tuple[str, ...] = POSITIVE_CACHE_STATUSES,
     ) -> int:
         placeholders = ",".join("?" for _ in statuses)
         with self.connection() as con:
@@ -303,7 +309,13 @@ class EvoTensileDB:
             ).fetchone()
             return int(row["n"])
 
-    def has_cached_evaluation(self, key: CacheKey, *, min_samples: int = 1) -> bool:
+    def has_cached_evaluation(
+        self,
+        key: CacheKey,
+        *,
+        min_samples: int = 1,
+        statuses: tuple[str, ...] = POSITIVE_CACHE_STATUSES,
+    ) -> bool:
         return (
             self.cached_evaluation_count(
                 version_name=key.version_name,
@@ -311,8 +323,32 @@ class EvoTensileDB:
                 benchmark_protocol_hash=key.benchmark_protocol_hash,
                 shape_id=key.shape_id,
                 candidate_hash=key.candidate_hash,
+                statuses=statuses,
             )
             >= min_samples
+        )
+
+    def has_reusable_cache_entry(self, key: CacheKey, *, min_ok_samples: int = 1) -> bool:
+        ok_count = self.cached_evaluation_count(
+            version_name=key.version_name,
+            problem_type_hash=key.problem_type_hash,
+            benchmark_protocol_hash=key.benchmark_protocol_hash,
+            shape_id=key.shape_id,
+            candidate_hash=key.candidate_hash,
+            statuses=POSITIVE_CACHE_STATUSES,
+        )
+        if ok_count >= min_ok_samples:
+            return True
+        return (
+            self.cached_evaluation_count(
+                version_name=key.version_name,
+                problem_type_hash=key.problem_type_hash,
+                benchmark_protocol_hash=key.benchmark_protocol_hash,
+                shape_id=key.shape_id,
+                candidate_hash=key.candidate_hash,
+                statuses=REUSABLE_CACHE_STATUSES,
+            )
+            > ok_count
         )
 
     def rank_evaluations(

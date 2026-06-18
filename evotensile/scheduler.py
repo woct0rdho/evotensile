@@ -214,7 +214,7 @@ def _is_cached(
 ) -> bool:
     if ignore_cache:
         return False
-    return db.has_cached_evaluation(
+    return db.has_reusable_cache_entry(
         CacheKey(
             version_name=version_name,
             problem_type_hash=problem_type_hash,
@@ -222,7 +222,7 @@ def _is_cached(
             shape_id=shape.id,
             candidate_hash=candidate.hash,
         ),
-        min_samples=min_samples,
+        min_ok_samples=min_samples,
     )
 
 
@@ -323,6 +323,32 @@ def write_batch_inputs(
     return yaml_path, manifest_path, run_dir
 
 
+def _record_batch_status(
+    db: EvoTensileDB,
+    batch: PlannedBatch,
+    *,
+    status: str,
+    run_id: str | None,
+    version_name: str,
+    problem_type_hash: str,
+    benchmark_protocol_hash: str,
+) -> int:
+    inserted = 0
+    for shape in batch.shapes:
+        for candidate in batch.candidates:
+            db.insert_evaluation(
+                shape_id=shape.id,
+                candidate_hash=candidate.hash,
+                run_id=run_id,
+                status=status,
+                version_name=version_name,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+            )
+            inserted += 1
+    return inserted
+
+
 def execute_schedule(
     db: EvoTensileDB,
     *,
@@ -407,6 +433,16 @@ def execute_schedule(
             extra_args=extra_args,
         )
         ingest: IngestResult | None = None
+        if bench_result is None and len(current.candidates) == 1:
+            _record_batch_status(
+                db,
+                current,
+                status="build_failed",
+                run_id=build_result.run_id,
+                version_name=version,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+            )
         if bench_result is not None:
             ingest = ingest_results(
                 db=db,

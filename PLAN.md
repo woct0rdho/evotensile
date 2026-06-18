@@ -266,7 +266,7 @@ Still needed:
 - shape-aware candidate proposal beyond optional `--proposal-shape-id` filtering;
 - richer crossover between near-winners;
 - generic refinement operators that do not bake in known-winner hindsight;
-- robust failure-aware candidate filtering.
+- richer failure-aware candidate filtering beyond the current reusable negative-cache statuses.
 
 For the pilot, a simple version is enough:
 
@@ -409,8 +409,11 @@ Done:
 - query cache identity/status/missing evaluations and rank only validation-passed observations;
 - schedule missing `ok` observations into candidate/shape batches and ingest each completed batch.
 
+Implemented now:
+- rejected final-YAML candidates, validation failures, and single-candidate build failures are reusable negative-cache entries that scheduler skips.
+
 Remaining:
-- classify invalid builds, timeouts, rejected candidates, and parse failures robustly beyond validation pass/fail rows.
+- classify timeouts, multi-candidate build failures, and parse failures robustly beyond validation pass/fail rows.
 
 ### M4: first pilot scan - next major milestone
 
@@ -449,7 +452,7 @@ Remaining:
 ## 14. Immediate Next Steps
 
 - Validate final-solution YAML mapping and `schedule-batches` on a real multi-candidate TensileLite run with known rejected/deduplicated candidates.
-- Record rejected/unmapped/build-failed candidates as reusable non-`ok` observations.
+- Add timeout and multi-candidate build-failure attribution once failure signatures are better understood.
 - Add non-hindsight refinement operators that learn from cached winners/near-winners without hard-coding the documented `8192^3` neighborhood.
 - Run the first 100-shape hot-loop pilot scan and produce a winner/near-winner report.
 - Add final export of selected candidate bundles for later GridBased logic generation/merge.
