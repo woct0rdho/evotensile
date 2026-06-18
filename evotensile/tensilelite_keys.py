@@ -17,7 +17,6 @@ EXACT_KEY = "Exact"
 # WorkGroup and StoreVectorWidth are handled separately or ignored.
 DIRECT_SOLUTION_MATCH_KEYS = frozenset(
     {
-        "1LDSBuffer",
         "AssertFree0ElementMultiple",
         "AssertFree1ElementMultiple",
         "AssertSummationElementMultiple",
@@ -37,7 +36,6 @@ DIRECT_SOLUTION_MATCH_KEYS = frozenset(
         "MIArchVgpr",
         "NumElementsPerBatchStore",
         "PrefetchGlobalRead",
-        "PrefetchLocalRead",
         "ScheduleGlobalRead",
         "ScheduleIterAlg",
         "ScheduleLocalWrite",
