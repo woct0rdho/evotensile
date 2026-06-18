@@ -43,10 +43,14 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
         shape_batch_size=2,
     )
 
-    assert len(batches) == 1
-    assert batches[0].missing_pairs == 3
-    assert batches[0].nominal_pairs == 4
-    assert batches[0].extra_pairs == 1
+    assert len(batches) == 2
+    assert sum(batch.missing_pairs for batch in batches) == 3
+    assert sum(batch.nominal_pairs for batch in batches) == 3
+    assert all(batch.extra_pairs == 0 for batch in batches)
+    assert [candidate.hash for candidate in batches[0].candidates] == [candidates[1].hash]
+    assert [shape.id for shape in batches[0].shapes] == [shapes[0].id]
+    assert [candidate.hash for candidate in batches[1].candidates] == [candidate.hash for candidate in candidates]
+    assert [shape.id for shape in batches[1].shapes] == [shapes[1].id]
 
 
 def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):

@@ -443,7 +443,7 @@ Remaining:
 ## 13. Pre-Pilot Review Notes
 
 Remaining risks to track before/during the first 100-shape run:
-- Pair-level cache inefficiency: scheduler batches are shape-granular rather than pair-granular, so resumed mixed candidate chunks can re-run cached candidate/shape pairs. This is correct but can waste benchmark time.
+- Pair-level cache inefficiency has a first fix: scheduler now groups shapes by exact missing candidate subset within each candidate/shape chunk, so planned batches do not deliberately re-run cached pairs. Future dense-merge heuristics may allow a small number of `ok` extras if compile overhead dominates.
 - APU thermal coupling: compile and benchmark are sequential, but a highly threaded compile can heat Strix Halo immediately before GPU timing. Default policy is still no deliberate compile/benchmark overlap and no deliberate cool-down sleep; reduce `--compile-threads` if pilot timings look thermally biased.
 - Multi-candidate build failure attribution: only single-candidate build failures are negative-cached today. If a multi-candidate batch fails, isolate with `--candidate-batch-size 1` before marking candidates bad.
 - Search-time validation is partial: `NumElementsToValidate=128` is acceptable for screening, but final winners should be retimed with stronger/full validation before trusting them.
