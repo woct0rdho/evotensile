@@ -60,7 +60,7 @@ def problem_type_hash(problem_type: dict[str, Any] | None = None) -> str:
 
 
 def parse_global_parameter_items(items: Iterable[str] | None) -> dict[str, Any]:
-    """Parse KEY=VALUE strings accepted by Tensile's --global-parameters."""
+    """Parse KEY=VALUE strings accepted by TensileLite's --global-parameters."""
     parsed: dict[str, Any] = {}
     for item in items or []:
         if "=" not in item:

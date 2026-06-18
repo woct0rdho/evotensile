@@ -12,8 +12,8 @@ from .cache import (
 from .candidate import Shape
 from .database import EvoTensileDB
 from .manifest import manifest_by_problem_solution, manifest_by_shape_solution, read_manifest, write_manifest
-from .parser import evaluation_status, find_result_csvs, parse_tensile_csv
-from .runner import DEFAULT_TENSILE_BIN, build_then_benchmark, run_tensile
+from .parser import evaluation_status, find_result_csvs, parse_tensilelite_csv
+from .runner import DEFAULT_TENSILELITE_BIN, build_then_benchmark, run_tensilelite
 from .search_space import (
     DOMAINS,
     MATRIX_INSTRUCTIONS,
@@ -22,7 +22,7 @@ from .search_space import (
     seed_and_random_candidates,
 )
 from .shapes import parse_shape, pilot_100_shapes
-from .yaml_writer import write_tensile_yaml
+from .yaml_writer import write_tensilelite_yaml
 
 
 def _parse_shapes(args: argparse.Namespace) -> list[Shape]:
@@ -72,7 +72,7 @@ def _add_cache_identity_args(parser: argparse.ArgumentParser) -> None:
         "--global-parameter",
         action="append",
         default=[],
-        help="Pass/consider a Tensile --global-parameters KEY=VALUE item; repeatable",
+        help="Pass/consider a TensileLite --global-parameters KEY=VALUE item; repeatable",
     )
 
 
@@ -99,7 +99,7 @@ def cmd_summarize_space(args: argparse.Namespace) -> int:
 def cmd_pilot_yaml(args: argparse.Namespace) -> int:
     candidates = _candidates(args)
     shapes = _parse_shapes(args)
-    out = write_tensile_yaml(args.output_yaml, candidates, shapes)
+    out = write_tensilelite_yaml(args.output_yaml, candidates, shapes)
     manifest_path = Path(args.manifest) if args.manifest else Path(args.output_yaml).with_suffix(".manifest.csv")
     write_manifest(manifest_path, candidates, shapes)
     print(f"Wrote {out}")
@@ -136,10 +136,10 @@ def cmd_run_yaml(args: argparse.Namespace) -> int:
     db = EvoTensileDB.connect(args.db) if args.db else None
     if db is not None:
         db.init()
-    result = run_tensile(
+    result = run_tensilelite(
         args.yaml,
         args.output_dir,
-        tensile_bin=args.tensile_bin,
+        tensilelite_bin=args.tensilelite_bin,
         db=db,
         use_cache=args.use_cache,
         build_only=args.build_only,
@@ -168,7 +168,7 @@ def cmd_build_bench_yaml(args: argparse.Namespace) -> int:
     build_result, bench_result = build_then_benchmark(
         args.yaml,
         args.output_dir,
-        tensile_bin=args.tensile_bin,
+        tensilelite_bin=args.tensilelite_bin,
         db=db,
         compile_threads=args.compile_threads,
         benchmark_threads=args.benchmark_threads,
@@ -290,7 +290,7 @@ def cmd_parse_csv(args: argparse.Namespace) -> int:
     total = 0
     status_counts: dict[str, int] = {}
     for path in paths:
-        rows = parse_tensile_csv(path)
+        rows = parse_tensilelite_csv(path)
         total += len(rows)
         ok = sum(1 for r in rows if evaluation_status(r, require_validation=not args.allow_unknown_validation) == "ok")
         for row in rows:
@@ -318,7 +318,7 @@ def cmd_ingest_csv(args: argparse.Namespace) -> int:
     unmapped = 0
     status_counts: dict[str, int] = {}
     for path in paths:
-        for row in parse_tensile_csv(path):
+        for row in parse_tensilelite_csv(path):
             entry = None
             if row.problem_index is not None and row.solution_index is not None:
                 entry = by_problem_solution.get((row.problem_index, row.solution_index))
@@ -387,11 +387,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("run-yaml", help="Run TensileLite on an existing YAML")
     s.add_argument("--yaml", required=True)
     s.add_argument("--output-dir", required=True)
-    s.add_argument("--tensile-bin", default=DEFAULT_TENSILE_BIN)
+    s.add_argument("--tensilelite-bin", default=DEFAULT_TENSILELITE_BIN)
     s.add_argument("--db")
     s.add_argument("--use-cache", action="store_true")
     s.add_argument("--build-only", action="store_true")
-    s.add_argument("--cpu-threads", type=int, default=None, help="Pass CpuThreads=N to Tensile")
+    s.add_argument("--cpu-threads", type=int, default=None, help="Pass CpuThreads=N to TensileLite")
     _add_cache_identity_args(s)
     s.add_argument("--extra-arg", action="append", default=[])
     s.set_defaults(func=cmd_run_yaml)
@@ -402,7 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--yaml", required=True)
     s.add_argument("--output-dir", required=True)
-    s.add_argument("--tensile-bin", default=DEFAULT_TENSILE_BIN)
+    s.add_argument("--tensilelite-bin", default=DEFAULT_TENSILELITE_BIN)
     s.add_argument("--db")
     s.add_argument("--compile-threads", type=int, default=-1)
     s.add_argument("--benchmark-threads", type=int, default=1)
@@ -439,13 +439,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--limit", type=int, default=20)
     s.set_defaults(func=cmd_rank_evals)
 
-    s = sub.add_parser("parse-csv", help="Parse Tensile CSV files, logs, or directories")
+    s = sub.add_parser("parse-csv", help="Parse TensileLite CSV files, logs, or directories")
     s.add_argument("paths", nargs="+")
     s.add_argument("--include-logs", action="store_true")
     s.add_argument("--allow-unknown-validation", action="store_true")
     s.set_defaults(func=cmd_parse_csv)
 
-    s = sub.add_parser("ingest-csv", help="Ingest validation-gated Tensile CSV/log rows into SQLite")
+    s = sub.add_parser("ingest-csv", help="Ingest validation-gated TensileLite CSV/log rows into SQLite")
     s.add_argument("paths", nargs="+")
     s.add_argument("--db", required=True)
     s.add_argument("--manifest", required=True)

@@ -3,7 +3,7 @@ from pathlib import Path
 from evotensile.cache import benchmark_protocol_hash_from_items, problem_type_hash
 from evotensile.database import EvoTensileDB
 from evotensile.manifest import manifest_by_problem_solution, read_manifest, write_manifest
-from evotensile.parser import evaluation_status, parse_tensile_csv
+from evotensile.parser import evaluation_status, parse_tensilelite_csv
 from evotensile.search_space import known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
 
@@ -15,7 +15,7 @@ def test_parse_csvwinner_validation_pass(tmp_path: Path):
         "0, 8192, 8192, 1, 8192, 1099511627776, 46698.1, 23545.0, 0, KernelA, 46698.1\n",
         encoding="utf-8",
     )
-    rows = parse_tensile_csv(path)
+    rows = parse_tensilelite_csv(path)
     assert len(rows) == 1
     row = rows[0]
     assert row.shape_id == "m8192_n8192_b1_k8192"
@@ -34,7 +34,7 @@ def test_parse_stdout_log_validation_fail(tmp_path: Path):
         '0,0/0,1/3,Contraction,"(512,256,1,1024)",KernelB,FAILED,10.5,1234.5\n',
         encoding="utf-8",
     )
-    rows = parse_tensile_csv(path)
+    rows = parse_tensilelite_csv(path)
     assert len(rows) == 1
     row = rows[0]
     assert row.shape_id == "m512_n256_b1_k1024"
@@ -61,7 +61,7 @@ def test_manifest_and_validation_gated_db(tmp_path: Path):
         '0,0/0,1/1,Contraction,"(512,128,1,256)",Kernel1,FAILED,11.0,900.0\n',
         encoding="utf-8",
     )
-    rows = parse_tensile_csv(csv_path)
+    rows = parse_tensilelite_csv(csv_path)
     db = EvoTensileDB.connect(tmp_path / "evals.sqlite")
     db.init()
     p_hash = problem_type_hash()

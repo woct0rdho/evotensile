@@ -78,7 +78,7 @@ def macro_tile(mi: list[int]) -> tuple[int, int]:
 
 
 def cheap_constraints(params: dict[str, Any]) -> bool:
-    """Cheap pre-Tensile constraints. Tensile still performs authoritative validation."""
+    """Cheap pre-TensileLite constraints. TensileLite still performs authoritative validation."""
     mi = params["MatrixInstruction"]
     mt0, mt1 = macro_tile(mi)
     if mt0 <= 0 or mt1 <= 0:

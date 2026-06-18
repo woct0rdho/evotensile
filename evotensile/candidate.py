@@ -27,7 +27,7 @@ def stable_hash(value: Any, *, prefix: str = "") -> str:
 
 @dataclass(frozen=True)
 class Candidate:
-    """A complete Tensile candidate bundle emitted as one Groups entry."""
+    """A complete TensileLite candidate bundle emitted as one Groups entry."""
 
     params: Mapping[str, Any]
     source: str = "unknown"

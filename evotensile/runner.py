@@ -14,7 +14,7 @@ from .cache import (
 )
 from .database import EvoTensileDB
 
-DEFAULT_TENSILE_BIN = "/home/wd/rocm-libraries/projects/hipblaslt/tensilelite/Tensile/bin/Tensile"
+DEFAULT_TENSILELITE_BIN = "/home/wd/rocm-libraries/projects/hipblaslt/tensilelite/Tensile/bin/Tensile"
 
 
 @dataclass
@@ -67,11 +67,11 @@ def _effective_protocol_hash(
     return benchmark_protocol_hash_from_items(global_parameters)
 
 
-def run_tensile(
+def run_tensilelite(
     yaml_path: str | Path,
     output_dir: str | Path,
     *,
-    tensile_bin: str | Path = DEFAULT_TENSILE_BIN,
+    tensilelite_bin: str | Path = DEFAULT_TENSILELITE_BIN,
     db: EvoTensileDB | None = None,
     use_cache: bool = False,
     build_only: bool = False,
@@ -96,7 +96,7 @@ def run_tensile(
         global_parameters, cpu_threads=cpu_threads, benchmark_protocol_hash=benchmark_protocol_hash
     )
 
-    cmd = [str(tensile_bin), str(yaml_path), str(output_dir)]
+    cmd = [str(tensilelite_bin), str(yaml_path), str(output_dir)]
     if use_cache:
         cmd.append("--use-cache")
     if build_only:
@@ -131,7 +131,7 @@ def run_tensile(
             run_id,
             yaml_path=str(yaml_path),
             output_dir=str(output_dir),
-            tensile_bin=str(tensile_bin),
+            tensilelite_bin=str(tensilelite_bin),
             status="ok" if result.ok else "failed",
             version_name=version,
             problem_type_hash=ptype_hash,
@@ -156,7 +156,7 @@ def build_then_benchmark(
     yaml_path: str | Path,
     output_dir: str | Path,
     *,
-    tensile_bin: str | Path = DEFAULT_TENSILE_BIN,
+    tensilelite_bin: str | Path = DEFAULT_TENSILELITE_BIN,
     db: EvoTensileDB | None = None,
     compile_threads: int | None = -1,
     benchmark_threads: int | None = 1,
@@ -168,10 +168,10 @@ def build_then_benchmark(
     env: dict[str, str] | None = None,
 ) -> tuple[RunResult, RunResult | None]:
     """Compile with --build-only, then benchmark serially with --use-cache."""
-    build_result = run_tensile(
+    build_result = run_tensilelite(
         yaml_path,
         output_dir,
-        tensile_bin=tensile_bin,
+        tensilelite_bin=tensilelite_bin,
         db=db,
         build_only=True,
         cpu_threads=compile_threads,
@@ -187,10 +187,10 @@ def build_then_benchmark(
 
     benchmark_globals = list(global_parameters or [])
     benchmark_globals.append("ParallelGpuExecution=1")
-    bench_result = run_tensile(
+    bench_result = run_tensilelite(
         yaml_path,
         output_dir,
-        tensile_bin=tensile_bin,
+        tensilelite_bin=tensilelite_bin,
         db=db,
         use_cache=True,
         cpu_threads=benchmark_threads,

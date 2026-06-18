@@ -143,7 +143,7 @@ def benchmark_problem(
     return [flow_lists(ptype), size_group]
 
 
-def tensile_config(
+def tensilelite_config(
     candidates: list[Candidate],
     shapes: list[Shape],
     *,
@@ -167,7 +167,7 @@ def tensile_config(
     }
 
 
-def write_tensile_yaml(
+def write_tensilelite_yaml(
     path: str | Path,
     candidates: list[Candidate],
     shapes: list[Shape],
@@ -178,7 +178,7 @@ def write_tensile_yaml(
 ) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = tensile_config(
+    data = tensilelite_config(
         candidates,
         shapes,
         global_parameters=global_parameters,

@@ -39,7 +39,7 @@ def write_manifest(path: str | Path, candidates: list[Candidate], shapes: list[S
                         "shape_id": shape.id,
                         "candidate_index": candidate_index,
                         "problem_index": problem_index,
-                        # One YAML per candidate in current EvoTensile output, so solution order follows group order.
+                        # One YAML group per candidate, so solution order follows group order.
                         "solution_index": candidate_index,
                         "params_json": json.dumps(candidate.canonical_params(), sort_keys=True, separators=(",", ":")),
                     }

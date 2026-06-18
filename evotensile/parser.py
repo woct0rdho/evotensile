@@ -184,7 +184,7 @@ def _parse_blocks(lines: list[str]) -> list[CsvEvaluation]:
     return out
 
 
-def parse_tensile_csv(path: str | Path) -> list[CsvEvaluation]:
+def parse_tensilelite_csv(path: str | Path) -> list[CsvEvaluation]:
     """Parse TensileLite CSV files or stdout logs with embedded CSV blocks."""
     path = Path(path)
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -192,7 +192,7 @@ def parse_tensile_csv(path: str | Path) -> list[CsvEvaluation]:
 
 
 def validation_status(validation: str | None, *, require_validation: bool = True) -> str:
-    """Map a Tensile validation field to an EvoTensile evaluation status."""
+    """Map a TensileLite validation field to an EvoTensile evaluation status."""
     if validation is None or not str(validation).strip():
         return "validation_unknown" if require_validation else "ok"
     value = str(validation).strip().lower()

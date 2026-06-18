@@ -1,6 +1,6 @@
 from evotensile.search_space import known_seed_candidates, random_candidates
 from evotensile.shapes import pilot_100_shapes
-from evotensile.yaml_writer import tensile_config
+from evotensile.yaml_writer import tensilelite_config
 
 
 def test_pilot_shape_count():
@@ -23,7 +23,7 @@ def test_random_candidate_count():
 def test_yaml_shape():
     cands = known_seed_candidates()[:2]
     shapes = pilot_100_shapes()[:3]
-    data = tensile_config(cands, shapes)
+    data = tensilelite_config(cands, shapes)
     assert "BenchmarkProblems" in data
     group = data["BenchmarkProblems"][0][1]["ForkParameters"][0]["Groups"][0]
     assert len(group) == 2

@@ -1,6 +1,8 @@
 # EvoTensile
 
-EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It proposes complete Tensile candidate bundles, emits them as TensileLite `Groups`, runs TensileLite as the evaluator, and stores reproducible timing/cache metadata for iterative search.
+Work in progress. README is AI-generated.
+
+EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, runs TensileLite as the evaluator, and stores reproducible timing/cache metadata for iterative search.
 
 The current bundled target configuration is gfx1151 FP16 NT HHS GridBased GEMM tuning, but the core pieces are intended to stay generic: candidate hashing, shape handling, YAML emission, runner orchestration, protocol hashing, and result caching.
 
@@ -78,10 +80,10 @@ python3 -m evotensile.cli cache-missing \
   --limit-shapes 100
 ```
 
-Ingest validation-gated Tensile CSV/log rows, then rank only passing observations:
+Ingest validation-gated TensileLite CSV/log rows, then rank only passing observations:
 
 ```bash
-python3 -m evotensile.cli ingest-csv out/tensile_run_000 \
+python3 -m evotensile.cli ingest-csv out/tensilelite_run_000 \
   --db out/evotensile.sqlite \
   --manifest out/pilot.manifest.csv \
   --version-name gfx1151_hotloop_v0 \
@@ -100,7 +102,7 @@ Run an existing YAML directly:
 ```bash
 python3 -m evotensile.cli run-yaml \
   --yaml out/pilot.yaml \
-  --output-dir out/tensile_run_000 \
+  --output-dir out/tensilelite_run_000 \
   --db out/evotensile.sqlite \
   --version-name gfx1151_hotloop_v0
 ```
@@ -110,18 +112,18 @@ Compile first, then benchmark serially with TensileLite cache reuse:
 ```bash
 python3 -m evotensile.cli build-bench-yaml \
   --yaml out/pilot.yaml \
-  --output-dir out/tensile_run_000 \
+  --output-dir out/tensilelite_run_000 \
   --db out/evotensile.sqlite \
   --version-name gfx1151_hotloop_v0 \
   --compile-threads -1 \
   --benchmark-threads 1
 ```
 
-Additional Tensile global parameters can be included with repeated `--global-parameter KEY=VALUE`. Benchmark-affecting global parameters are included in the benchmark-protocol hash; compile-only settings such as `CpuThreads` are intentionally excluded.
+Additional TensileLite global parameters can be included with repeated `--global-parameter KEY=VALUE`. Benchmark-affecting global parameters are included in the benchmark-protocol hash; compile-only settings such as `CpuThreads` are intentionally excluded.
 
 ## Current Limitations
 
-- Candidate/solution mapping currently assumes generated solution order follows EvoTensile `Groups` order; rejected/deduplicated solutions may require stronger mapping from real Tensile metadata.
+- Candidate/solution mapping currently assumes generated solution order follows EvoTensile `Groups` order; rejected/deduplicated solutions may require stronger mapping from real TensileLite metadata.
 - The batch scheduler for compile-only candidate batches plus serial benchmark execution is not implemented yet.
 - Search modules are prototype proposal engines; they are not yet wired into a full closed-loop scheduler.
 - The current bundled problem type and search-space domains target gfx1151 FP16 NT HHS first.

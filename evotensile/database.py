@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS runs (
   benchmark_protocol_hash TEXT,
   yaml_path TEXT,
   output_dir TEXT,
-  tensile_bin TEXT,
+  tensilelite_bin TEXT,
   status TEXT NOT NULL,
   returncode INTEGER,
   stdout_path TEXT,
@@ -169,7 +169,7 @@ class EvoTensileDB:
         *,
         yaml_path: str | None,
         output_dir: str | None,
-        tensile_bin: str | None,
+        tensilelite_bin: str | None,
         status: str,
         version_name: str | None = None,
         problem_type_hash: str | None = None,
@@ -184,7 +184,7 @@ class EvoTensileDB:
                 """
                 INSERT OR REPLACE INTO runs
                   (run_id, timestamp, version_name, problem_type_hash, benchmark_protocol_hash,
-                   yaml_path, output_dir, tensile_bin, status, returncode, stdout_path, stderr_path,
+                   yaml_path, output_dir, tensilelite_bin, status, returncode, stdout_path, stderr_path,
                    metadata_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -196,7 +196,7 @@ class EvoTensileDB:
                     benchmark_protocol_hash,
                     yaml_path,
                     output_dir,
-                    tensile_bin,
+                    tensilelite_bin,
                     status,
                     returncode,
                     stdout_path,
