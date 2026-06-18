@@ -1,3 +1,4 @@
+import math
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +14,7 @@ from .search.differential_evolution import differential_evolution_candidates
 from .search.gomea import gomea_candidates, gomea_neighborhood_candidates
 from .search.local_search import mutate_elites
 from .search.random_search import initial_random_batch
+from .shapes import shape_from_id
 from .yaml_writer import write_tensilelite_yaml
 
 
@@ -72,6 +74,8 @@ DEFAULT_ELITE_COUNT = 8
 DEFAULT_LOCAL_COUNT = 32
 DEFAULT_DE_COUNT = 32
 DEFAULT_GOMEA_COUNT = 64
+DEFAULT_TRANSFER_SHAPES = 4
+DEFAULT_TRANSFER_PER_SHAPE = 2
 DEFAULT_MUTATION_RATE = 0.25
 DEFAULT_CROSSOVER_RATE = 0.8
 DEFAULT_RANDOM_GENE_RATE = 0.1
@@ -104,6 +108,77 @@ def _ranked_elites(
     return db.get_candidates([summary.candidate_hash for summary in summaries])
 
 
+def _shape_distance(left: Shape, right: Shape) -> float:
+    left_features = left.features()
+    right_features = right.features()
+    keys = ("log2_m", "log2_n", "log2_k", "log2_m_over_n", "log2_k_over_m", "log2_k_over_n")
+    return math.sqrt(sum((left_features[key] - right_features[key]) ** 2 for key in keys))
+
+
+def _nearest_shape_ids(targets: list[Shape], source_shape_ids: set[str], *, limit: int) -> list[str]:
+    if limit <= 0 or not targets or not source_shape_ids:
+        return []
+    source_shapes: list[Shape] = []
+    target_ids = {shape.id for shape in targets}
+    for shape_id in source_shape_ids:
+        if shape_id in target_ids:
+            continue
+        try:
+            source_shapes.append(shape_from_id(shape_id))
+        except ValueError:
+            continue
+
+    best_by_shape: dict[str, float] = {}
+    for source in source_shapes:
+        # Use nearest target distance so a 100-shape run imports winners from neighborhoods that cover the grid.
+        best_by_shape[source.id] = min(_shape_distance(source, target) for target in targets)
+    return [shape_id for shape_id, _ in sorted(best_by_shape.items(), key=lambda item: (item[1], item[0]))[:limit]]
+
+
+def _transfer_elites(
+    db: EvoTensileDB,
+    *,
+    target_shapes: list[Shape],
+    version_name: str | None,
+    problem_type_hash: str | None,
+    benchmark_protocol_hash: str | None,
+    nearest_shape_count: int,
+    per_shape: int,
+) -> list[Candidate]:
+    if nearest_shape_count <= 0 or per_shape <= 0 or not target_shapes:
+        return []
+    summaries = db.rank_evaluations(
+        version_name=version_name,
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+        min_samples=1,
+    )
+    source_shape_ids = {summary.shape_id for summary in summaries}
+    nearest_shape_ids = _nearest_shape_ids(target_shapes, source_shape_ids, limit=nearest_shape_count)
+    hashes: list[str] = []
+    seen_hashes: set[str] = set()
+    for source_shape_id in nearest_shape_ids:
+        source_summaries = db.rank_evaluations(
+            version_name=version_name,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            shape_id=source_shape_id,
+            min_samples=1,
+            limit=per_shape,
+        )
+        for summary in source_summaries:
+            if summary.candidate_hash in seen_hashes:
+                continue
+            hashes.append(summary.candidate_hash)
+            seen_hashes.add(summary.candidate_hash)
+    transfer = []
+    for candidate in db.get_candidates(hashes):
+        transfer.append(
+            Candidate(params=candidate.canonical_params(), source="transfer", parent_hashes=(candidate.hash,))
+        )
+    return transfer
+
+
 def propose_candidates(
     db: EvoTensileDB,
     *,
@@ -114,6 +189,9 @@ def propose_candidates(
     problem_type_hash: str | None = None,
     benchmark_protocol_hash: str | None = None,
     shape_id: str | None = None,
+    target_shapes: list[Shape] | None = None,
+    transfer_shape_count: int = DEFAULT_TRANSFER_SHAPES,
+    transfer_per_shape: int = DEFAULT_TRANSFER_PER_SHAPE,
     elite_count: int = DEFAULT_ELITE_COUNT,
     local_count: int = DEFAULT_LOCAL_COUNT,
     de_count: int = DEFAULT_DE_COUNT,
@@ -128,9 +206,6 @@ def propose_candidates(
 
     candidates: list[Candidate] = []
     include_random = proposal.startswith("seed-random") or proposal == "evolutionary"
-    if include_random:
-        candidates.extend(initial_random_batch(num_random, seed=seed))
-
     needs_elites = proposal in {
         "local",
         "seed-random-local",
@@ -152,6 +227,26 @@ def propose_candidates(
         if needs_elites
         else []
     )
+    transfer_elites = (
+        _transfer_elites(
+            db,
+            target_shapes=target_shapes or [],
+            version_name=version_name,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            nearest_shape_count=transfer_shape_count,
+            per_shape=transfer_per_shape,
+        )
+        if needs_elites and shape_id is None
+        else []
+    )
+    if transfer_elites:
+        # Nearby winners should be evaluated before random restarts, especially when candidate batches are truncated.
+        candidates.extend(transfer_elites)
+        elites = _dedupe_candidates([*elites, *transfer_elites])
+
+    if include_random:
+        candidates.extend(initial_random_batch(num_random, seed=seed))
 
     if proposal in {"local", "seed-random-local", "evolutionary"} and local_count > 0:
         candidates.extend(mutate_elites(elites, count=local_count, seed=seed + 1009, mutation_rate=mutation_rate))

@@ -247,6 +247,7 @@ Index `(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, cand
 
 Implemented now:
 - deterministic conservative seeds, including large-square, TLDS2/LDS-pad, and small/skinny checked-in-style NT seed families;
+- nearest-shape winner transfer from validation-passed cached observations, defaulting to `4` nearby shapes and `2` top candidates per shape;
 - random valid generator;
 - local mutation around cached DB elites;
 - scheduler proposal modes for seed/random, local-only, seed/random plus local refinement, categorical DE, GOMEA, and combined evolutionary batches;
@@ -255,7 +256,7 @@ Implemented now:
 Still planned:
 - stratified generator over macro-tile / depth / GSU / schedule families;
 - shape-aware MI/GSU generator inspired by TensileLite's beta `tensile_config_generator.py`;
-- configurable seed packs for known winners, transferred TN/NN candidates, and nearest-shape winners.
+- configurable seed packs for known winners and transferred TN/NN candidates.
 
 ### Phase B: local/evolutionary search
 
@@ -263,10 +264,10 @@ Implemented now:
 - categorical DE-style mutation/crossover over encoded TensileLite domain values;
 - GOMEA-style linkage neighborhoods and linkage-tree mixing inspired by `~/rocm_wmma_gemm/rocm_wmma_gemm/config/tune.py`;
 - generic seed/random plus GOMEA reproduction of the documented `8192^3` winner within the first 32 proposals, without inserting the documented winner or using the hindsight-directed operator;
-- `schedule-batches` now defaults to the recommended 100-shape first-pass settings: `--proposal seed-random-gomea`, `--num-random 64`, and `--gomea-count 64`.
+- `schedule-batches` now defaults to the recommended 100-shape first-pass settings: nearest-shape transfer, `--proposal seed-random-gomea`, `--num-random 64`, and `--gomea-count 64`.
 
 Still needed:
-- shape-aware candidate proposal beyond optional `--proposal-shape-id` filtering;
+- richer shape-aware candidate proposal beyond nearest-shape winner transfer and optional `--proposal-shape-id` filtering;
 - richer crossover between near-winners;
 - generic refinement operators that do not bake in known-winner hindsight;
 - richer failure-aware candidate filtering beyond the current reusable negative-cache statuses.
@@ -336,7 +337,7 @@ For finer grids:
 - Represent each shape in log/ratio feature space.
 - Find nearest tuned shapes.
 - Seed new shape with:
-  - nearest winners;
+  - nearest winners, implemented in `schedule-batches` through `--transfer-shapes` and `--transfer-per-shape`;
   - nearest near-winners;
   - mutations around nearest winners;
   - a few global robust candidates;
@@ -438,7 +439,7 @@ Remaining:
 
 ### M7: transfer to finer grids
 
-- Add nearest-shape seeding.
+- Nearest-shape seeding is implemented for cached validation-passed winners.
 - Add smaller-budget local refinement for new shapes.
 - Add surrogate-assisted proposal once enough data exists.
 
@@ -447,6 +448,7 @@ Remaining:
 Remaining risks to track before/during the first 100-shape run:
 - The `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md` plan is still applicable: start with the 100-shape NT HHS non-AuxH grid, use hot-loop retiming from `tensile_fp16_nt_hhs.md`, and treat the `8192^3` winner as a center-point seed/evidence rather than a shape-generic conclusion.
 - Search-space review expanded the first-pass domain from the grid vocabulary plus observed NT artifacts: TLDS2/LDS-pad profiles, `NumElementsPerBatchStore=0/14/20/24/32`, `StoreSyncOpt=1/2/4`, `GroupLoadStore=True`, WGM `4/16`, stagger `16/64`, and checked-in-style small/skinny seed families.
+- Nearest-shape transfer now seeds each proposal from validation-passed winners of nearby cached shapes before random restarts, which helps staged 100-shape grid tuning reuse earlier shape results without trusting validation-failed or unknown rows.
 - Pair-level cache inefficiency has a first fix: scheduler now groups shapes by exact missing candidate subset within each candidate/shape chunk, so planned batches do not deliberately re-run cached pairs. Future dense-merge heuristics may allow a small number of `ok` extras if compile overhead dominates.
 - APU thermal coupling: compile and benchmark are sequential, but a highly threaded compile can heat Strix Halo immediately before GPU timing. Default policy is still no deliberate compile/benchmark overlap and no deliberate cool-down sleep; reduce `--compile-threads` if pilot timings look thermally biased.
 - Multi-candidate build failure attribution: only single-candidate build failures are negative-cached today. If a multi-candidate batch fails, isolate with `--candidate-batch-size 1` before marking candidates bad.

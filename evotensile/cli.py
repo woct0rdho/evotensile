@@ -17,6 +17,8 @@ from .scheduler import (
     DEFAULT_NUM_RANDOM,
     DEFAULT_PROPOSAL,
     DEFAULT_RANDOM_GENE_RATE,
+    DEFAULT_TRANSFER_PER_SHAPE,
+    DEFAULT_TRANSFER_SHAPES,
     PROPOSAL_MODES,
     execute_schedule,
     propose_candidates,
@@ -192,6 +194,7 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
     version = normalize_version_name(args.version_name)
     problem_hash = _problem_hash_arg(args)
     protocol_hash = _protocol_hash_arg(args)
+    shapes = _parse_shapes(args)
     candidates = propose_candidates(
         db,
         proposal=args.proposal,
@@ -201,6 +204,9 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
         shape_id=args.proposal_shape_id,
+        target_shapes=shapes,
+        transfer_shape_count=args.transfer_shapes,
+        transfer_per_shape=args.transfer_per_shape,
         elite_count=args.elite_count,
         local_count=args.local_count,
         de_count=args.de_count,
@@ -209,7 +215,6 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         crossover_rate=args.crossover_rate,
         random_gene_rate=args.random_gene_rate,
     )
-    shapes = _parse_shapes(args)
     result = execute_schedule(
         db,
         shapes=shapes,
@@ -282,6 +287,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cache_identity_args(s)
     s.add_argument("--proposal", choices=PROPOSAL_MODES, default=DEFAULT_PROPOSAL)
     s.add_argument("--proposal-shape-id", default=None, help="Limit cached elite selection to one shape id")
+    s.add_argument(
+        "--transfer-shapes",
+        type=int,
+        default=DEFAULT_TRANSFER_SHAPES,
+        help="Seed from winners of this many nearest already-tuned shapes; 0 disables transfer",
+    )
+    s.add_argument(
+        "--transfer-per-shape",
+        type=int,
+        default=DEFAULT_TRANSFER_PER_SHAPE,
+        help="Seed this many top candidates from each nearest shape",
+    )
     s.add_argument("--elite-count", type=int, default=DEFAULT_ELITE_COUNT)
     s.add_argument("--local-count", type=int, default=DEFAULT_LOCAL_COUNT)
     s.add_argument("--de-count", type=int, default=DEFAULT_DE_COUNT)
