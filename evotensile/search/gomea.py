@@ -80,11 +80,14 @@ def _nearest_elite(genome: tuple[int, ...], elites: Sequence[tuple[int, ...]]) -
 
 
 _PRIORITY_GROUPS = (
+    ("ScheduleIterAlg", "StorePriorityOpt"),
     ("ScheduleIterAlg", "StorePriorityOpt", "NumElementsPerBatchStore"),
-    ("StorePriorityOpt", "NumElementsPerBatchStore"),
-    ("PrefetchGlobalRead", "PrefetchLocalRead"),
-    ("SourceSwap", "ClusterLocalRead"),
-    ("GlobalReadVectorWidthA", "GlobalReadVectorWidthB"),
+    ("StorePriorityOpt", "NumElementsPerBatchStore", "StoreSyncOpt", "GroupLoadStore"),
+    ("PrefetchGlobalRead", "PrefetchLocalRead", "1LDSBuffer", "TransposeLDS"),
+    ("SourceSwap", "ClusterLocalRead", "TransposeLDS"),
+    ("GlobalReadVectorWidthA", "GlobalReadVectorWidthB", "VectorWidthB"),
+    ("LdsBlockSizePerPadA", "LdsBlockSizePerPadB", "LdsPadA", "LdsPadB"),
+    ("WorkGroupMapping", "StaggerU", "StaggerUMapping"),
     ("MatrixInstruction", "DepthU"),
     ("GlobalSplitU", "DepthU"),
 )

@@ -3,7 +3,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from evotensile.candidate import Candidate, canonical_json
-from evotensile.search_space import DOMAINS, make_candidate
+from evotensile.search_space import DOMAINS, make_candidate, repair_linked_overrides
 
 PARAM_NAMES = tuple(DOMAINS.keys())
 _VALUE_TO_INDEX: dict[str, dict[str, int]] = {
@@ -40,8 +40,13 @@ def genome_to_overrides(genome: Sequence[int]) -> dict[str, Any]:
     return {name: DOMAINS[name][idx] for name, idx in zip(PARAM_NAMES, genome, strict=True)}
 
 
-def genome_to_candidate(genome: Sequence[int], *, source: str, parents: Iterable[str] = ()) -> Candidate:
-    return make_candidate(genome_to_overrides(genome), source=source, parents=parents)
+def genome_to_candidate(
+    genome: Sequence[int], *, source: str, parents: Iterable[str] = (), repair: bool = True
+) -> Candidate:
+    overrides = genome_to_overrides(genome)
+    if repair:
+        overrides = repair_linked_overrides(overrides)
+    return make_candidate(overrides, source=source, parents=parents)
 
 
 def random_genome(rng: random.Random) -> tuple[int, ...]:

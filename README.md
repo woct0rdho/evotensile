@@ -13,6 +13,7 @@ See `PLAN.md` for the current target-specific tuning plan and remaining work.
 - Candidate and shape primitives with stable canonical hashes.
 - Exact-shape helpers and the current 100-shape pilot grid generator.
 - Candidate generation from deterministic seeds, random valid configs, local mutations, categorical DE, and GOMEA-style linkage neighborhoods.
+- Expanded gfx1151 FP16 NT HHS domains for the 100-shape grid, including artifact-backed TLDS/LDS-pad, store-batch, store-sync, WGM/stagger, and small/skinny tile seed families.
 - TensileLite YAML generation using one `ForkParameters: Groups` list of complete candidate dictionaries.
 - Hot-loop benchmark defaults for steady-state inference/training throughput.
 - TensileLite subprocess runner used by the cache-aware scheduler.

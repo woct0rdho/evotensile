@@ -6,20 +6,12 @@ from evotensile.search.encoding import (
     candidate_to_genome,
     dedupe_candidates,
     genome_to_candidate,
-    random_genome,
 )
-from evotensile.search_space import DOMAINS
+from evotensile.search_space import DOMAINS, random_candidate
 
 
 def _random_valid_genome(rng: random.Random) -> tuple[int, ...]:
-    for _ in range(1000):
-        genome = random_genome(rng)
-        try:
-            genome_to_candidate(genome, source="de_probe")
-        except ValueError:
-            continue
-        return genome
-    raise RuntimeError("failed to sample a valid DE genome")
+    return candidate_to_genome(random_candidate(rng, source="de_probe"))
 
 
 def _mutate_gene(
