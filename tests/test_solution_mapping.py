@@ -112,4 +112,4 @@ def test_cli_ingest_maps_deduped_candidates_from_final_yaml(tmp_path: Path):
     )
     assert rc == 0
     db = EvoTensileDB.connect(db_path)
-    assert db.cache_summary(version_name="vtest") == {"ok": 2}
+    assert db.cache_summary(version_name="vtest") == {"ok": 2, "rejected": 1}

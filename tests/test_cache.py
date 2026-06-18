@@ -44,4 +44,36 @@ def test_db_cache_key_lookup(tmp_path):
         time_us=123.0,
     )
     assert db.has_cached_evaluation(key)
+    assert db.has_reusable_cache_entry(key)
     assert db.cache_summary(version_name="v0") == {"ok": 1}
+
+
+def test_negative_cache_statuses_are_reusable_but_not_rankable(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
+    db.init()
+    candidate = known_seed_candidates()[0]
+    shape = pilot_100_shapes()[0]
+    p_hash = problem_type_hash()
+    b_hash = benchmark_protocol_hash_from_items([])
+    key = CacheKey(
+        version_name="v0",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+    )
+
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+        run_id="run_test",
+        status="rejected",
+        version_name="v0",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+
+    assert not db.has_cached_evaluation(key)
+    assert db.has_reusable_cache_entry(key)
+    assert db.rank_evaluations(version_name="v0") == []
+    assert db.cache_summary(version_name="v0") == {"rejected": 1}
