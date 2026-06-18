@@ -62,16 +62,22 @@ FP16_NT_HHS_PROBLEM_TYPE: dict[str, Any] = {
 }
 
 
+HOT_LOOP_BENCHMARK_PARAMETERS: dict[str, Any] = {
+    "KernelTime": True,
+    "PreciseKernelTime": True,
+    "NumWarmups": 10,
+    "NumBenchmarks": 10,
+    "EnqueuesPerSync": 10,
+    "SyncsPerBenchmark": 1,
+    "SleepPercent": 0,
+    "HardwareMonitor": False,
+}
+
+
 DEFAULT_GLOBAL_PARAMETERS: dict[str, Any] = {
     "MinimumRequiredVersion": "0.0.0",
     "RuntimeLanguage": "HIP",
-    "KernelTime": True,
-    "PreciseKernelTime": True,
-    "NumWarmups": 2,
-    "NumBenchmarks": 1,
-    "EnqueuesPerSync": 1,
-    "SyncsPerBenchmark": 1,
-    "SleepPercent": 0,
+    **HOT_LOOP_BENCHMARK_PARAMETERS,
     "DataInitTypeA": 3,
     "DataInitTypeB": 3,
     "DataInitTypeC": 3,

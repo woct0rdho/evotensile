@@ -19,6 +19,7 @@ BENCHMARK_PROTOCOL_KEYS = [
     "MaxEnqueuesPerSync",
     "MinFlopsPerSync",
     "SleepPercent",
+    "HardwareMonitor",
     "NumElementsToValidate",
     "NumElementsToValidateWinner",
     "DataInitTypeA",

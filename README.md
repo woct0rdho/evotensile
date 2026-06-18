@@ -1,44 +1,55 @@
 # EvoTensile
 
-EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt.  It generates curated candidate batches as TensileLite `Groups`, runs TensileLite as the evaluator, stores all observations, and iteratively searches the mixed categorical Tensile kernel-parameter space.
+EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It proposes complete Tensile candidate bundles, emits them as TensileLite `Groups`, runs TensileLite as the evaluator, and stores reproducible timing/cache metadata for iterative search.
 
-Initial target: gfx1151 FP16 NT HHS non-AuxH GridBased GEMM tuning.
+The current bundled target configuration is gfx1151 FP16 NT HHS GridBased GEMM tuning, but the core pieces are intended to stay generic: candidate hashing, shape handling, YAML emission, runner orchestration, protocol hashing, and result caching.
 
-See [`PLAN.md`](PLAN.md) for the full design.
+See `PLAN.md` for the current target-specific tuning plan and remaining work.
 
-## Current MVP
+## Implemented Capabilities
 
-This initial scaffold supports:
+- Candidate and shape primitives with stable canonical hashes.
+- Exact-shape helpers and the current 100-shape pilot grid generator.
+- Candidate generation from deterministic seeds plus random valid configs.
+- Prototype search modules for random, local mutation, differential evolution, GOMEA-style mixing, and LFBO-style surrogate search.
+- TensileLite YAML generation using one `ForkParameters: Groups` list of complete candidate dictionaries.
+- Hot-loop benchmark defaults for steady-state inference/training throughput.
+- TensileLite subprocess runner with `run-yaml` and compile-then-serial-benchmark `build-bench-yaml` flows.
+- SQLite schema for candidates, shapes, runs, and evaluations.
+- Manual timing-cache namespace via `--version-name`, plus problem-type and benchmark-protocol hashes.
+- Cache inspection helpers for identity, status summaries, and missing candidate/shape evaluations.
+- Tolerant CSV parser and `parse-csv` command for inspecting TensileLite result files.
 
-- canonical candidate objects and stable hashes;
-- the 100-shape pilot grid;
-- deterministic seed candidates plus random candidates;
-- YAML generation for TensileLite using `ForkParameters: Groups`;
-- SQLite schema for candidates/shapes/runs/evaluations;
-- a CLI dry-run flow that writes a pilot YAML without invoking TensileLite.
+## Benchmark Protocol
 
-## Quick start
+The default generated YAML uses hot-loop / steady-state timing:
+
+```yaml
+NumWarmups: 10
+NumBenchmarks: 10
+EnqueuesPerSync: 10
+SyncsPerBenchmark: 1
+SleepPercent: 0
+HardwareMonitor: False
+```
+
+Cold-loop behavior is intentionally not tracked during tuning because it increases tuning time and optimizes for first-run or bursty-idle effects rather than sustained throughput. Analyze cold-loop behavior later only if first-request latency becomes important.
+
+## Quick Start
 
 From the repo root:
+
+```bash
+python3 -m evotensile.cli summarize-space --num-random 128
+```
+
+Generate a TensileLite YAML:
 
 ```bash
 python3 -m evotensile.cli pilot-yaml \
   --output-yaml out/pilot.yaml \
   --num-random 32 \
   --seed 1
-```
-
-Or, if installed editable:
-
-```bash
-pip install -e .
-evotensile pilot-yaml --output-yaml out/pilot.yaml --num-random 32
-```
-
-Generate a short summary:
-
-```bash
-python3 -m evotensile.cli summarize-space --num-random 128
 ```
 
 Initialize a DB and register generated candidates/shapes:
@@ -48,22 +59,53 @@ python3 -m evotensile.cli init-db --db out/evotensile.sqlite
 python3 -m evotensile.cli register-pilot --db out/evotensile.sqlite --num-random 64
 ```
 
+Print the cache identity for a benchmark protocol:
+
+```bash
+python3 -m evotensile.cli cache-key \
+  --version-name gfx1151_hotloop_v0
+```
+
+Check which generated evaluations are missing from the cache:
+
+```bash
+python3 -m evotensile.cli cache-missing \
+  --db out/evotensile.sqlite \
+  --version-name gfx1151_hotloop_v0 \
+  --num-random 64 \
+  --limit-shapes 100
+```
+
 ## Running TensileLite
 
-Runner integration is intentionally conservative in the MVP.  First generate YAML, inspect it, then run TensileLite manually or via the runner once paths/protocol are confirmed.
-
-Typical future command shape:
+Run an existing YAML directly:
 
 ```bash
 python3 -m evotensile.cli run-yaml \
   --yaml out/pilot.yaml \
   --output-dir out/tensile_run_000 \
-  --tensile-bin /home/wd/rocm-libraries/projects/hipblaslt/tensilelite/Tensile/bin/Tensile \
-  --db out/evotensile.sqlite
+  --db out/evotensile.sqlite \
+  --version-name gfx1151_hotloop_v0
 ```
 
-## Notes
+Compile first, then benchmark serially with TensileLite cache reuse:
 
-- Keep `PredictionThreshold: 2.0` for gfx1151 unless Formocast support is added/validated.
-- Candidates are emitted as complete dictionaries inside one `Groups` list to avoid Cartesian expansion.
-- This project is an orchestration layer; it should not patch TensileLite until the external loop is proven.
+```bash
+python3 -m evotensile.cli build-bench-yaml \
+  --yaml out/pilot.yaml \
+  --output-dir out/tensile_run_000 \
+  --db out/evotensile.sqlite \
+  --version-name gfx1151_hotloop_v0 \
+  --compile-threads -1 \
+  --benchmark-threads 1
+```
+
+Additional Tensile global parameters can be included with repeated `--global-parameter KEY=VALUE`. Benchmark-affecting global parameters are included in the benchmark-protocol hash; compile-only settings such as `CpuThreads` are intentionally excluded.
+
+## Current Limitations
+
+- Real CSV-to-DB evaluation ingestion still needs a candidate/solution mapping sidecar.
+- The batch scheduler for compile-only candidate batches plus serial benchmark execution is not implemented yet.
+- Search modules are prototype proposal engines; they are not yet wired into a full closed-loop scheduler.
+- The current bundled problem type and search-space domains target gfx1151 FP16 NT HHS first.
+- Keep `PredictionThreshold: 2.0` for gfx1151 unless Formocast support is added and validated.

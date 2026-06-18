@@ -72,48 +72,20 @@ The pilot may benchmark more than 10 configs per shape.  Initial budget target: 
 5. **Search data is valuable**
    The pilot should produce a reusable dataset for later nearest-shape seeding and surrogate training.
 
-6. **Final winners are retimed**
-   Search-time timings can be cheaper/noisier.  Final top candidates must be validated and retimed with a stricter protocol.
+6. **Hot-loop throughput is the tuning objective**
+   Search-time and final timings should both use a hot-loop protocol that represents steady-state long-running inference/training throughput.  Cold-loop behavior is not tracked during tuning because it increases wall time; analyze it later only if first-request or bursty-idle latency becomes important.
 
-## 5. Proposed Repository Layout
+## 5. Current Implementation Status
 
-```text
-evotensile/
-  PLAN.md
-  README.md
-  pyproject.toml
-  evotensile/
-    __init__.py
-    candidate.py          # canonical candidate representation and hashing
-    search_space.py       # NT HHS gfx1151 parameter domains and constraints
-    shapes.py             # pilot grid, large grid, bucketing, nearest neighbors
-    yaml_writer.py        # TensileLite YAML writer using ForkParameters/Groups
-    runner.py             # TensileLite subprocess runner
-    parser.py             # parse CSV/YAML/log outputs
-    database.py           # SQLite/DuckDB persistence layer
-    metrics.py            # timing, median, variance, TFLOP/s, validation status
-    scheduler.py          # batch planning and resumable execution
-    report.py             # summarize winners and failures
-    export.py             # export winner YAML / candidate bundles
-    search/
-      __init__.py
-      random_search.py
-      stratified.py
-      local_search.py
-      differential_evolution.py
-      gomea.py
-      surrogate_lfbo.py
-  configs/
-    fp16_nt_hhs_gfx1151.yaml
-  scripts/
-    run_pilot_100.py
-    resume.py
-    report_pilot.py
-    export_winners.py
-  tests/
-```
+Generic implemented capabilities are summarized in `README.md`.  Target-specific status:
 
-Implementation can start with fewer modules, but the boundaries above should guide the design.
+- the gfx1151 FP16 NT HHS problem type and pilot grid are encoded;
+- the search space can express the documented `8192^3` SIA3/no-store-priority winner family;
+- generated YAML uses complete candidate `Groups` rather than independent Cartesian products;
+- runner support exists for direct runs and compile-then-serial-benchmark runs;
+- DB schema includes manual cache namespace fields (`version_name`, `problem_type_hash`, `benchmark_protocol_hash`);
+- cache inspection helpers exist, but CSV result ingestion into `evaluations` is still incomplete;
+- a real one-shape harness under `ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that random init plus directed local refinement can reproduce the documented `8192^3` winner.
 
 ## 6. Candidate Model
 
@@ -161,15 +133,15 @@ Candidate = {
     "LocalReadVectorWidth": 16,
 
     # stores / assertions
-    "StoreVectorWidth": 1,
+    "StoreVectorWidth": -1,
     "StoreRemapVectorWidth": 0,
-    "StorePriorityOpt": True,
-    "NumElementsPerBatchStore": 8,
+    "StorePriorityOpt": True | False,
+    "NumElementsPerBatchStore": 4 | 8 | 10 | 12 | 16,
     "StoreSyncOpt": 0,
     "GroupLoadStore": False,
-    "AssertFree0ElementMultiple": 1,
-    "AssertFree1ElementMultiple": 1,
-    "AssertSummationElementMultiple": 1,
+    "AssertFree0ElementMultiple": 8,
+    "AssertFree1ElementMultiple": 8,
+    "AssertSummationElementMultiple": 16,
 }
 ```
 
@@ -184,7 +156,7 @@ The search space should support conditional constraints and linked mutations.  E
 
 ### YAML generation
 
-EvoTensile should generate TensileLite YAML where candidate configs are emitted as `Groups`, for example:
+EvoTensile generates TensileLite YAML where candidate configs are emitted as `Groups`, for example:
 
 ```yaml
 ForkParameters:
@@ -217,15 +189,15 @@ The scheduler should choose batch sizes to balance code-object build overhead, p
 
 ### Caching
 
-Use TensileLite `--build-only` and `--use-cache` where helpful, but do not rely only on Tensile's cache.  EvoTensile must maintain its own DB-level cache keyed by:
+Use TensileLite `--build-only` and `--use-cache` where helpful, but do not rely only on Tensile's cache.  EvoTensile maintains DB-level timing-cache identity fields based on:
 
-- candidate hash;
-- exact shape;
+- user-controlled `version_name` / `tensilelite_version_name` namespace;
 - problem type hash;
-- GPU target / arch;
-- ROCm/hipBLASLt/Tensile commit or path hash if available;
-- critical environment variables;
-- benchmark protocol version.
+- benchmark protocol hash;
+- exact shape;
+- candidate hash.
+
+Do not automatically key invalidation on a `rocm-libraries` commit hash.  Store commit/source metadata for audit, but make cache refresh explicit through the user-controlled version namespace.
 
 ## 8. Result Database
 
@@ -253,16 +225,25 @@ Core tables:
 ### `runs`
 
 - `run_id TEXT PRIMARY KEY`
-- `timestamp TEXT`
-- `git_info TEXT`
-- `rocm_info TEXT`
-- `tensile_path TEXT`
+- `timestamp REAL`
+- `version_name TEXT`
+- `problem_type_hash TEXT`
+- `benchmark_protocol_hash TEXT`
 - `yaml_path TEXT`
 - `output_dir TEXT`
+- `tensile_bin TEXT`
 - `status TEXT`
+- `returncode INTEGER`
+- `stdout_path TEXT`
+- `stderr_path TEXT`
+- `metadata_json TEXT`
 
 ### `evaluations`
 
+- `eval_id INTEGER PRIMARY KEY`
+- `version_name TEXT`
+- `problem_type_hash TEXT`
+- `benchmark_protocol_hash TEXT`
 - `shape_id TEXT`
 - `candidate_hash TEXT`
 - `run_id TEXT`
@@ -270,34 +251,42 @@ Core tables:
 - `time_us REAL`
 - `gflops REAL`
 - `validation TEXT`
-- `raw_solution_index INTEGER`
+- `solution_index INTEGER`
 - `raw_csv_row TEXT`
-- `created_at TEXT`
+- `created_at REAL`
 
-Index `(shape_id, candidate_hash)` heavily.
+Index `(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash)` heavily for cache lookups.
 
 ## 9. Search Algorithms
 
 ### Phase A: baseline generators
 
-Implement first:
+Implemented now:
 
-- deterministic seeds:
-  - known `8192^3` winner;
-  - variants around known winner;
-  - transferred TN/NN candidates if available;
+- deterministic conservative seeds;
 - random valid generator;
+- a ground-truth documented-winner helper for checks, not as a default random-init seed.
+
+Still planned:
+
 - stratified generator over macro-tile / depth / GSU / schedule families;
-- shape-aware MI/GSU generator inspired by TensileLite's beta `tensile_config_generator.py`.
+- shape-aware MI/GSU generator inspired by TensileLite's beta `tensile_config_generator.py`;
+- configurable seed packs for known winners, transferred TN/NN candidates, and nearest-shape winners.
 
 ### Phase B: local/evolutionary search
 
-Implement after the runner is stable:
+Prototype modules exist for:
 
 - local mutation around top-k winners;
-- crossover between near-winners;
 - differential evolution over encoded categorical values;
 - GOMEA-like linkage-aware mixing inspired by `~/rocm_wmma_gemm/rocm_wmma_gemm/config/tune.py`.
+
+Still needed:
+
+- scheduler integration;
+- crossover between near-winners;
+- directed/refinement operators promoted from the one-shape harness into generic search code;
+- robust failure-aware candidate filtering.
 
 For the pilot, a simple version is enough:
 
@@ -347,29 +336,35 @@ ceil(M/MT0), ceil(N/MT1), tile count, edge fraction
 
 ## 11. Benchmark Protocol
 
-### Search-time protocol
+### Default hot-loop protocol
 
-Goal: throughput and correctness screening.
+Goal: steady-state throughput for long-running inference/training, plus correctness screening.
 
-Suggested initial settings:
+Default settings:
 
 ```yaml
 PredictionThreshold: 2.0   # do not use Formocast prediction on gfx1151
-NumWarmups: 1-3
-NumBenchmarks: small
+NumWarmups: 10
+NumBenchmarks: 10
+EnqueuesPerSync: 10
+SyncsPerBenchmark: 1
+SleepPercent: 0
+HardwareMonitor: False
 NumElementsToValidate: 128 or stronger for risky candidates
-SkipSlowSolutionRatio: optional, e.g. 0.75-0.9 after validation
+SkipSlowSolutionRatio: 0.0 initially; optional after validation
 CSVExportWinner: True if helpful for parsing
 ```
+
+Cold-loop behavior is intentionally not part of the tuning loop.  Tracking it would add measurement cost and optimize for first-run / bursty-idle effects rather than sustained throughput.  If needed, add a separate later analysis pass for first-request latency, module-load/JIT effects, allocator warmup, and idle-to-active behavior.
 
 ### Final confirmation protocol
 
 For top candidates per shape:
 
-- retime top 3-10 candidates;
-- repeated samples;
-- median / trimmed mean;
-- validation enabled;
+- retime top 3-10 candidates with the same hot-loop protocol;
+- use repeated samples;
+- report median / trimmed mean;
+- keep validation enabled;
 - compare against existing hipBLASLt logic and known baseline configs.
 
 Final results should separate:
@@ -381,48 +376,48 @@ Final results should separate:
 
 ## 12. Milestones
 
-### M0: repository skeleton
+### M0-M2: repository skeleton, primitives, YAML writer — done
 
-- Create package structure.
-- Add config file for gfx1151 FP16 NT HHS.
-- Add plan and README.
+- Package structure, plan, README, and config scaffold exist.
+- Candidate dataclass / canonical JSON / hash exist.
+- Pilot grid generator exists.
+- Search-space domains, cheap constraints, random generation, and deterministic seeds exist.
+- TensileLite YAML emission with `Groups` exists.
+- Default hot-loop protocol is encoded.
 
-### M1: candidate + shape primitives
+### M3: runner, parser, and cache identity — partially done
 
-- Candidate dataclass / canonical JSON / hash.
-- Pilot grid generator.
-- Search-space domains and cheap constraints.
-- Random and deterministic seed generation.
+Done:
 
-### M2: YAML writer
+- invoke TensileLite in a subprocess;
+- capture logs and output paths;
+- parse CSV files for inspection;
+- initialize SQLite schema;
+- record run metadata and manual cache identity;
+- query cache identity/status/missing evaluations.
 
-- Emit valid TensileLite YAML using `Groups`.
-- Emit fixed problem type and 100-shape pilot grid.
-- Support candidate batches and shape buckets.
+Remaining:
 
-### M3: runner and parser
+- ingest benchmark CSV rows into `evaluations` with a candidate/solution-index sidecar;
+- support resume without repeating known `(version, protocol, shape, candidate)` evaluations;
+- classify invalid builds, validation failures, timeouts, and parse failures robustly.
 
-- Invoke TensileLite in a subprocess.
-- Capture logs and output paths.
-- Parse CSV/YAML results.
-- Store all observations in SQLite.
-- Support resume without repeating known `(shape, candidate)` evaluations.
-
-### M4: first pilot scan
+### M4: first pilot scan — next major milestone
 
 - Evaluate 64-128 candidates per shape or shape bucket.
 - Generate winner/near-winner report.
 - Identify invalid/high-failure regions of search space.
+- Verify batch sizes against compile time and serial benchmark time.
 
 ### M5: local/evolutionary refinement
 
-- Add elite mutation and crossover.
-- Add simple differential evolution or GOMEA-like mixing.
+- Wire local mutation, differential evolution, GOMEA-like mixing, and directed refinement into the scheduler.
+- Add elite crossover and failure-aware mutations.
 - Run 1-3 refinement rounds on pilot shapes.
 
 ### M6: final confirmation + export
 
-- Retime finalists.
+- Retime finalists with the same hot-loop protocol.
 - Export selected candidate bundles.
 - Generate candidate-to-shape mapping suitable for later Tensile logic generation/merge.
 
@@ -443,10 +438,10 @@ Final results should separate:
 
 ## 14. Immediate Next Steps
 
-1. Create the Python package skeleton.
-2. Implement candidate hashing and pilot shape generation.
-3. Implement a minimal YAML writer for one batch of candidates and the 100-shape grid.
-4. Implement a dry-run command that prints candidate counts and writes YAML without running Tensile.
-5. Run a tiny smoke test: 2 shapes x 2 candidates.
-6. Add SQLite result tracking.
-7. Scale to first broad random/stratified pilot batch.
+1. Add candidate manifest/sidecar mapping for generated YAML order to `candidate_hash` and Tensile solution index.
+2. Implement CSV ingestion into SQLite `evaluations` using `(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash)`.
+3. Add cache-aware scheduling so already-measured evaluations are skipped unless the version namespace changes.
+4. Promote the directed-refinement operator from the one-shape harness into reusable search code.
+5. Add a batch scheduler for compile-only candidate batches and serial benchmark execution.
+6. Run the first 100-shape hot-loop pilot scan and produce a winner/near-winner report.
+7. Add final export of selected candidate bundles for later GridBased logic generation/merge.
