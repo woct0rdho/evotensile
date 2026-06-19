@@ -433,9 +433,13 @@ Remaining:
 
 ### M6: final confirmation + export
 
-- Retime finalists with the same hot-loop protocol.
-- Export selected candidate bundles.
-- Generate candidate-to-shape mapping suitable for later TensileLite logic generation/merge.
+Done for the 100-shape pilot:
+- Repaired final-YAML mapping and re-ingested the full scan into `out/grid100_full_20260618_repaired.sqlite`.
+- Retimed top-4 per shape with full validation under `gfx1151_fp16_nt_hhs_grid100_20260618_top4_retime_fullval`.
+- Exported selected candidate bundles to `out/grid100_full_20260618_top4_retime_export`.
+
+Still needed before GridBased merge:
+- Generate or document the exact candidate-to-shape mapping needed by the hipBLASLt logic-generation workflow.
 
 ### M7: transfer to finer grids
 
@@ -445,15 +449,15 @@ Remaining:
 
 ## 13. Pre-Pilot Review Notes
 
-Remaining risks to track before/during the first 100-shape run:
+Post-100-shape status and remaining risks:
 - The `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md` plan is still applicable: start with the 100-shape NT HHS non-AuxH grid, use hot-loop retiming from `tensile_fp16_nt_hhs.md`, and treat the `8192^3` winner as a center-point seed/evidence rather than a shape-generic conclusion.
 - Search-space review expanded the first-pass domain from the grid vocabulary plus observed NT artifacts: TLDS2/LDS-pad profiles, `NumElementsPerBatchStore=0/14/20/24/32`, `StoreSyncOpt=1/2/4`, `GroupLoadStore=True`, WGM `4/16`, stagger `16/64`, and checked-in-style small/skinny seed families.
 - Nearest-shape transfer now seeds each proposal from validation-passed winners of nearby cached shapes before random restarts, which helps staged 100-shape grid tuning reuse earlier shape results without trusting validation-failed or unknown rows.
 - Pair-level cache inefficiency has a first fix: scheduler now groups shapes by exact missing candidate subset within each candidate/shape chunk, so planned batches do not deliberately re-run cached pairs. Future dense-merge heuristics may allow a small number of `ok` extras if compile overhead dominates.
 - APU thermal coupling: compile and benchmark are sequential, but a highly threaded compile can heat Strix Halo immediately before GPU timing. Default policy is still no deliberate compile/benchmark overlap and no deliberate cool-down sleep; reduce `--compile-threads` if pilot timings look thermally biased.
 - Multi-candidate build failure attribution: only single-candidate build failures are negative-cached today. If a multi-candidate batch fails, isolate with `--candidate-batch-size 1` before marking candidates bad.
-- Search-time validation is partial: `NumElementsToValidate=128` is acceptable for screening, but final winners should be retimed with stronger/full validation before trusting them.
-- Real mapping smoke is still needed: run a small multi-candidate schedule with accepted, rejected, and deduplicated candidates before the full grid to validate final-YAML mapping and ingestion behavior on actual TensileLite output.
+- Search-time validation is partial: `NumElementsToValidate=128` is acceptable for screening, but the exported 100-shape winners were retimed with `NumElementsToValidate=-1` full validation.
+- Final-YAML mapping was repaired after the full scan. The repaired mapper handles TLDS2-derived `1LDSBuffer`/`PrefetchLocalRead` rewrites and inactive `StaggerU=0` `StaggerUMapping`/`StaggerUStride` normalization. Re-ingest now reports zero unmapped rows and zero unmatched final solutions.
 
 Suggested pre-grid smoke:
 
@@ -481,9 +485,27 @@ Pre-full-run estimate:
 - The medium probe shows orchestration/validation/logging dominates small and medium batches: recorded GEMM time was `0.030s` out of `12.083s` runner time.
 - A conservative full-grid wall estimate before running is `20-35 minutes`, dominated by TensileLite client validation/logging and code-object/build orchestration rather than matmul kernel time.
 
-Full-grid actual timing will be added after the `grid100_full_20260618` run completes.
+Actual 100-shape first-pass results:
+- Launch: `schedule-batches --proposal seed-random-gomea --candidate-batch-size 32 --shape-batch-size 100 --compile-threads 4 --benchmark-threads 1 --keep-going` with the standalone TensileLite client.
+- Wall time was `1265.21s` (`21.1 min`) for `135` proposed candidates x `100` shapes planned as `13,500` pairs in `5` batches.
+- Recorded TensileLite subprocess durations summed to `562.6s`; Python ingestion/log processing and filesystem overhead were the rest, confirming that orchestration dominates the generic client path.
+- Initial DB before mapper repair had `64,000 ok`, `2,000 validation_fail`, and `6,900 rejected` rows, with accepted rows under-mapped as rejected/unmapped.
+- Repaired re-ingest took `10.86s` and produced `75,000 ok`, `2,000 validation_fail`, and `5,800 rejected` rows: `7,500` ok pairs, `200` validation-failed pairs, and exactly `10` samples per ok pair.
+- First-pass summed recorded ok GEMM time was `17.178s`; validation-failed GEMM time was `0.348s`. The remaining wall time is compile/client/log/validation/database overhead rather than matmul time.
 
-After the 100-shape run is finished and analyzed, build a purpose-specific EvoTensile benchmark runner before scaling to the 9,681-shape grid. The runner should keep TensileLite codegen/build artifacts but replace the generic TensileLite client/library-client execution path with a small structured hot-loop runner, likely C++/HIP adapted from TensileLite `client/src` and driven by Python. Goals: avoid stdout archaeology, skip unrelated `LibraryClient` activation diagnostics, emit direct `shape_id`/`candidate_hash`/sample records, make validation status explicit, reduce DB ingestion overhead, and make matmul vs non-matmul timing decomposition reliable.
+Actual top-4 full-validation retime:
+- Script: `scripts/retime_topk.py` selected top-4 per shape from the repaired first-pass DB and grouped exact pair sets without cross-product extras.
+- Protocol override: `NumElementsToValidate=-1`, producing benchmark protocol hash `bproto_3742f70e30b73ce5`.
+- Coverage: `400` intended pairs, `35` unique candidates, `57` groups, `4,000 ok` samples, `0` rejected/unmapped/validation-fail rows.
+- Wall time was `675.86s`; summed retime ok GEMM time was `0.256s`, so this was almost entirely generic TensileLite compile/client overhead.
+- Full-validation retime changed `56` of `100` per-shape winners versus the first-pass screen, so top-K retiming is required before export.
+- Top-k sensitivity from the final retime: the final winner's first-pass rank was `1` for `44` shapes, `2` for `25`, `3` for `18`, and `4` for `13`. Retiming only top-1 would miss `56/100` final winners, top-2 would miss `31/100`, and top-3 would miss `13/100`; top-4 captured every final winner observed in this run.
+- The retimed winner versus the retimed first-pass top-1 improved by median `0.34%`, mean `4.73%`, and max `51.17%`; `23` shapes improved by more than `5%`, and `15` improved by more than `10%`.
+- Current policy: the 100-shape artifact needs no further retime, but future grids should keep finalist retiming with `top_k=4` as the minimum proven setting. For the 9,681-shape grid, sample top-8/top-10 on a subset after the custom runner exists to check whether rank-5+ candidates sometimes overtake top-4.
+- Exported rebuild-ready artifacts: `out/grid100_full_20260618_top4_retime_export/winners.csv`, `per_shape_yaml/`, `candidates_json/`, and `metadata.json`.
+- Analysis artifacts: `out/grid100_full_20260618_analysis/summary.json` and `winner_comparison.csv`.
+
+Now build a purpose-specific EvoTensile benchmark runner before scaling to the 9,681-shape grid. The runner should keep TensileLite codegen/build artifacts but replace the generic TensileLite client/library-client execution path with a small structured hot-loop runner, likely C++/HIP adapted from TensileLite `client/src` and driven by Python. Goals: avoid stdout archaeology, skip unrelated `LibraryClient` activation diagnostics, emit direct `shape_id`/`candidate_hash`/sample records, make validation status explicit, reduce DB ingestion overhead, support exact per-shape pair lists without many tiny process launches, and make matmul vs non-matmul timing decomposition reliable.
 
 ## 15. Open Questions
 
@@ -496,8 +518,8 @@ After the 100-shape run is finished and analyzed, build a purpose-specific EvoTe
 
 ## 15. Immediate Next Steps
 
-- Validate final-solution YAML mapping and `schedule-batches` on a real multi-candidate TensileLite run with known rejected/deduplicated candidates.
-- Add timeout and multi-candidate build-failure attribution once failure signatures are better understood.
+- Start the purpose-specific EvoTensile benchmark runner design and prototype against `10-20` known candidate/shape pairs from the repaired and retimed 100-shape artifacts.
+- Keep the generic TensileLite client as the correctness reference while validating the custom runner's timing, validation, and shape/candidate identity output.
+- Add timeout handling and multi-candidate build-failure attribution once failure signatures are better understood.
 - Add non-hindsight refinement operators that learn from cached winners/near-winners without hard-coding the documented `8192^3` neighborhood.
-- Run the first 100-shape hot-loop pilot scan and produce a winner/near-winner report.
-- Add final export of selected candidate bundles for later GridBased logic generation/merge.
+- Define the final GridBased logic-generation/merge path from the exported per-shape YAML/JSON winner artifacts.
