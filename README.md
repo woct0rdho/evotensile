@@ -1,6 +1,6 @@
 # EvoTensile
 
-Work in progress. README is AI-generated.
+Work in progress. README is AI-generated. I'm working on some better math to determine what configs to keep.
 
 EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, uses TensileLite for solution/code-object generation, and records structured timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion) and [rocm_wmma_gemm](https://github.com/adelj88/rocm_wmma_gemm).
 
@@ -111,7 +111,7 @@ The external runner consumes TensileLite build artifacts from either full-client
 
 Useful proposal modes include `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`.
 
-Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, and `--num-elements-to-validate`. Unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
+Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, and `--num-elements-to-validate`. The default uses full validation with `NumElementsToValidate=-1`; unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
 
 Validation is a hard gate: only `status=ok` rows with passing validation should be ranked or used as positive cache entries. Unknown validation is never ranked as positive.
 
@@ -140,7 +140,7 @@ Structured schedule/retime runs ingest their own JSONL results directly into SQL
 
 ## 4. Retime Top-K Finalists
 
-Search-time timing is noisy enough that top-1 screening can miss the final winner. Use `scripts/retime_topk.py` to retime the top candidates per shape, normally with stronger validation such as `NumElementsToValidate=-1`.
+Search-time timing is noisy enough that top-1 screening can miss the final winner. Use `scripts/retime_topk.py` to retime the top candidates per shape with the same full-validation correctness gate and more reliable finalist timing.
 
 ```bash
 python3 scripts/retime_topk.py \
@@ -150,7 +150,6 @@ python3 scripts/retime_topk.py \
   --target-version-name my_target_hotloop_v0_top4_fullval \
   --profile gfx1151-nt-hhs \
   --top-k 4 \
-  --full-validation \
   --compile-threads 4 \
   --runner-bin ./build/evotensile-structured-runner \
   --build-timeout 1800 \
@@ -166,7 +165,6 @@ python3 scripts/export_winners.py \
   --output-dir out/topk_retime_export \
   --version-name my_target_hotloop_v0_top4_fullval \
   --profile gfx1151-nt-hhs \
-  --full-validation \
   --min-samples 10
 ```
 
@@ -254,6 +252,7 @@ EnqueuesPerSync: 10
 SyncsPerBenchmark: 1
 SleepPercent: 0
 HardwareMonitor: False
+NumElementsToValidate: -1
 ```
 
 Cold-loop behavior is intentionally not tracked during tuning because it increases tuning time and optimizes for first-run or bursty-idle effects rather than sustained throughput. Analyze cold-loop behavior later only if first-request latency becomes important.

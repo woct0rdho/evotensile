@@ -370,7 +370,7 @@ EnqueuesPerSync: 10
 SyncsPerBenchmark: 1
 SleepPercent: 0
 HardwareMonitor: False
-NumElementsToValidate: 128 or stronger for risky candidates
+NumElementsToValidate: -1
 SkipSlowSolutionRatio: 0.0 initially; optional after validation
 ```
 
@@ -459,7 +459,7 @@ Post-100-shape status and remaining risks:
 - Pair-level cache inefficiency has a first fix: scheduler now groups shapes by exact missing candidate subset within each candidate/shape chunk, so planned batches do not deliberately re-run cached pairs. Future dense-merge heuristics may allow a small number of `ok` extras if compile overhead dominates.
 - APU thermal coupling: compile and benchmark are sequential, but a highly threaded compile can heat Strix Halo immediately before GPU timing. Default policy is still no deliberate compile/benchmark overlap and no deliberate cool-down sleep; reduce `--compile-threads` if pilot timings look thermally biased.
 - Multi-candidate build failure attribution: only single-candidate build failures are negative-cached today. If a multi-candidate batch fails, isolate with `--candidate-batch-size 1` before marking candidates bad.
-- Search-time validation is partial: `NumElementsToValidate=128` is acceptable for screening, but the exported 100-shape winners were retimed with `NumElementsToValidate=-1` full validation.
+- Search-time validation now defaults to full validation (`NumElementsToValidate=-1`) after adding the OpenBLAS-backed structured-runner reference path. The retained 100-shape first-pass DB hash was migrated to the full-validation protocol identity because the retimed top-4 subset showed no 128-element-pass/full-validation-fail cases.
 - Final-YAML mapping was repaired after the full scan. The repaired mapper handles TLDS2-derived `1LDSBuffer`/`PrefetchLocalRead` rewrites and inactive `StaggerU=0` `StaggerUMapping`/`StaggerUStride` normalization. Re-ingest now reports zero unmapped rows and zero unmatched final solutions.
 
 Suggested pre-grid test:
@@ -498,12 +498,12 @@ Actual 100-shape first-pass results:
 
 Actual top-4 full-validation retime:
 - Script: `scripts/retime_topk.py` selected top-4 per shape from the repaired first-pass DB and grouped exact pair sets without cross-product extras.
-- Protocol override: `NumElementsToValidate=-1`, producing benchmark protocol hash `bproto_3742f70e30b73ce5`.
+- Protocol: default full validation with `NumElementsToValidate=-1`, producing benchmark protocol hash `bproto_3742f70e30b73ce5`.
 - Coverage: `400` intended pairs, `35` unique candidates, `57` groups, `4,000 ok` samples, `0` rejected/unmapped/validation-fail rows.
 - Wall time was `675.86s`; summed retime ok GEMM time was `0.256s`, so this was almost entirely generic TensileLite compile/client overhead.
-- Full-validation retime changed `56` of `100` per-shape winners versus the first-pass screen, so top-K retiming is required before export.
-- Top-k sensitivity from the final retime: the final winner's first-pass rank was `1` for `44` shapes, `2` for `25`, `3` for `18`, and `4` for `13`. Retiming only top-1 would miss `56/100` final winners, top-2 would miss `31/100`, and top-3 would miss `13/100`; top-4 captured every final winner observed in this run.
-- The retimed winner versus the retimed first-pass top-1 improved by median `0.34%`, mean `4.73%`, and max `51.17%`; `23` shapes improved by more than `5%`, and `15` improved by more than `10%`.
+- Full-validation retime changed `57` of `100` per-shape winners versus the first-pass screen, so top-K retiming is required before export.
+- Top-k sensitivity from the final retime: the final winner's first-pass rank was `1` for `43` shapes, `2` for `27`, `3` for `17`, and `4` for `13`. Retiming only top-1 would miss `57/100` final winners, top-2 would miss `30/100`, and top-3 would miss `13/100`; top-4 captured every final winner observed in this run.
+- The retimed winner versus the retimed first-pass top-1 improved by median `0.367%`, mean `3.904%`, and max `35.202%`; `21` shapes improved by more than `5%`, and `13` improved by more than `10%`.
 - Current policy: the 100-shape artifact needs no further retime, but future grids should keep finalist retiming with `top_k=4` as the minimum proven setting. For the 9,681-shape grid, sample top-8/top-10 on a subset after the custom runner exists to check whether rank-5+ candidates sometimes overtake top-4.
 - Exported rebuild-ready artifacts: `out/grid100_full_20260618_top4_retime_export/winners.csv`, `per_shape_yaml/`, `candidates_json/`, and `metadata.json`.
 - Analysis artifacts: `out/grid100_full_20260618_analysis/summary.json` and `winner_comparison.csv`.

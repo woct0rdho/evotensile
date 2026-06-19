@@ -15,6 +15,20 @@ OUT=$BUILD_DIR/evotensile-structured-runner
 OBJ=$BUILD_DIR/structured_runner.o
 mkdir -p "$BUILD_DIR"
 
+OPENBLAS_CFLAGS=()
+OPENBLAS_LIBS=()
+if [[ ${EVOTENSILE_USE_OPENBLAS:-1} != 0 ]]; then
+  if pkg-config --exists openblas; then
+    # shellcheck disable=SC2207
+    OPENBLAS_CFLAGS=($(pkg-config --cflags openblas))
+    # shellcheck disable=SC2207
+    OPENBLAS_LIBS=($(pkg-config --libs openblas))
+    OPENBLAS_CFLAGS+=(-DEVOTENSILE_USE_OPENBLAS)
+  else
+    echo "OpenBLAS pkg-config metadata not found; building structured runner with scalar reference fallback" >&2
+  fi
+fi
+
 COMMON_A=$TENSILELITE_BUILD/tensilelite/client/libtensilelite-client-common.a
 ORIGAMI_A=$TENSILELITE_BUILD/origami/liborigami.a
 MXDATAGEN_A=$TENSILELITE_BUILD/clients/common/libhipblaslt-mxdatagen.a
@@ -48,6 +62,7 @@ COMMON_FLAGS=(
   -I"$TENSILELITE_BUILD/library/include"
   -I"$HIPBLASLT_ROOT/../../shared/mxdatagenerator/lib/include"
   -isystem "$ROCM_PATH/include"
+  "${OPENBLAS_CFLAGS[@]}"
 )
 
 "$CXX" "${COMMON_FLAGS[@]}" -x hip --offload-arch="$GFX_ARCH" \
@@ -64,6 +79,7 @@ COMMON_FLAGS=(
   -lamd_smi \
   "$MXDATAGEN_A" \
   --hip-link --offload-arch="$GFX_ARCH" \
-  -lamdhip64 -lomp -ldl -lpthread -lm -lrt -lz -lzstd
+  -lamdhip64 -lomp -ldl -lpthread -lm -lrt -lz -lzstd \
+  "${OPENBLAS_LIBS[@]}"
 
 echo "$OUT"

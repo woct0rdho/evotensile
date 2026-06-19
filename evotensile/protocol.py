@@ -40,7 +40,7 @@ class BenchmarkProtocol:
     syncs_per_benchmark: int = 1
     sleep_percent: int = 0
     hardware_monitor: bool = False
-    num_elements_to_validate: int = 128
+    num_elements_to_validate: int = -1
     data_init_type_a: int = 3
     data_init_type_b: int = 3
     data_init_type_c: int = 3
@@ -82,9 +82,6 @@ class BenchmarkProtocol:
     def with_overrides(self, **overrides: Any) -> "BenchmarkProtocol":
         clean = {key: value for key, value in overrides.items() if value is not None}
         return replace(self, **clean)
-
-    def full_validation(self) -> "BenchmarkProtocol":
-        return self.with_overrides(num_elements_to_validate=-1)
 
     def global_parameters(self) -> dict[str, Any]:
         return {

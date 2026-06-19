@@ -33,14 +33,13 @@ def _load_winners(
 
 
 def _protocol_from_args(args: argparse.Namespace, profile: TargetProfile) -> BenchmarkProtocol:
-    protocol = profile.default_protocol.with_overrides(
+    return profile.default_protocol.with_overrides(
         num_warmups=args.num_warmups,
         num_benchmarks=args.num_benchmarks,
         enqueues_per_sync=args.enqueues_per_sync,
         syncs_per_benchmark=args.syncs_per_benchmark,
         num_elements_to_validate=args.num_elements_to_validate,
     )
-    return protocol.full_validation() if args.full_validation else protocol
 
 
 def main() -> int:
@@ -55,7 +54,6 @@ def main() -> int:
     parser.add_argument("--enqueues-per-sync", type=int, default=None)
     parser.add_argument("--syncs-per-benchmark", type=int, default=None)
     parser.add_argument("--num-elements-to-validate", type=int, default=None)
-    parser.add_argument("--full-validation", action="store_true")
     args = parser.parse_args()
 
     profile = get_profile(args.profile)

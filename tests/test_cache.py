@@ -11,6 +11,11 @@ def test_version_name_is_manual_namespace():
     assert normalize_version_name("  local_patch_a ") == "local_patch_a"
 
 
+def test_default_protocol_uses_full_validation():
+    assert DEFAULT_BENCHMARK_PROTOCOL.num_elements_to_validate == -1
+    assert DEFAULT_PROFILE.benchmark_protocol_hash() == DEFAULT_BENCHMARK_PROTOCOL.protocol_hash()
+
+
 def test_protocol_hash_changes_with_typed_timing_params():
     base = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL)
     changed = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=5))
