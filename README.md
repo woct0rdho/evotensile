@@ -1,8 +1,8 @@
 # EvoTensile
 
-Work in progress. README is AI-generated. I'm writing a faster runner without all the boilerplates of `tensilelite-client`.
+Work in progress. README is AI-generated.
 
-EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, runs TensileLite as the evaluator, and stores reproducible timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion) and [rocm_wmma_gemm](https://github.com/adelj88/rocm_wmma_gemm).
+EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, uses TensileLite for solution/code-object generation, and records structured timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion) and [rocm_wmma_gemm](https://github.com/adelj88/rocm_wmma_gemm).
 
 The repository currently includes one concrete target configuration, but the core code is intended to stay reusable: candidate hashing, shape handling, search-space encoding, YAML emission, runner orchestration, benchmark-protocol hashing, validation-aware ingestion, ranking, finalist retiming, current-hipBLASLt comparison, and logic-file update helpers.
 
@@ -28,25 +28,27 @@ A normal EvoTensile tuning loop is:
 - `evotensile/search_space.py`: target search-space domains, constraints, and seeded/random candidates.
 - `evotensile/search/`: random, local, differential-evolution, and GOMEA-style proposal operators.
 - `evotensile/yaml_writer.py`: TensileLite config emission using complete candidate `Groups`.
-- `evotensile/runner.py`: TensileLite subprocess orchestration, including build/benchmark separation.
-- `evotensile/parser.py` and `evotensile/ingest.py`: validation-aware CSV/log/final-YAML ingestion.
+- `evotensile/runner.py`: TensileLite codegen/build subprocess orchestration.
+- `evotensile/structured_runner.py`: exact pair mapping, JSONL runner contract, external runner dispatch, and direct DB ingestion.
+- `csrc/structured_runner.cpp`: narrow production HIP/TensileLite backend for the current gfx1151 FP16 NT HHS target.
+- `scripts/build_structured_runner.sh`: builds `./build/evotensile-structured-runner` against an existing TensileLite client build.
 - `evotensile/database.py` and `evotensile/cache.py`: SQLite storage and cache queries.
 - `evotensile/scheduler.py`: cache-aware batch planning and execution.
 - `scripts/retime_topk.py`: exact top-K finalist retiming.
 - `scripts/compare_hipblaslt_bench.py`: installed hipBLASLt comparison and hybrid export.
 - `scripts/update_hipblaslt_gridbased_logic.py`: update checked-in hipBLASLt GridBased YAMLs from a hybrid export.
-- `scripts/verify_installed_hipblaslt.py`: quick installed hipBLASLt correctness smoke using `hipblaslt-bench --verify`.
+- `scripts/verify_installed_hipblaslt.py`: quick installed hipBLASLt correctness test using `hipblaslt-bench --verify`.
 
 ## 1. Define Problem, Shapes, And Search Space
 
-A target needs:
+A target profile defines:
 
 - a TensileLite problem type, including data types, layout, batching, epilogue flags, and validation settings;
 - exact input shapes, usually represented as `shape_id = m{M}_n{N}_b{batch}_k{K}`;
-- a candidate search space made of complete TensileLite solution dictionaries, not independent Cartesian products;
-- cache identity names: `version_name`, `problem_type_hash`, and `benchmark_protocol_hash`.
+- a typed benchmark protocol used consistently for YAML generation, runner JSONL, and cache hashing;
+- a candidate search space made of complete TensileLite solution dictionaries, not independent Cartesian products.
 
-The current code has a bundled gfx1151 FP16 NT HHS target, but new targets should keep target-specific choices in config/data code and leave the generic runner/cache/search flow unchanged.
+The current bundled profile is `gfx1151-nt-hhs`. Profile code derives `problem_type_hash` and `benchmark_protocol_hash`; the search CLI no longer accepts raw hash overrides or arbitrary TensileLite global parameters.
 
 Inspect a target search space with:
 
@@ -56,7 +58,7 @@ python3 -m evotensile.cli summarize-space --num-random 128
 
 ## 2. Search Configs
 
-`schedule-batches` is the main entry point for searching. It plans missing `(shape, candidate)` work against the SQLite cache, emits TensileLite YAML batches, optionally separates compile and benchmark phases, and ingests validation-gated results.
+`schedule-batches` is the main entry point for searching. It plans missing `(shape, candidate)` work against the SQLite cache, emits TensileLite YAML batches, runs TensileLite build/codegen, maps accepted solutions from final YAML once, and ingests structured validation-gated result rows keyed directly by `shape_id` and `candidate_hash`.
 
 Dry-run a plan:
 
@@ -65,11 +67,23 @@ python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/search \
   --version-name my_target_hotloop_v0 \
+  --profile gfx1151-nt-hhs \
   --limit-shapes 100 \
   --candidate-batch-size 32 \
   --shape-batch-size 100 \
   --dry-run
 ```
+
+Build the TensileLite client prerequisites and then the external structured runner before scheduling real measurements:
+
+```bash
+cd ~/rocm-libraries
+./build_tensilelite_client.sh
+cd ~/evotensile
+scripts/build_structured_runner.sh
+```
+
+The runner build script validates that the expected TensileLite client static libraries exist under `~/rocm-libraries/build/tensilelite-client` before compiling `./build/evotensile-structured-runner`.
 
 Run planned batches:
 
@@ -78,6 +92,7 @@ python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/search \
   --version-name my_target_hotloop_v0 \
+  --profile gfx1151-nt-hhs \
   --proposal seed-random-gomea \
   --num-random 64 \
   --gomea-count 64 \
@@ -86,13 +101,19 @@ python3 -m evotensile.cli schedule-batches \
   --candidate-batch-size 32 \
   --shape-batch-size 100 \
   --compile-threads 4 \
-  --benchmark-threads 1 \
+  --runner-bin ./build/evotensile-structured-runner \
+  --build-timeout 1800 \
+  --runner-timeout 600 \
   --keep-going
 ```
 
+The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout.
+
 Useful proposal modes include `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`.
 
-Validation is a hard gate: only `status=ok` rows with passing validation should be ranked or used as positive cache entries. Unknown validation should be treated as debug-only unless a target explicitly opts into it.
+Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, and `--num-elements-to-validate`. Unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
+
+Validation is a hard gate: only `status=ok` rows with passing validation should be ranked or used as positive cache entries. Unknown validation is never ranked as positive.
 
 ## 3. Inspect And Rank Cached Results
 
@@ -101,7 +122,8 @@ Summarize cache status:
 ```bash
 python3 -m evotensile.cli cache-summary \
   --db out/evotensile.sqlite \
-  --version-name my_target_hotloop_v0
+  --version-name my_target_hotloop_v0 \
+  --profile gfx1151-nt-hhs
 ```
 
 Rank validation-passed observations:
@@ -110,20 +132,11 @@ Rank validation-passed observations:
 python3 -m evotensile.cli rank-evals \
   --db out/evotensile.sqlite \
   --version-name my_target_hotloop_v0 \
+  --profile gfx1151-nt-hhs \
   --min-samples 2
 ```
 
-Manual ingestion is available when a TensileLite run was produced outside `schedule-batches`:
-
-```bash
-python3 -m evotensile.cli ingest-csv out/tensilelite_run_000 \
-  --db out/evotensile.sqlite \
-  --manifest out/search/config.manifest.csv \
-  --version-name my_target_hotloop_v0 \
-  --include-logs
-```
-
-When given a run directory, ingestion uses TensileLite final YAML as the source of truth for accepted/rejected/deduplicated solution mapping.
+Structured schedule/retime runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
 
 ## 4. Retime Top-K Finalists
 
@@ -135,14 +148,27 @@ python3 scripts/retime_topk.py \
   --output-dir out/topk_retime \
   --source-version-name my_target_hotloop_v0 \
   --target-version-name my_target_hotloop_v0_top4_fullval \
+  --profile gfx1151-nt-hhs \
   --top-k 4 \
-  --global-parameter NumElementsToValidate=-1 \
+  --full-validation \
   --compile-threads 4 \
-  --benchmark-threads 1 \
+  --runner-bin ./build/evotensile-structured-runner \
+  --build-timeout 1800 \
+  --runner-timeout 600 \
   --keep-going
 ```
 
-After retiming, export the per-shape winners using the project export script for the current target/artifact layout.
+After retiming, export the per-shape winners using the project export script for the current target/artifact layout:
+
+```bash
+python3 scripts/export_winners.py \
+  --db out/evotensile.sqlite \
+  --output-dir out/topk_retime_export \
+  --version-name my_target_hotloop_v0_top4_fullval \
+  --profile gfx1151-nt-hhs \
+  --full-validation \
+  --min-samples 10
+```
 
 ## 5. Compare With Current hipBLASLt And Export Hybrid Winners
 
@@ -205,7 +231,7 @@ cd ~/evotensile
 python3 scripts/verify_installed_hipblaslt.py \
   --bench ~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench \
   --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/gfx1151" \
-  --output-dir out/hipblaslt_correctness_smoke
+  --output-dir out/hipblaslt_correctness
 ```
 
 For broader upstream regression coverage, run `hipblaslt-test` with GTest XML output:
@@ -232,7 +258,7 @@ HardwareMonitor: False
 
 Cold-loop behavior is intentionally not tracked during tuning because it increases tuning time and optimizes for first-run or bursty-idle effects rather than sustained throughput. Analyze cold-loop behavior later only if first-request latency becomes important.
 
-Benchmark-affecting global parameters are included in the benchmark-protocol hash. Compile-only settings such as `CpuThreads` are phase-specific and intentionally excluded from benchmark protocol identity.
+Benchmark protocol is represented by the typed `BenchmarkProtocol` profile object and included in the benchmark-protocol hash. Compile-only settings such as `CpuThreads` are phase-specific and intentionally excluded from benchmark protocol identity.
 
 ## Current Limitations
 
@@ -240,5 +266,5 @@ Benchmark-affecting global parameters are included in the benchmark-protocol has
 - Surrogate/LFBO proposal is planned but not implemented.
 - Timeout classification and multi-candidate build-failure attribution are still incomplete.
 - BBS/AuxH/AuxB retargeting needs target-specific validation before making measured-performance claims for those variants.
-- A purpose-specific benchmark runner is still needed before scaling to much larger grids; the generic TensileLite client path is dominated by orchestration/log/validation overhead.
+- The production structured backend is intentionally narrow: it supports the current gfx1151 FP16 NT HHS bias + `scaleAlpha_vector` target and still needs broader target coverage before it is a general GEMM runner.
 - Keep `PredictionThreshold: 2.0` to disable heuristics like Formocast and Origami in TensileLite, until they're accurate enough on gfx1151.

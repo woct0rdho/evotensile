@@ -4,6 +4,7 @@ from typing import Any
 import yaml
 
 from .candidate import Candidate, Shape
+from .protocol import DEFAULT_BENCHMARK_PROTOCOL
 
 
 class FlowList(list):
@@ -62,45 +63,21 @@ FP16_NT_HHS_PROBLEM_TYPE: dict[str, Any] = {
 }
 
 
-HOT_LOOP_BENCHMARK_PARAMETERS: dict[str, Any] = {
-    "KernelTime": True,
-    "PreciseKernelTime": True,
-    "NumWarmups": 10,
-    "NumBenchmarks": 10,
-    "EnqueuesPerSync": 10,
-    "SyncsPerBenchmark": 1,
-    "SleepPercent": 0,
-    "HardwareMonitor": False,
-}
-
-
-DEFAULT_GLOBAL_PARAMETERS: dict[str, Any] = {
+BASE_GLOBAL_PARAMETERS: dict[str, Any] = {
     "MinimumRequiredVersion": "5.0.0",
     "RuntimeLanguage": "HIP",
-    **HOT_LOOP_BENCHMARK_PARAMETERS,
-    "DataInitTypeA": 3,
-    "DataInitTypeB": 3,
-    "DataInitTypeC": 3,
-    "DataInitTypeD": 0,
-    "DataInitTypeAlpha": 2,
-    "DataInitTypeBeta": 2,
-    "DataInitTypeBias": 3,
-    "DataInitTypeScaleAlphaVec": 3,
-    "NumElementsToValidate": 128,
     "ValidationMaxToPrint": 4,
     "ValidationPrintValids": False,
     "ForceRedoBenchmarkProblems": True,
     "ForceRedoLibraryLogic": True,
-    "ForceRedoLibraryClient": True,
-    "CSVExportWinner": True,
-    "CSVMergeSameProblemID": False,
-    "PrintWinnersOnly": False,
-    "PredictionThreshold": 2.0,
-    "GranularityThreshold": 0.0,
-    "SkipSlowSolutionRatio": 0.0,
-    "CEqualD": False,
     "LibraryFormat": "yaml",
     "LogicFormat": "yaml",
+}
+
+
+DEFAULT_GLOBAL_PARAMETERS: dict[str, Any] = {
+    **BASE_GLOBAL_PARAMETERS,
+    **DEFAULT_BENCHMARK_PROTOCOL.global_parameters(),
 }
 
 
@@ -166,7 +143,6 @@ def tensilelite_config(
         "GlobalParameters": flow_lists(gp),
         "BenchmarkProblems": [benchmark_problem(candidates, shapes, problem_type=problem_type)],
         "LibraryLogic": flow_lists(ll),
-        "LibraryClient": None,
     }
 
 

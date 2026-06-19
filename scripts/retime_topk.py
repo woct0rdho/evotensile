@@ -5,10 +5,12 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from evotensile.cache import normalize_version_name, problem_type_hash
+from evotensile.cache import normalize_version_name
 from evotensile.candidate import Candidate
 from evotensile.database import EvaluationSummary, EvoTensileDB
-from evotensile.runner import DEFAULT_TENSILELITE_BIN, serial_benchmark_protocol_hash
+from evotensile.profile import PROFILES, TargetProfile, get_profile
+from evotensile.protocol import BenchmarkProtocol
+from evotensile.runner import DEFAULT_TENSILELITE_BIN
 from evotensile.scheduler import execute_schedule
 from evotensile.shapes import Shape, shape_from_id
 
@@ -79,25 +81,41 @@ def _parse_shape_ids(values: list[str] | None) -> set[str] | None:
     return {shape_from_id(value).id if not value.startswith("m") else value for value in values}
 
 
+def _protocol_from_args(args: argparse.Namespace, profile: TargetProfile) -> BenchmarkProtocol:
+    protocol = profile.default_protocol.with_overrides(
+        num_warmups=args.num_warmups,
+        num_benchmarks=args.num_benchmarks,
+        enqueues_per_sync=args.enqueues_per_sync,
+        syncs_per_benchmark=args.syncs_per_benchmark,
+        num_elements_to_validate=args.num_elements_to_validate,
+    )
+    return protocol.full_validation() if args.full_validation else protocol
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Retime top-K per-shape EvoTensile candidates exactly")
     parser.add_argument("--db", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--profile", choices=sorted(PROFILES), default=None)
     parser.add_argument("--source-version-name", required=True)
     parser.add_argument("--target-version-name", required=True)
-    parser.add_argument("--source-problem-type-hash", default=None)
-    parser.add_argument("--source-benchmark-protocol-hash", default=None)
-    parser.add_argument("--target-problem-type-hash", default=None)
-    parser.add_argument("--target-benchmark-protocol-hash", default=None)
     parser.add_argument("--top-k", type=int, default=4)
     parser.add_argument("--min-samples", type=int, default=10)
     parser.add_argument("--shape-id", action="append", default=[])
     parser.add_argument("--limit-shapes", type=int, default=None)
-    parser.add_argument("--global-parameter", action="append", default=[])
+    parser.add_argument("--num-warmups", type=int, default=None)
+    parser.add_argument("--num-benchmarks", type=int, default=None)
+    parser.add_argument("--enqueues-per-sync", type=int, default=None)
+    parser.add_argument("--syncs-per-benchmark", type=int, default=None)
+    parser.add_argument("--num-elements-to-validate", type=int, default=None)
+    parser.add_argument("--full-validation", action="store_true")
     parser.add_argument("--tensilelite-bin", default=DEFAULT_TENSILELITE_BIN)
     parser.add_argument("--compile-threads", type=int, default=4)
-    parser.add_argument("--benchmark-threads", type=int, default=1)
-    parser.add_argument("--extra-arg", action="append", default=[])
+    parser.add_argument(
+        "--runner-bin", default=None, help="Structured runner executable; defaults to the target profile"
+    )
+    parser.add_argument("--build-timeout", type=float, default=None)
+    parser.add_argument("--runner-timeout", type=float, default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
@@ -108,18 +126,18 @@ def main() -> int:
     if args.min_samples <= 0:
         raise SystemExit("--min-samples must be positive")
 
+    profile = get_profile(args.profile)
+    source_protocol = profile.default_protocol
+    target_protocol = _protocol_from_args(args, profile)
+    runner_bin = args.runner_bin or profile.default_runner_bin
     db = EvoTensileDB.connect(args.db)
     db.init()
     source_version = normalize_version_name(args.source_version_name)
     target_version = normalize_version_name(args.target_version_name)
-    source_problem_hash = args.source_problem_type_hash or problem_type_hash()
-    source_protocol_hash = serial_benchmark_protocol_hash(
-        [], benchmark_protocol_hash=args.source_benchmark_protocol_hash
-    )
-    target_problem_hash = args.target_problem_type_hash or source_problem_hash
-    target_protocol_hash = serial_benchmark_protocol_hash(
-        args.global_parameter, benchmark_protocol_hash=args.target_benchmark_protocol_hash
-    )
+    source_problem_hash = profile.problem_type_hash
+    source_protocol_hash = profile.benchmark_protocol_hash(source_protocol)
+    target_problem_hash = profile.problem_type_hash
+    target_protocol_hash = profile.benchmark_protocol_hash(target_protocol)
 
     shape_filter = _parse_shape_ids(args.shape_id)
     topk_by_shape = _collect_topk(
@@ -145,6 +163,7 @@ def main() -> int:
     summary = {
         "db": args.db,
         "output_dir": args.output_dir,
+        "profile": profile.name,
         "source_version_name": source_version,
         "target_version_name": target_version,
         "source_problem_type_hash": source_problem_hash,
@@ -158,7 +177,10 @@ def main() -> int:
         "group_count": len(groups),
         "intended_pairs": intended_pairs,
         "nominal_pairs": nominal_pairs,
-        "global_parameter": args.global_parameter,
+        "target_protocol": target_protocol.global_parameters(),
+        "runner_bin": runner_bin,
+        "build_timeout_s": args.build_timeout,
+        "runner_timeout_s": args.runner_timeout,
         "dry_run": args.dry_run,
         "generate_only": args.generate_only,
     }
@@ -175,8 +197,8 @@ def main() -> int:
                 candidates=candidates,
                 output_root=group_dir,
                 version_name=target_version,
-                problem_type_hash=target_problem_hash,
-                benchmark_protocol_hash=target_protocol_hash,
+                target_profile=profile,
+                protocol=target_protocol,
                 min_samples=args.min_samples,
                 candidate_batch_size=max(1, len(candidates)),
                 shape_batch_size=max(1, len(shapes)),
@@ -184,10 +206,10 @@ def main() -> int:
                 generate_only=args.generate_only,
                 tensilelite_bin=args.tensilelite_bin,
                 compile_threads=args.compile_threads,
-                benchmark_threads=args.benchmark_threads,
-                global_parameters=args.global_parameter,
-                extra_args=args.extra_arg,
                 keep_going=args.keep_going,
+                runner_bin=runner_bin,
+                build_timeout_s=args.build_timeout,
+                runner_timeout_s=args.runner_timeout,
             )
             inserted = sum(batch.ingest.inserted for batch in result.executed_batches if batch.ingest is not None)
             rejected = sum(batch.ingest.rejected for batch in result.executed_batches if batch.ingest is not None)

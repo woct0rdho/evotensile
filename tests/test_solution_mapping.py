@@ -3,8 +3,6 @@ from pathlib import Path
 import yaml
 
 from evotensile.candidate import Candidate
-from evotensile.cli import main
-from evotensile.database import EvoTensileDB
 from evotensile.manifest import write_manifest
 from evotensile.search_space import documented_winner_candidate
 from evotensile.shapes import Shape
@@ -144,39 +142,3 @@ def test_solution_mapping_keeps_active_stagger_fields_strict():
     solution["StaggerUMapping"] = 0
 
     assert not solution_matches_candidate(solution, candidate.canonical_params())
-
-
-def test_cli_ingest_maps_deduped_candidates_from_final_yaml(tmp_path: Path):
-    base = documented_winner_candidate()
-    deduped = Candidate({**base.canonical_params(), STORE_VECTOR_WIDTH_KEY: 1}, source="dedup_equivalent")
-    rejected = Candidate({**base.canonical_params(), "DepthU": 32}, source="rejected_or_different")
-    shape = Shape(512, 128, 1, 256)
-    manifest = tmp_path / "manifest.csv"
-    write_manifest(manifest, [base, rejected, deduped], [shape])
-    final_yaml = tmp_path / "00_Final.yaml"
-    _write_solution_yaml(final_yaml, shape, _final_solution_from_candidate(base, solution_index=0))
-
-    log = tmp_path / "client.log"
-    log.write_text(
-        "run,problem-progress,solution-progress,operation,problem-sizes,solution,validation,time-us,gflops\n"
-        '0,0/0,0/0,Contraction,"(512,128,1,256)",Kernel0,PASSED,10.0,1000.0\n',
-        encoding="utf-8",
-    )
-    db_path = tmp_path / "evals.sqlite"
-    rc = main(
-        [
-            "ingest-csv",
-            str(log),
-            "--db",
-            str(db_path),
-            "--manifest",
-            str(manifest),
-            "--solutions-yaml",
-            str(final_yaml),
-            "--version-name",
-            "vtest",
-        ]
-    )
-    assert rc == 0
-    db = EvoTensileDB.connect(db_path)
-    assert db.cache_summary(version_name="vtest") == {"ok": 2, "rejected": 1}

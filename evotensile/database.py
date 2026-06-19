@@ -178,12 +178,52 @@ class EvoTensileDB:
             )
 
     def register_candidates(self, candidates: list[Candidate]) -> None:
-        for candidate in candidates:
-            self.upsert_candidate(candidate)
+        if not candidates:
+            return
+        now = time.time()
+        with self.connection() as con:
+            con.executemany(
+                """
+                INSERT OR IGNORE INTO candidates
+                  (candidate_hash, candidate_json, source, parent_hashes, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        candidate.hash,
+                        candidate.to_json(),
+                        candidate.source,
+                        json.dumps(list(candidate.parent_hashes)),
+                        now,
+                    )
+                    for candidate in candidates
+                ],
+            )
 
     def register_shapes(self, shapes: list[Shape]) -> None:
-        for shape in shapes:
-            self.upsert_shape(shape)
+        if not shapes:
+            return
+        now = time.time()
+        with self.connection() as con:
+            con.executemany(
+                """
+                INSERT OR IGNORE INTO shapes
+                  (shape_id, m, n, batch, k, features_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        shape.id,
+                        shape.m,
+                        shape.n,
+                        shape.batch,
+                        shape.k,
+                        json.dumps(shape.features(), sort_keys=True),
+                        now,
+                    )
+                    for shape in shapes
+                ],
+            )
 
     def get_candidates(self, candidate_hashes: list[str]) -> list[Candidate]:
         if not candidate_hashes:
@@ -388,27 +428,67 @@ class EvoTensileDB:
         )
 
     def has_reusable_cache_entry(self, key: CacheKey, *, min_ok_samples: int = 1) -> bool:
-        ok_count = self.cached_evaluation_count(
+        return (key.shape_id, key.candidate_hash) in self.reusable_cache_entries(
             version_name=key.version_name,
             problem_type_hash=key.problem_type_hash,
             benchmark_protocol_hash=key.benchmark_protocol_hash,
-            shape_id=key.shape_id,
-            candidate_hash=key.candidate_hash,
-            statuses=POSITIVE_CACHE_STATUSES,
+            shape_ids=[key.shape_id],
+            candidate_hashes=[key.candidate_hash],
+            min_ok_samples=min_ok_samples,
         )
-        if ok_count >= min_ok_samples:
-            return True
-        return (
-            self.cached_evaluation_count(
-                version_name=key.version_name,
-                problem_type_hash=key.problem_type_hash,
-                benchmark_protocol_hash=key.benchmark_protocol_hash,
-                shape_id=key.shape_id,
-                candidate_hash=key.candidate_hash,
-                statuses=REUSABLE_CACHE_STATUSES,
+
+    def reusable_cache_entries(
+        self,
+        *,
+        version_name: str | None,
+        problem_type_hash: str,
+        benchmark_protocol_hash: str,
+        shape_ids: list[str],
+        candidate_hashes: list[str],
+        min_ok_samples: int = 1,
+    ) -> set[tuple[str, str]]:
+        if not shape_ids or not candidate_hashes:
+            return set()
+        shape_placeholders = ",".join("?" for _ in shape_ids)
+        candidate_placeholders = ",".join("?" for _ in candidate_hashes)
+        status_placeholders = ",".join("?" for _ in REUSABLE_CACHE_STATUSES)
+        with self.connection() as con:
+            rows = con.execute(
+                f"""
+                SELECT shape_id, candidate_hash, status, COUNT(*) AS n
+                FROM evaluations
+                WHERE version_name = ?
+                  AND problem_type_hash = ?
+                  AND benchmark_protocol_hash = ?
+                  AND shape_id IN ({shape_placeholders})
+                  AND candidate_hash IN ({candidate_placeholders})
+                  AND status IN ({status_placeholders})
+                GROUP BY shape_id, candidate_hash, status
+                """,
+                (
+                    normalize_version_name(version_name),
+                    problem_type_hash,
+                    benchmark_protocol_hash,
+                    *shape_ids,
+                    *candidate_hashes,
+                    *REUSABLE_CACHE_STATUSES,
+                ),
+            ).fetchall()
+
+        counts: dict[tuple[str, str], dict[str, int]] = {}
+        for row in rows:
+            key = (row["shape_id"], row["candidate_hash"])
+            counts.setdefault(key, {})[row["status"]] = int(row["n"])
+
+        reusable: set[tuple[str, str]] = set()
+        for key, status_counts in counts.items():
+            ok_count = sum(status_counts.get(status, 0) for status in POSITIVE_CACHE_STATUSES)
+            negative_count = sum(
+                count for status, count in status_counts.items() if status not in POSITIVE_CACHE_STATUSES
             )
-            > ok_count
-        )
+            if ok_count >= min_ok_samples or negative_count > 0:
+                reusable.add(key)
+        return reusable
 
     def rank_evaluations(
         self,
