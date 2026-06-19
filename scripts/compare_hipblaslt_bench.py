@@ -8,7 +8,6 @@ import re
 import shutil
 import statistics
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,14 +15,10 @@ from typing import Any
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from evotensile.candidate import Candidate  # noqa: E402
-from evotensile.shapes import shape_from_id  # noqa: E402
-from evotensile.tensilelite_keys import DIRECT_SOLUTION_MATCH_KEYS  # noqa: E402
-from evotensile.yaml_writer import write_tensilelite_yaml  # noqa: E402
+from evotensile.candidate import Candidate
+from evotensile.shapes import shape_from_id
+from evotensile.tensilelite_keys import DIRECT_SOLUTION_MATCH_KEYS
+from evotensile.yaml_writer import write_tensilelite_yaml
 
 DEFAULT_BENCH = Path.home() / "rocm-libraries/build/hipblaslt-bench-current/clients/hipblaslt-bench"
 DEFAULT_ROCM_DEVEL = Path.home() / "venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel"
