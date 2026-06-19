@@ -15,7 +15,7 @@ from .cache import (
 )
 from .database import EvoTensileDB
 
-DEFAULT_TENSILELITE_BIN = "/home/wd/rocm-libraries/projects/hipblaslt/tensilelite/Tensile/bin/Tensile"
+DEFAULT_TENSILELITE_BIN = os.path.expanduser("~/rocm-libraries/projects/hipblaslt/tensilelite/Tensile/bin/Tensile")
 
 
 @dataclass
