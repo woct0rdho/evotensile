@@ -505,6 +505,19 @@ Actual top-4 full-validation retime:
 - Exported rebuild-ready artifacts: `out/grid100_full_20260618_top4_retime_export/winners.csv`, `per_shape_yaml/`, `candidates_json/`, and `metadata.json`.
 - Analysis artifacts: `out/grid100_full_20260618_analysis/summary.json` and `winner_comparison.csv`.
 
+Actual installed hipBLASLt comparison:
+- Built `hipblaslt-bench` in a separate client-enabled tree with `scripts/build_hipblaslt_bench.sh`, leaving the existing hipBLASLt build/install untouched. The binary is `~/rocm-libraries/build/hipblaslt-bench-current/clients/hipblaslt-bench`.
+- The installed `_rocm_sdk_devel` package had `libhipblaslt.so` but not the gfx1151 TensileLite assets at the default path. Running required `HIPBLASLT_TENSILE_LIBPATH=~/venv_torch/lib/python3.14/site-packages/_rocm_sdk_libraries/lib/hipblaslt/library/gfx1151`.
+- Reusable comparison script: `scripts/compare_hipblaslt_bench.py`. It reads the top-4 full-validation export winners, runs `hipblaslt-bench`, writes per-shape stdout/stderr logs, and joins hipBLASLt results against EvoTensile median winner metrics.
+- Protocol: FP16 NT HHS, batch `1`, bias vector type `f16_r`, bias source `d`, `scaleAlpha_vector`, activation `none`, `alpha=2`, `beta=2`, `--initialization hpl`, `--cold_iters 10`, `--iters 100`, `--use_gpu_timer`, `--requested_solution 1`. `alpha=2`/`beta=2` match the retime `ClientParameters.ini` init modes (`init-alpha=Two`, `init-beta=Two`); use `--beta 0` later for the wrapper-contract variant if needed.
+- Method caveat: `hipblaslt-bench` reports one average over `iters` hot launches, while EvoTensile reports the median of 10 TensileLite benchmark groups with 10 enqueues each. Treat this as a practical installed-library comparison, not a perfectly identical timing protocol.
+- Run output: `out/hipblaslt_bench_grid100_20260619/comparison.csv`, `summary.json`, `metadata.json`, and `logs/`. Wall time was `20.97s`, with `100/100 ok` and no hipblaslt-bench failures.
+- Aggregate result versus installed hipBLASLt `100400` git `62d3a262`: median speedup `1.303x`, geometric-mean speedup `1.269x`, mean speedup `1.318x`, min `0.702x`, max `2.638x`. EvoTensile median throughput stats: median `16,750.8 GFLOP/s`, mean `17,903.4`; installed hipBLASLt stats: median `14,517.9 GFLOP/s`, mean `14,532.1`.
+- Win/loss count: EvoTensile was faster on `78/100` shapes, slower on `22/100`, faster by more than `5%` on `73/100`, and faster by more than `10%` on `65/100`.
+- Regressions concentrated at larger `K` and some `N=256/768` cases: `K=4096` had `8/20` regressions and `K=2048` had `7/20`; by `N`, regressions were `N=256: 8/20`, `N=768: 7/20`, `N=512: 5/20`, `N=128: 2/20`, `N=1024: 0/20`.
+- Worst regressions: `m512_n768_b1_k4096` at `0.702x`, `m640_n768_b1_k2048` at `0.739x`, `m512_n768_b1_k256` at `0.772x`, `m640_n256_b1_k4096` at `0.794x`, and `m640_n512_b1_k2048` at `0.828x`.
+- Best wins: `m640_n128_b1_k256` at `2.638x`, `m640_n512_b1_k256` at `2.224x`, `m512_n256_b1_k256` at `2.142x`, `m512_n128_b1_k512` at `2.037x`, and `m1024_n128_b1_k256` at `2.006x`.
+
 Now build a purpose-specific EvoTensile benchmark runner before scaling to the 9,681-shape grid. The runner should keep TensileLite codegen/build artifacts but replace the generic TensileLite client/library-client execution path with a small structured hot-loop runner, likely C++/HIP adapted from TensileLite `client/src` and driven by Python. Goals: avoid stdout archaeology, skip unrelated `LibraryClient` activation diagnostics, emit direct `shape_id`/`candidate_hash`/sample records, make validation status explicit, reduce DB ingestion overhead, support exact per-shape pair lists without many tiny process launches, and make matmul vs non-matmul timing decomposition reliable.
 
 ## 15. Open Questions
