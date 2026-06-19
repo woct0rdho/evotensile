@@ -21,6 +21,10 @@
 
 #include <hip/hip_runtime.h>
 
+#ifdef EVOTENSILE_USE_OPENBLAS
+#include <cblas.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -80,7 +84,7 @@ namespace
         int         numBenchmarks          = 10;
         int         enqueuesPerSync        = 10;
         int         syncsPerBenchmark      = 1;
-        int         numElementsToValidate  = 128;
+        int         numElementsToValidate  = -1;
     };
 
     template <typename T>
@@ -483,7 +487,7 @@ namespace
                 pair.numBenchmarks         = static_cast<int>(jsonOptionalInt(line, "num_benchmarks", 10));
                 pair.enqueuesPerSync       = static_cast<int>(jsonOptionalInt(line, "enqueues_per_sync", 10));
                 pair.syncsPerBenchmark     = static_cast<int>(jsonOptionalInt(line, "syncs_per_benchmark", 1));
-                pair.numElementsToValidate = static_cast<int>(jsonOptionalInt(line, "num_elements_to_validate", 128));
+                pair.numElementsToValidate = static_cast<int>(jsonOptionalInt(line, "num_elements_to_validate", -1));
                 if(pair.m <= 0 || pair.n <= 0 || pair.batch <= 0 || pair.k <= 0)
                     throw std::runtime_error("shape dimensions must be positive");
                 if(pair.numWarmups < 0 || pair.numBenchmarks < 0 || pair.enqueuesPerSync <= 0
@@ -699,6 +703,15 @@ namespace
         return inputs;
     }
 
+    float applyReferenceEpilogue(Buffers const& buffers, size_t dIndex, size_t row, float accum)
+    {
+        float result = 2.0f * accum;
+        result *= buffers.hostScaleAlphaVec[row];
+        result += 2.0f * static_cast<float>(buffers.hostC[dIndex]);
+        result += static_cast<float>(buffers.hostBias[row]);
+        return static_cast<float>(static_cast<Half>(result));
+    }
+
     float referenceElement(Pair const& pair, Buffers const& buffers, size_t dIndex)
     {
         size_t m     = static_cast<size_t>(pair.m);
@@ -714,7 +727,7 @@ namespace
         if(b >= batch)
             throw std::runtime_error("reference index out of range");
 
-        float accum = 0.0f;
+        float accum        = 0.0f;
         size_t aBatchOffset = b * m * k;
         size_t bBatchOffset = b * static_cast<size_t>(pair.n) * k;
         for(size_t kk = 0; kk < k; ++kk)
@@ -724,12 +737,84 @@ namespace
                 buffers.hostB[bBatchOffset + col + kk * static_cast<size_t>(pair.n)]);
             accum += av * bv;
         }
-        float result = 2.0f * accum;
-        result *= buffers.hostScaleAlphaVec[row];
-        result += 2.0f * static_cast<float>(buffers.hostC[dIndex]);
-        result += static_cast<float>(buffers.hostBias[row]);
-        return static_cast<float>(static_cast<Half>(result));
+        return applyReferenceEpilogue(buffers, dIndex, row, accum);
     }
+
+#ifdef EVOTENSILE_USE_OPENBLAS
+    bool fitsBlasInt(size_t value)
+    {
+        return value <= static_cast<size_t>(std::numeric_limits<blasint>::max());
+    }
+
+    void convertHalfToFloat(std::vector<float>& out,
+                            std::vector<Half> const& in,
+                            size_t offset,
+                            size_t count)
+    {
+        out.resize(count);
+        for(size_t i = 0; i < count; ++i)
+            out[i] = static_cast<float>(in[offset + i]);
+    }
+
+    bool validateResultOpenBlas(Pair const& pair, Buffers const& buffers, std::string& message)
+    {
+        size_t m     = static_cast<size_t>(pair.m);
+        size_t n     = static_cast<size_t>(pair.n);
+        size_t k     = static_cast<size_t>(pair.k);
+        size_t batch = static_cast<size_t>(pair.batch);
+        if(!fitsBlasInt(m) || !fitsBlasInt(n) || !fitsBlasInt(k))
+            return false;
+
+        std::vector<float> a;
+        std::vector<float> b;
+        std::vector<float> reference(m * n);
+        size_t             checked = 0;
+        for(size_t batchIndex = 0; batchIndex < batch; ++batchIndex)
+        {
+            size_t aBatchOffset = batchIndex * m * k;
+            size_t bBatchOffset = batchIndex * n * k;
+            size_t dBatchOffset = batchIndex * m * n;
+            convertHalfToFloat(a, buffers.hostA, aBatchOffset, m * k);
+            convertHalfToFloat(b, buffers.hostB, bBatchOffset, n * k);
+            std::fill(reference.begin(), reference.end(), 0.0f);
+            cblas_sgemm(CblasColMajor,
+                        CblasNoTrans,
+                        CblasTrans,
+                        static_cast<blasint>(m),
+                        static_cast<blasint>(n),
+                        static_cast<blasint>(k),
+                        1.0f,
+                        a.data(),
+                        static_cast<blasint>(m),
+                        b.data(),
+                        static_cast<blasint>(n),
+                        0.0f,
+                        reference.data(),
+                        static_cast<blasint>(m));
+
+            for(size_t elem = 0; elem < m * n; ++elem)
+            {
+                size_t dIndex   = dBatchOffset + elem;
+                size_t row      = elem % m;
+                float  expected = applyReferenceEpilogue(buffers, dIndex, row, reference[elem]);
+                float  actual   = static_cast<float>(buffers.resultD[dIndex]);
+                if(!almostEqualHalf(expected, actual))
+                {
+                    std::ostringstream os;
+                    os << "FAILED elem=" << dIndex << " expected=" << expected << " actual=" << actual
+                       << " stride=1 backend=openblas";
+                    message = os.str();
+                    return true;
+                }
+                ++checked;
+            }
+        }
+        std::ostringstream os;
+        os << "PASSED checked=" << checked << " stride=1 backend=openblas";
+        message = os.str();
+        return true;
+    }
+#endif
 
     bool validateResult(Pair const& pair, Buffers& buffers, std::string& message)
     {
@@ -749,6 +834,14 @@ namespace
         size_t stride = 1;
         if(pair.numElementsToValidate > 0 && static_cast<size_t>(pair.numElementsToValidate) < total)
             stride = nextPrime(total / static_cast<size_t>(pair.numElementsToValidate));
+
+#ifdef EVOTENSILE_USE_OPENBLAS
+        if(stride == 1)
+        {
+            if(validateResultOpenBlas(pair, buffers, message))
+                return message.rfind("PASSED", 0) == 0;
+        }
+#endif
 
         size_t checked = 0;
         for(size_t elem = 0; elem < total; elem += stride)

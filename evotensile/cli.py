@@ -42,8 +42,6 @@ def _protocol(args: argparse.Namespace, profile: TargetProfile) -> BenchmarkProt
         syncs_per_benchmark=getattr(args, "syncs_per_benchmark", None),
         num_elements_to_validate=getattr(args, "num_elements_to_validate", None),
     )
-    if getattr(args, "full_validation", False):
-        protocol = protocol.full_validation()
     return protocol
 
 
@@ -86,11 +84,6 @@ def _add_protocol_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--enqueues-per-sync", type=int, default=None)
     parser.add_argument("--syncs-per-benchmark", type=int, default=None)
     parser.add_argument("--num-elements-to-validate", type=int, default=None)
-    parser.add_argument(
-        "--full-validation",
-        action="store_true",
-        help="Use NumElementsToValidate=-1; intended for finalist retiming/debug runs",
-    )
 
 
 def cmd_summarize_space(args: argparse.Namespace) -> int:
