@@ -1,6 +1,6 @@
 # EvoTensile Plan
 
-EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The initial target is gfx1151 FP16 NT HHS non-AuxH GridBased GEMM tuning for the 100-shape pilot grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, then expansion to finer/larger shape grids.
+EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The current completed pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, followed by hybrid export into checked-in hipBLASLt HHS/HHS+AuxH/BBS/BBS+AuxB GridBased YAMLs, rebuild, and PyTorch-level validation. The next target is a purpose-specific benchmark runner before scaling to finer/larger shape grids.
 
 ## 1. Motivation
 
@@ -50,7 +50,7 @@ The pilot may benchmark more than 10 configs per shape. Initial budget target: r
 - Do not modify TensileLite internals initially.
 - Do not rely on Origami / Formocast as a hard pruning gate.
 - Do not attempt to solve all data types/layouts immediately.
-- Do not generate final production hipBLASLt logic before the benchmark/evaluation loop is stable.
+- Do not scale to production-size grids before the benchmark/evaluation and GridBased update loop is stable.
 - Do not assume one unique candidate set per shape; use buckets/batches to control compilation and process overhead.
 
 ## 4. Design Principles
@@ -65,13 +65,15 @@ The pilot may benchmark more than 10 configs per shape. Initial budget target: r
 ## 5. Current Implementation Status
 
 Generic implemented capabilities are summarized in `README.md`. Target-specific status:
-- the gfx1151 FP16 NT HHS problem type and pilot grid are encoded;
+- the gfx1151 FP16 NT HHS problem type and 100-shape pilot grid are encoded;
 - the search space can express the documented `8192^3` SIA3/no-store-priority winner family;
+- the completed first-pass scan, repaired ingestion, top-4 full-validation retime, installed hipBLASLt comparison, hybrid export, GridBased YAML update, hipBLASLt rebuild/install, and PyTorch benchmark validation are done for the 100-shape pilot;
 - generated YAML uses complete candidate `Groups` rather than independent Cartesian products;
 - runner support exists for direct runs and compile-then-serial-benchmark runs;
 - DB schema includes manual cache namespace fields (`version_name`, `problem_type_hash`, `benchmark_protocol_hash`);
 - validation-aware CSV/log parsing and SQLite ingestion exist, using TensileLite final solution YAML as the source of truth for candidate mapping;
 - cache-aware batch scheduling exists for missing `ok` observations, with compile-only, serial benchmark, and immediate ingestion phases;
+- `scripts/update_hipblaslt_gridbased_logic.py` now emits build-valid checked-in YAMLs for HHS/HHS+AuxH/BBS/BBS+AuxB variants, including Aux `UseE` handling and scalar type normalization;
 - a real one-shape harness under `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that hindsight-directed local refinement can reproduce the documented `8192^3` winner, but this operator is not part of the generic scheduler because it bakes in the known winner neighborhood.
 
 ## 6. Candidate Model
@@ -401,7 +403,7 @@ Final results should separate:
 - TensileLite YAML emission with `Groups` exists.
 - Default hot-loop protocol is encoded.
 
-### M3: runner, parser, and cache identity - partially done
+### M3: runner, parser, and cache identity - mostly done
 
 Done:
 - invoke TensileLite in a subprocess;
@@ -418,18 +420,18 @@ Implemented now:
 Remaining:
 - classify timeouts, multi-candidate build failures, and parse failures robustly beyond validation pass/fail rows.
 
-### M4: first pilot scan - next major milestone
+### M4: first pilot scan - done
 
-- Evaluate 64-128 candidates per shape or shape bucket.
-- Generate winner/near-winner report.
-- Identify invalid/high-failure regions of search space.
-- Verify batch sizes against compile time and serial benchmark time.
+- Evaluated `135` proposed candidates over the 100-shape pilot grid.
+- Repaired final-YAML mapping and produced a validation-gated database with `75,000 ok`, `2,000 validation_fail`, and `5,800 rejected` rows.
+- Generated winner/near-winner reports under `out/grid100_full_20260618_analysis`.
+- Verified that generic TensileLite client orchestration dominates wall time, motivating the custom benchmark runner before larger grids.
 
-### M5: local/evolutionary refinement
+### M5: local/evolutionary refinement - done for the pilot, open for larger grids
 
-- Improve the current DE/GOMEA scheduler path with shape-aware parent selection and non-hindsight refinement.
-- Add elite crossover and failure-aware mutations.
-- Run 1-3 refinement rounds on pilot shapes.
+- `seed-random-gomea` plus nearest-shape transfer is the current first-pass proposal policy.
+- GOMEA-style linked neighborhoods reproduced the documented `8192^3` winner without inserting it directly.
+- Future work: richer shape-aware parent selection, elite crossover, failure-aware mutations, and non-hindsight refinement rounds for larger grids.
 
 ### M6: final confirmation + export
 
@@ -437,9 +439,11 @@ Done for the 100-shape pilot:
 - Repaired final-YAML mapping and re-ingested the full scan into `out/grid100_full_20260618_repaired.sqlite`.
 - Retimed top-4 per shape with full validation under `gfx1151_fp16_nt_hhs_grid100_20260618_top4_retime_fullval`.
 - Exported selected candidate bundles to `out/grid100_full_20260618_top4_retime_export`.
-
-Still needed before GridBased merge:
-- Generate or document the exact candidate-to-shape mapping needed by the hipBLASLt logic-generation workflow.
+- Compared against installed hipBLASLt and exported `out/grid100_full_20260618_hybrid_best_export`, keeping EvoTensile on `78/100` shapes and replacing `22/100` regressions with installed-hipBLASLt selected configs.
+- Added `scripts/update_hipblaslt_gridbased_logic.py` and used it to directly overwrite the tracked gfx1151 GridBased HHS/HHS+AuxH/BBS/BBS+AuxB YAMLs in `~/rocm-libraries`.
+- The updater emits TensileLite-style YAML formatting, trims per-solution dictionaries to the key schema/order used by existing large GridBased YAMLs, strips benchmark-only embedded `ProblemType`, preserves the full local EvoTensile export/retime artifacts unchanged, forces `GroupLoadStore=False` for Aux `UseE` variants, and normalizes scalar types that TensileLite/msgpack expect as bool/float.
+- Rebuilt hipBLASLt from `~/rocm-libraries` and installed into `$ROCM_PATH` with gfx1151 TensileLite assets under `$ROCM_PATH/lib/hipblaslt/library/gfx1151`.
+- Validated the rebuilt install with `~/ComfyUI-FeatherOps/benchmark_mm_hipblaslt_fp16.py` using `TORCH_BLAS_PREFER_HIPBLASLT=1` and `HIPBLASLT_TENSILE_LIBPATH=$ROCM_PATH/lib/hipblaslt/library/gfx1151`.
 
 ### M7: transfer to finer grids
 
@@ -447,7 +451,7 @@ Still needed before GridBased merge:
 - Add smaller-budget local refinement for new shapes.
 - Add surrogate-assisted proposal once enough data exists.
 
-## 13. Pre-Pilot Review Notes
+## 13. Pilot Review Notes
 
 Post-100-shape status and remaining risks:
 - The `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md` plan is still applicable: start with the 100-shape NT HHS non-AuxH grid, use hot-loop retiming from `tensile_fp16_nt_hhs.md`, and treat the `8192^3` winner as a center-point seed/evidence rather than a shape-generic conclusion.
@@ -506,7 +510,7 @@ Actual top-4 full-validation retime:
 - Analysis artifacts: `out/grid100_full_20260618_analysis/summary.json` and `winner_comparison.csv`.
 
 Actual installed hipBLASLt comparison:
-- Built `hipblaslt-bench` in a separate client-enabled tree with `scripts/build_hipblaslt_bench.sh`, leaving the existing hipBLASLt build/install untouched. The binary is `~/rocm-libraries/build/hipblaslt-bench-current/clients/hipblaslt-bench`.
+- Built `hipblaslt-bench` in a separate client-enabled tree with `~/rocm-libraries/build_hipblaslt_bench.sh`, leaving the existing hipBLASLt build/install untouched. The binary is `~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench`.
 - The installed `_rocm_sdk_devel` package had `libhipblaslt.so` but not the gfx1151 TensileLite assets at the default path. Running required `HIPBLASLT_TENSILE_LIBPATH=~/venv_torch/lib/python3.14/site-packages/_rocm_sdk_libraries/lib/hipblaslt/library/gfx1151`.
 - Reusable comparison script: `scripts/compare_hipblaslt_bench.py`. It reads the top-4 full-validation export winners, runs `hipblaslt-bench`, writes per-shape stdout/stderr logs, and joins hipBLASLt results against EvoTensile median winner metrics.
 - Protocol: FP16 NT HHS, batch `1`, bias vector type `f16_r`, bias source `d`, `scaleAlpha_vector`, activation `none`, `alpha=2`, `beta=2`, `--initialization hpl`, `--cold_iters 10`, `--iters 100`, `--use_gpu_timer`, `--requested_solution 1`. `alpha=2`/`beta=2` match the retime `ClientParameters.ini` init modes (`init-alpha=Two`, `init-beta=Two`); use `--beta 0` later for the wrapper-contract variant if needed.
@@ -518,6 +522,14 @@ Actual installed hipBLASLt comparison:
 - Worst regressions: `m512_n768_b1_k4096` at `0.702x`, `m640_n768_b1_k2048` at `0.739x`, `m512_n768_b1_k256` at `0.772x`, `m640_n256_b1_k4096` at `0.794x`, and `m640_n512_b1_k2048` at `0.828x`.
 - Best wins: `m640_n128_b1_k256` at `2.638x`, `m640_n512_b1_k256` at `2.224x`, `m512_n256_b1_k256` at `2.142x`, `m512_n128_b1_k512` at `2.037x`, and `m1024_n128_b1_k256` at `2.006x`.
 
+Actual rebuilt hipBLASLt validation:
+- Rebuilt hipBLASLt from `~/rocm-libraries` using `BUILD_DIR=~/rocm-libraries/build/hipblaslt-gfx1151-grid100-hybrid` and `GPU_TARGETS=gfx1151`, then installed into `$ROCM_PATH`.
+- Runtime validation used `~/ComfyUI-FeatherOps/benchmark_mm_hipblaslt_fp16.py` with `TORCH_BLAS_PREFER_HIPBLASLT=1` and `HIPBLASLT_TENSILE_LIBPATH=$ROCM_PATH/lib/hipblaslt/library/gfx1151`.
+- Benchmark output: `~/ComfyUI-FeatherOps/mm_hipblaslt_fp16.csv` and `/tmp/benchmark_mm_hipblaslt_fp16_grid100_20260619_125807.log`.
+- The 1024^3 NT path showed the expected improvement versus the TheRock issue baseline: `torch_mm_NT` `16.007 -> 23.434 TFLOP/s` (`1.464x`), `torch_linear_NT` `15.998 -> 23.465 TFLOP/s` (`1.467x`), and direct `hipblaslt_NT` `14.417 -> 25.554 TFLOP/s` (`1.772x`).
+- Larger square NT cases also improved strongly in that benchmark: direct `hipblaslt_NT` speedup was `1.829x` at `2048`, `2.218x` at `4096`, and `4.804x` at `8192` versus the issue baseline.
+- The benchmark log had no warning/error/exception/fallback/nan hits. The successful build log still had TensileLite YAML type-mismatch warnings in five pre-existing non-target files; the four updated `Ailk_Bjlk` files were normalized before the final install.
+
 Now build a purpose-specific EvoTensile benchmark runner before scaling to the 9,681-shape grid. The runner should keep TensileLite codegen/build artifacts but replace the generic TensileLite client/library-client execution path with a small structured hot-loop runner, likely C++/HIP adapted from TensileLite `client/src` and driven by Python. Goals: avoid stdout archaeology, skip unrelated `LibraryClient` activation diagnostics, emit direct `shape_id`/`candidate_hash`/sample records, make validation status explicit, reduce DB ingestion overhead, support exact per-shape pair lists without many tiny process launches, and make matmul vs non-matmul timing decomposition reliable.
 
 ## 15. Open Questions
@@ -527,12 +539,12 @@ Now build a purpose-specific EvoTensile benchmark runner before scaling to the 9
 - Which cheap constraints can predict invalid TensileLite solutions before invoking TensileLite.
 - Whether `SkipSlowSolutionRatio` biases search results for small/skinny shapes.
 - Whether any subset of Origami features is useful as a weak feature for surrogate training.
-- How to export final results into the existing hipBLASLt GridBased logic workflow with minimal manual steps.
+- How to validate rebuilt hipBLASLt behavior quickly and repeatably after each future GridBased YAML update.
 
-## 15. Immediate Next Steps
+## 16. Immediate Next Steps
 
 - Start the purpose-specific EvoTensile benchmark runner design and prototype against `10-20` known candidate/shape pairs from the repaired and retimed 100-shape artifacts.
 - Keep the generic TensileLite client as the correctness reference while validating the custom runner's timing, validation, and shape/candidate identity output.
 - Add timeout handling and multi-candidate build-failure attribution once failure signatures are better understood.
 - Add non-hindsight refinement operators that learn from cached winners/near-winners without hard-coding the documented `8192^3` neighborhood.
-- Define the final GridBased logic-generation/merge path from the exported per-shape YAML/JSON winner artifacts.
+- Add a compact rebuilt-hipBLASLt validation recipe that checks target `hipblaslt-bench` shapes plus the PyTorch/FeatherOps 1024^3 NT path before scaling further.
