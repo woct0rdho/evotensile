@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 
 from evotensile.database import EvoTensileDB
+from evotensile.profile import PROFILES, TargetProfile, get_profile
+from evotensile.protocol import BenchmarkProtocol
 from evotensile.shapes import shape_from_id
 from evotensile.yaml_writer import write_tensilelite_yaml
 
@@ -14,14 +16,14 @@ def _load_winners(
     db: EvoTensileDB,
     *,
     version_name: str,
-    problem_type_hash: str | None,
-    benchmark_protocol_hash: str | None,
+    profile: TargetProfile,
+    protocol: BenchmarkProtocol,
     min_samples: int,
 ) -> list:
     summaries = db.rank_evaluations(
         version_name=version_name,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
+        problem_type_hash=profile.problem_type_hash,
+        benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
         min_samples=min_samples,
     )
     winners_by_shape = {}
@@ -30,16 +32,34 @@ def _load_winners(
     return [winners_by_shape[shape_id] for shape_id in sorted(winners_by_shape)]
 
 
+def _protocol_from_args(args: argparse.Namespace, profile: TargetProfile) -> BenchmarkProtocol:
+    protocol = profile.default_protocol.with_overrides(
+        num_warmups=args.num_warmups,
+        num_benchmarks=args.num_benchmarks,
+        enqueues_per_sync=args.enqueues_per_sync,
+        syncs_per_benchmark=args.syncs_per_benchmark,
+        num_elements_to_validate=args.num_elements_to_validate,
+    )
+    return protocol.full_validation() if args.full_validation else protocol
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Export one best validation-passed EvoTensile candidate per shape")
     parser.add_argument("--db", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--profile", choices=sorted(PROFILES), default=None)
     parser.add_argument("--version-name", required=True)
-    parser.add_argument("--problem-type-hash", default=None)
-    parser.add_argument("--benchmark-protocol-hash", default=None)
     parser.add_argument("--min-samples", type=int, default=1)
+    parser.add_argument("--num-warmups", type=int, default=None)
+    parser.add_argument("--num-benchmarks", type=int, default=None)
+    parser.add_argument("--enqueues-per-sync", type=int, default=None)
+    parser.add_argument("--syncs-per-benchmark", type=int, default=None)
+    parser.add_argument("--num-elements-to-validate", type=int, default=None)
+    parser.add_argument("--full-validation", action="store_true")
     args = parser.parse_args()
 
+    profile = get_profile(args.profile)
+    protocol = _protocol_from_args(args, profile)
     db = EvoTensileDB.connect(args.db)
     output_dir = Path(args.output_dir)
     yaml_dir = output_dir / "per_shape_yaml"
@@ -50,8 +70,8 @@ def main() -> int:
     winners = _load_winners(
         db,
         version_name=args.version_name,
-        problem_type_hash=args.problem_type_hash,
-        benchmark_protocol_hash=args.benchmark_protocol_hash,
+        profile=profile,
+        protocol=protocol,
         min_samples=args.min_samples,
     )
     candidates = {
@@ -81,7 +101,14 @@ def main() -> int:
             shape = shape_from_id(winner.shape_id)
             yaml_path = yaml_dir / f"{winner.shape_id}_{candidate.hash}.yaml"
             json_path = json_dir / f"{candidate.hash}.json"
-            write_tensilelite_yaml(yaml_path, [candidate], [shape])
+            write_tensilelite_yaml(
+                yaml_path,
+                [candidate],
+                [shape],
+                global_parameters=profile.global_parameters(protocol),
+                library_logic=profile.library_logic,
+                problem_type=profile.problem_type,
+            )
             json_path.write_text(candidate.to_json() + "\n", encoding="utf-8")
             writer.writerow(
                 [
@@ -99,9 +126,11 @@ def main() -> int:
 
     metadata = {
         "db": str(args.db),
+        "profile": profile.name,
         "version_name": args.version_name,
-        "problem_type_hash": args.problem_type_hash,
-        "benchmark_protocol_hash": args.benchmark_protocol_hash,
+        "problem_type_hash": profile.problem_type_hash,
+        "benchmark_protocol_hash": profile.benchmark_protocol_hash(protocol),
+        "protocol": protocol.global_parameters(),
         "min_samples": args.min_samples,
         "winner_count": len(winners),
         "winners_csv": str(csv_path),

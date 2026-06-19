@@ -4,18 +4,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
 
-from .cache import CacheKey, normalize_version_name
+from .cache import normalize_version_name
 from .candidate import Candidate, Shape, stable_hash
 from .database import EvaluationInsert, EvoTensileDB
-from .ingest import IngestResult, ingest_results
 from .manifest import write_manifest
-from .runner import DEFAULT_TENSILELITE_BIN, build_then_benchmark
+from .profile import DEFAULT_PROFILE, TargetProfile
+from .protocol import BenchmarkProtocol
+from .runner import DEFAULT_TENSILELITE_BIN
 from .search.differential_evolution import differential_evolution_candidates
 from .search.gomea import gomea_candidates, gomea_neighborhood_candidates
 from .search.local_search import mutate_elites
 from .search.random_search import initial_random_batch
 from .shapes import shape_from_id
-from .solution_mapping import find_solution_yamls
+from .structured_runner import build_then_structured_benchmark
 from .yaml_writer import write_tensilelite_yaml
 
 
@@ -33,14 +34,27 @@ class PlannedBatch:
 
 
 @dataclass(frozen=True)
+class BatchIngestResult:
+    inserted: int
+    unmapped: int
+    status_counts: dict[str, int]
+    rejected: int = 0
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+@dataclass(frozen=True)
 class ExecutedBatch:
     planned: PlannedBatch
     yaml_path: Path
     manifest_path: Path
     output_dir: Path
     build_returncode: int | None = None
-    benchmark_returncode: int | None = None
-    ingest: IngestResult | None = None
+    runner_returncode: int | None = None
+    ingest: BatchIngestResult | None = None
 
 
 @dataclass(frozen=True)
@@ -69,17 +83,17 @@ PROPOSAL_MODES = (
     "seed-random-gomea",
     "evolutionary",
 )
-DEFAULT_PROPOSAL = "seed-random-gomea"
-DEFAULT_NUM_RANDOM = 64
-DEFAULT_ELITE_COUNT = 8
-DEFAULT_LOCAL_COUNT = 32
-DEFAULT_DE_COUNT = 32
-DEFAULT_GOMEA_COUNT = 64
-DEFAULT_TRANSFER_SHAPES = 4
-DEFAULT_TRANSFER_PER_SHAPE = 2
-DEFAULT_MUTATION_RATE = 0.25
-DEFAULT_CROSSOVER_RATE = 0.8
-DEFAULT_RANDOM_GENE_RATE = 0.1
+DEFAULT_PROPOSAL = DEFAULT_PROFILE.default_proposal
+DEFAULT_NUM_RANDOM = DEFAULT_PROFILE.default_num_random
+DEFAULT_ELITE_COUNT = DEFAULT_PROFILE.default_elite_count
+DEFAULT_LOCAL_COUNT = DEFAULT_PROFILE.default_local_count
+DEFAULT_DE_COUNT = DEFAULT_PROFILE.default_de_count
+DEFAULT_GOMEA_COUNT = DEFAULT_PROFILE.default_gomea_count
+DEFAULT_TRANSFER_SHAPES = DEFAULT_PROFILE.default_transfer_shapes
+DEFAULT_TRANSFER_PER_SHAPE = DEFAULT_PROFILE.default_transfer_per_shape
+DEFAULT_MUTATION_RATE = DEFAULT_PROFILE.default_mutation_rate
+DEFAULT_CROSSOVER_RATE = DEFAULT_PROFILE.default_crossover_rate
+DEFAULT_RANDOM_GENE_RATE = DEFAULT_PROFILE.default_random_gene_rate
 
 
 def _dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
@@ -297,31 +311,6 @@ def _chunks(items: list[T], size: int) -> list[list[T]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
-def _is_cached(
-    db: EvoTensileDB,
-    *,
-    version_name: str,
-    problem_type_hash: str,
-    benchmark_protocol_hash: str,
-    shape: Shape,
-    candidate: Candidate,
-    min_samples: int,
-    ignore_cache: bool,
-) -> bool:
-    if ignore_cache:
-        return False
-    return db.has_reusable_cache_entry(
-        CacheKey(
-            version_name=version_name,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            shape_id=shape.id,
-            candidate_hash=candidate.hash,
-        ),
-        min_ok_samples=min_samples,
-    )
-
-
 def _missing_candidate_indices_by_shape(
     db: EvoTensileDB,
     *,
@@ -333,23 +322,26 @@ def _missing_candidate_indices_by_shape(
     min_samples: int,
     ignore_cache: bool = False,
 ) -> dict[int, tuple[int, ...]]:
+    cached_pairs = set()
+    if not ignore_cache:
+        cached_pairs = db.reusable_cache_entries(
+            version_name=version_name,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            shape_ids=[shape.id for shape in shapes],
+            candidate_hashes=[candidate.hash for candidate in candidates],
+            min_ok_samples=min_samples,
+        )
+
     missing: dict[int, tuple[int, ...]] = {}
     for shape_index, shape in enumerate(shapes):
-        missing_indices: list[int] = []
-        for candidate_index, candidate in enumerate(candidates):
-            if not _is_cached(
-                db,
-                version_name=version_name,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
-                shape=shape,
-                candidate=candidate,
-                min_samples=min_samples,
-                ignore_cache=ignore_cache,
-            ):
-                missing_indices.append(candidate_index)
+        missing_indices = tuple(
+            candidate_index
+            for candidate_index, candidate in enumerate(candidates)
+            if (shape.id, candidate.hash) not in cached_pairs
+        )
         if missing_indices:
-            missing[shape_index] = tuple(missing_indices)
+            missing[shape_index] = missing_indices
     return missing
 
 
@@ -441,14 +433,26 @@ def _batch_fingerprint(batch: PlannedBatch) -> str:
 
 
 def write_batch_inputs(
-    batch: PlannedBatch, output_root: str | Path, *, unique_run_dir: bool = False
+    batch: PlannedBatch,
+    output_root: str | Path,
+    *,
+    target_profile: TargetProfile,
+    protocol: BenchmarkProtocol,
+    unique_run_dir: bool = False,
 ) -> tuple[Path, Path, Path]:
     batch_dir = Path(output_root) / f"batch_{batch.batch_index:04d}_{_batch_fingerprint(batch)}"
     batch_dir.mkdir(parents=True, exist_ok=True)
     yaml_path = batch_dir / "config.yaml"
     manifest_path = batch_dir / "config.manifest.csv"
     run_dir = batch_dir / (f"run_{uuid.uuid4().hex[:8]}" if unique_run_dir else "run")
-    write_tensilelite_yaml(yaml_path, batch.candidates, batch.shapes)
+    write_tensilelite_yaml(
+        yaml_path,
+        batch.candidates,
+        batch.shapes,
+        global_parameters=target_profile.global_parameters(protocol),
+        library_logic=target_profile.library_logic,
+        problem_type=target_profile.problem_type,
+    )
     write_manifest(manifest_path, batch.candidates, batch.shapes)
     return yaml_path, manifest_path, run_dir
 
@@ -480,6 +484,30 @@ def _record_batch_status(
     return len(evaluations)
 
 
+def _ingest_result_from_inserts(
+    inserts: list[EvaluationInsert], *, errors: list[str] | None = None
+) -> BatchIngestResult:
+    status_counts: dict[str, int] = {}
+    rejected = 0
+    unmapped = 0
+    inserted = 0
+    for item in inserts:
+        status_counts[item.status] = status_counts.get(item.status, 0) + 1
+        if item.status == "rejected":
+            rejected += 1
+        elif item.status == "unmapped":
+            unmapped += 1
+        else:
+            inserted += 1
+    return BatchIngestResult(
+        inserted=inserted,
+        unmapped=unmapped,
+        status_counts=status_counts,
+        rejected=rejected,
+        errors=errors or [],
+    )
+
+
 def execute_schedule(
     db: EvoTensileDB,
     *,
@@ -487,8 +515,8 @@ def execute_schedule(
     candidates: list[Candidate],
     output_root: str | Path,
     version_name: str,
-    problem_type_hash: str,
-    benchmark_protocol_hash: str,
+    target_profile: TargetProfile = DEFAULT_PROFILE,
+    protocol: BenchmarkProtocol | None = None,
     min_samples: int = 1,
     candidate_batch_size: int = 32,
     shape_batch_size: int = 100,
@@ -498,11 +526,18 @@ def execute_schedule(
     generate_only: bool = False,
     tensilelite_bin: str | Path = DEFAULT_TENSILELITE_BIN,
     compile_threads: int | None = -1,
-    benchmark_threads: int | None = 1,
-    global_parameters: list[str] | None = None,
-    extra_args: list[str] | None = None,
     keep_going: bool = False,
+    runner_bin: str | Path | None = None,
+    build_timeout_s: float | None = None,
+    runner_timeout_s: float | None = None,
 ) -> ScheduleResult:
+    if not dry_run and not generate_only and runner_bin is None:
+        raise ValueError("--runner-bin is required")
+
+    protocol = protocol or target_profile.default_protocol
+    problem_type_hash = target_profile.problem_type_hash
+    benchmark_protocol_hash = target_profile.benchmark_protocol_hash(protocol)
+
     db.init()
     db.register_candidates(candidates)
     db.register_shapes(shapes)
@@ -548,31 +583,46 @@ def execute_schedule(
             yaml_path, manifest_path, run_dir = write_batch_inputs(
                 current,
                 output_root,
+                target_profile=target_profile,
+                protocol=protocol,
                 unique_run_dir=not generate_only,
             )
             if generate_only:
                 executed.append(ExecutedBatch(current, yaml_path, manifest_path, run_dir))
                 continue
 
-            # Keep compile and benchmark sequential. On Strix Halo the CPU compiler
-            # and integrated GPU share power/thermal headroom, so we avoid deliberate
-            # compile/benchmark overlap even though compilation itself may be threaded.
-            build_result, bench_result = build_then_benchmark(
+            # Keep codegen/build and benchmarking sequential on Strix Halo. TensileLite
+            # produces the final solutions/code objects, then the structured runner
+            # benchmarks exact accepted pairs with machine-readable IO.
+            build_result, structured_result, inserts, structured_errors = build_then_structured_benchmark(
                 yaml_path,
+                manifest_path,
                 run_dir,
-                tensilelite_bin=tensilelite_bin,
+                shapes=current.shapes,
+                candidates=current.candidates,
                 db=db,
+                tensilelite_bin=tensilelite_bin,
                 compile_threads=compile_threads,
-                benchmark_threads=benchmark_threads,
-                global_parameters=global_parameters,
+                target_profile=target_profile,
+                protocol=protocol,
                 version_name=version,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
-                extra_args=extra_args,
+                runner_bin=runner_bin,
+                build_timeout_s=build_timeout_s,
+                runner_timeout_s=runner_timeout_s,
             )
-            ingest: IngestResult | None = None
-            if bench_result is None and len(current.candidates) == 1:
-                _record_batch_status(
+            if build_result.timed_out and len(current.candidates) == 1:
+                recorded = _record_batch_status(
+                    db,
+                    current,
+                    status="build_timeout",
+                    run_id=build_result.run_id,
+                    version_name=version,
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                )
+                ingest = BatchIngestResult(inserted=0, unmapped=0, status_counts={"build_timeout": recorded})
+            elif not build_result.ok and len(current.candidates) == 1:
+                recorded = _record_batch_status(
                     db,
                     current,
                     status="build_failed",
@@ -581,27 +631,30 @@ def execute_schedule(
                     problem_type_hash=problem_type_hash,
                     benchmark_protocol_hash=benchmark_protocol_hash,
                 )
-            if bench_result is not None:
-                # Ingest only the benchmark stdout for timing rows. The same run
-                # directory also contains the build-only stdout, and build-only can
-                # emit cold/partial CSV rows that should not enter the hot-loop cache.
-                ingest = ingest_results(
-                    db=db,
-                    paths=[bench_result.stdout_path],
-                    manifest_path=manifest_path,
-                    version_name=version,
-                    problem_type_hash=problem_type_hash,
-                    benchmark_protocol_hash=benchmark_protocol_hash,
-                    run_id=bench_result.run_id,
-                    include_logs=True,
-                    solutions_yaml=[str(path) for path in find_solution_yamls([run_dir])],
+                ingest = BatchIngestResult(inserted=0, unmapped=0, status_counts={"build_failed": recorded})
+            elif structured_errors:
+                status_counts = {}
+                if structured_result is not None and structured_result.timed_out:
+                    recorded = _record_batch_status(
+                        db,
+                        current,
+                        status="runner_timeout",
+                        run_id=None,
+                        version_name=version,
+                        problem_type_hash=problem_type_hash,
+                        benchmark_protocol_hash=benchmark_protocol_hash,
+                    )
+                    status_counts["runner_timeout"] = recorded
+                ingest = BatchIngestResult(
+                    inserted=0, unmapped=0, status_counts=status_counts, errors=structured_errors
                 )
-                if not bench_result.ok and ingest.ok and ingest.inserted > 0:
-                    # TensileLite returns nonzero when any candidate validation
-                    # fails, even though the benchmark produced complete useful
-                    # rows. Keep the returncode, but classify the run as an
-                    # objective-data run rather than an infrastructure failure.
-                    db.update_run_status(bench_result.run_id, status="completed_with_validation_fail")
+            else:
+                db.insert_evaluations(inserts)
+                ingest = _ingest_result_from_inserts(inserts)
+            runner_returncode = structured_result.returncode if structured_result is not None else None
+            failed = (
+                not build_result.ok or (structured_result is not None and not structured_result.ok) or not ingest.ok
+            )
             executed.append(
                 ExecutedBatch(
                     planned=current,
@@ -609,14 +662,10 @@ def execute_schedule(
                     manifest_path=manifest_path,
                     output_dir=run_dir,
                     build_returncode=build_result.returncode,
-                    benchmark_returncode=bench_result.returncode if bench_result is not None else None,
+                    runner_returncode=runner_returncode,
                     ingest=ingest,
                 )
             )
-            bench_failed_without_data = bench_result is None or (
-                not bench_result.ok and (ingest is None or ingest.inserted == 0 or not ingest.ok)
-            )
-            failed = not build_result.ok or bench_failed_without_data or (ingest is not None and not ingest.ok)
             if failed and not keep_going:
                 return ScheduleResult(planned_batches=planned, executed_batches=executed)
     return ScheduleResult(planned_batches=planned, executed_batches=executed)

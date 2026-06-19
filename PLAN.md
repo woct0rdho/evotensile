@@ -1,6 +1,6 @@
 # EvoTensile Plan
 
-EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The current completed pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, followed by hybrid export into checked-in hipBLASLt HHS/HHS+AuxH/BBS/BBS+AuxB GridBased YAMLs, rebuild, PyTorch-level performance validation, and repeatable installed-library correctness validation. The next target is a purpose-specific benchmark runner before scaling to finer/larger shape grids.
+EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The current completed pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, followed by hybrid export into checked-in hipBLASLt HHS/HHS+AuxH/BBS/BBS+AuxB GridBased YAMLs, rebuild, PyTorch-level performance validation, and repeatable installed-library correctness validation. The current runner target is replacing the generic TensileLite client measurement path with a structured exact-pair backend before scaling to finer/larger shape grids.
 
 ## 1. Motivation
 
@@ -67,11 +67,11 @@ The pilot may benchmark more than 10 configs per shape. Initial budget target: r
 Generic implemented capabilities are summarized in `README.md`. Target-specific status:
 - the gfx1151 FP16 NT HHS problem type and 100-shape pilot grid are encoded;
 - the search space can express the documented `8192^3` SIA3/no-store-priority winner family;
-- the completed first-pass scan, repaired ingestion, top-4 full-validation retime, installed hipBLASLt comparison, hybrid export, GridBased YAML update, hipBLASLt rebuild/install, PyTorch benchmark validation, `hipblaslt-bench --verify` correctness smoke, and upstream `hipblaslt-test` smoke/quick/pre_checkin validation are done for the 100-shape pilot;
+- the completed first-pass scan, repaired ingestion, top-4 full-validation retime, installed hipBLASLt comparison, hybrid export, GridBased YAML update, hipBLASLt rebuild/install, PyTorch benchmark validation, `hipblaslt-bench --verify` correctness test, and upstream `hipblaslt-test` smoke/quick/pre_checkin validation are done for the 100-shape pilot;
 - generated YAML uses complete candidate `Groups` rather than independent Cartesian products;
-- runner support exists for direct runs and compile-then-serial-benchmark runs;
+- runner support exists for direct runs, compile-then-serial-benchmark runs, and an exact-pair structured backend path;
 - DB schema includes manual cache namespace fields (`version_name`, `problem_type_hash`, `benchmark_protocol_hash`);
-- validation-aware CSV/log parsing and SQLite ingestion exist, using TensileLite final solution YAML as the source of truth for candidate mapping;
+- structured JSONL result ingestion exists, using TensileLite final solution YAML as the source of truth for candidate mapping;
 - cache-aware batch scheduling exists for missing `ok` observations, with compile-only, serial benchmark, and immediate ingestion phases;
 - `scripts/update_hipblaslt_gridbased_logic.py` now emits build-valid checked-in YAMLs for HHS/HHS+AuxH/BBS/BBS+AuxB variants, including Aux `UseE` handling and scalar type normalization;
 - a real one-shape harness under `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that hindsight-directed local refinement can reproduce the documented `8192^3` winner, but this operator is not part of the generic scheduler because it bakes in the known winner neighborhood.
@@ -372,7 +372,6 @@ SleepPercent: 0
 HardwareMonitor: False
 NumElementsToValidate: 128 or stronger for risky candidates
 SkipSlowSolutionRatio: 0.0 initially; optional after validation
-CSVExportWinner: True if helpful for parsing
 ```
 
 Cold-loop behavior is intentionally not part of the tuning loop. Tracking it would add measurement cost and optimize for first-run / bursty-idle effects rather than sustained throughput. If needed, add a separate later analysis pass for first-request latency, module-load/JIT effects, allocator warmup, and idle-to-active behavior.
@@ -463,13 +462,13 @@ Post-100-shape status and remaining risks:
 - Search-time validation is partial: `NumElementsToValidate=128` is acceptable for screening, but the exported 100-shape winners were retimed with `NumElementsToValidate=-1` full validation.
 - Final-YAML mapping was repaired after the full scan. The repaired mapper handles TLDS2-derived `1LDSBuffer`/`PrefetchLocalRead` rewrites and inactive `StaggerU=0` `StaggerUMapping`/`StaggerUStride` normalization. Re-ingest now reports zero unmapped rows and zero unmatched final solutions.
 
-Suggested pre-grid smoke:
+Suggested pre-grid test:
 
 ```bash
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
-  --output-dir out/pregrid_smoke \
-  --version-name gfx1151_hotloop_pregrid_smoke \
+  --output-dir out/pregrid_test \
+  --version-name gfx1151_hotloop_pregrid_test \
   --limit-shapes 2 \
   --candidate-batch-size 4 \
   --max-batches 1 \
@@ -479,8 +478,8 @@ python3 -m evotensile.cli schedule-batches \
 ## 14. Pilot Timing Data
 
 Measured pre-full-run data on Radeon 8060S gfx1151 with the standalone TensileLite client and `--compile-threads 4 --benchmark-threads 1`:
-- 1 shape x 1 candidate smoke: wall `13.28s`; build `4.464s`; benchmark `8.529s`; inserted `10 ok`; summed recorded GEMM time `0.000144s`; non-GEMM runner time `12.993s`.
-- 2 shapes x 2 candidates smoke: wall `11.34s`; build `4.284s`; benchmark `6.623s`; inserted `20 ok` and `2 rejected`; summed recorded GEMM time `0.000352s`; non-GEMM runner time `10.907s`.
+- 1 shape x 1 candidate test: wall `13.28s`; build `4.464s`; benchmark `8.529s`; inserted `10 ok`; summed recorded GEMM time `0.000144s`; non-GEMM runner time `12.993s`.
+- 2 shapes x 2 candidates test: wall `11.34s`; build `4.284s`; benchmark `6.623s`; inserted `20 ok` and `2 rejected`; summed recorded GEMM time `0.000352s`; non-GEMM runner time `10.907s`.
 - 10 shapes x 8 candidates medium probe: wall `19.50s`; build `4.428s`; benchmark `7.655s`; inserted `700 ok` and `10 rejected`; summed recorded GEMM time `0.03047s`; non-GEMM runner time `12.053s`.
 
 Pre-full-run estimate:
@@ -533,12 +532,23 @@ Actual rebuilt hipBLASLt validation:
 - Benchmark output: `~/ComfyUI-FeatherOps/mm_hipblaslt_fp16.csv` and `/tmp/benchmark_mm_hipblaslt_fp16_grid100_20260619_125807.log`.
 - The 1024^3 NT path showed the expected improvement versus the TheRock issue baseline: `torch_mm_NT` `16.007 -> 23.434 TFLOP/s` (`1.464x`), `torch_linear_NT` `15.998 -> 23.465 TFLOP/s` (`1.467x`), and direct `hipblaslt_NT` `14.417 -> 25.554 TFLOP/s` (`1.772x`).
 - Larger square NT cases also improved strongly in that benchmark: direct `hipblaslt_NT` speedup was `1.829x` at `2048`, `2.218x` at `4096`, and `4.804x` at `8192` versus the issue baseline.
-- Lightweight installed correctness smoke used `scripts/verify_installed_hipblaslt.py`, which drives `hipblaslt-bench --verify` against CPU reference for six curated target and off-grid cases. Output: `out/hipblaslt_correctness_smoke_20260619/results.csv`, `summary.json`, and logs; result was `6/6 ok`, `0` failures, in `2.16s`.
+- Lightweight installed correctness test used `scripts/verify_installed_hipblaslt.py`, which drives `hipblaslt-bench --verify` against CPU reference for six curated target and off-grid cases. Output: `out/hipblaslt_correctness_20260619/results.csv`, `summary.json`, and logs; result was `6/6 ok`, `0` failures, in `2.16s`.
 - Upstream `hipblaslt-test` was built in the normal client build tree and run with GTest machine-readable XML. `*smoke*` passed `911/911` tests in `5.916s`. Full `*quick*` ran `7606` tests in `45.039s` with `248` `NO solution found!` availability failures limited to FP16/BF16 NT `quick_matmul_one` edge/skinny cases; excluding only that no-solution family, `7358/7358` passed in `42.821s`. Full `*pre_checkin*` ran `6401` tests in `197.59s` with `8` `NO solution found!` availability failures limited to FP16/BF16 NT `k=0` cases; excluding only that no-solution family, `6393/6393` passed in `196.938s`.
 - Validation artifacts include `/tmp/hipblaslt_test_validation_summary_20260619.json`, `/tmp/hipblaslt_test_quick_20260619_134911.xml`, `/tmp/hipblaslt_test_quick_minus_nosol_20260619_135522.xml`, `/tmp/hipblaslt_test_pre_checkin_20260619_135631.xml`, and `/tmp/hipblaslt_test_pre_checkin_minus_k0_nosol_20260619_141122.xml`.
 - The benchmark log had no warning/error/exception/fallback/nan hits. The successful build log still had TensileLite YAML type-mismatch warnings in five pre-existing non-target files; the four updated `Ailk_Bjlk` files were normalized before the final install.
 
-Now build a purpose-specific EvoTensile benchmark runner before scaling to the 9,681-shape grid. The runner should keep TensileLite codegen/build artifacts but replace the generic TensileLite client/library-client execution path with a small structured hot-loop runner, likely C++/HIP adapted from TensileLite `client/src` and driven by Python. Goals: avoid stdout archaeology, skip unrelated `LibraryClient` activation diagnostics, emit direct `shape_id`/`candidate_hash`/sample records, make validation status explicit, reduce DB ingestion overhead, support exact per-shape pair lists without many tiny process launches, and make matmul vs non-matmul timing decomposition reliable.
+Structured runner refactor status:
+- `evotensile/profile.py` and `evotensile/protocol.py` define the bundled `gfx1151-nt-hhs` target profile and typed benchmark protocol. The search CLI derives `problem_type_hash` and `benchmark_protocol_hash` from those objects rather than accepting raw hash/global-parameter overrides.
+- `evotensile/structured_runner.py` now defines the exact-pair JSONL contract, maps accepted final-YAML solutions back to `(shape_id, candidate_hash)` once after codegen, dispatches the external structured runner, validates emitted rows, and writes DB evaluations directly without TensileLite client CSV/log archaeology.
+- `schedule-batches` uses the structured path only; the old TensileLite `LibraryClient` CSV/log runner path and in-process test backend have been removed.
+- The structured result format carries `shape_id` and `candidate_hash` in every sample row, so IO mapping correctness no longer depends on stdout order, problem-progress strings, or kernel names.
+- `csrc/structured_runner.cpp` now implements a narrow production HIP/TensileLite backend for the current gfx1151 FP16 NT HHS bias + `scaleAlpha_vector` target. It loads generated `TensileLibrary_gfx1151.yaml` or build-only `TensileLibrary.yaml` plus `.co`/`.hsaco` artifacts, selects exact solution indices, launches via `TensileLite::hip::SolutionAdapter`, validates CPU-reference samples, and emits JSONL rows.
+- `scripts/build_structured_runner.sh` builds `./build/evotensile-structured-runner` against the existing TensileLite client build under `~/rocm-libraries/build/tensilelite-client`.
+- The dispatcher now accepts both full-client `4_LibraryClient/library/gfx*` output and build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output.
+- A real `schedule-batches --runner-bin ./build/evotensile-structured-runner` test passed after refreshing stale `rocisa` bindings: 1 shape x 1 candidate produced `2 ok` validation-passed DB samples; 2 shapes x 2 candidates produced `2 ok` plus `2 rejected` rows, matching final-YAML accepted/rejected mapping.
+- An 8-pair rerun from top-4 retime artifacts (`2` shapes x `4` candidates, solution indices `0-3`) passed validation for every pair. Under the normal hot-loop envelope with `10` samples, structured medians were within about `0.4-2.7%` of legacy per-solution CSV medians; isolated low outliers remain a measurement-noise issue, not a mapping/correctness issue.
+- A one-pair clean generated-library test passed on `m512_n128_b1_k256`, emitting `2` validation-passed structured samples. The same test against an old generated artifact with hard-coded `CUCount: 16` correctly returned `WRONG_HARDWARE` on the 20-CU Strix Halo, matching the known CUCount pitfall.
+- Tests use fake external runner scripts and fake TensileLite build outputs to verify exact mapping, validation-gated direct DB ingestion, build-only library layout discovery, rejected-candidate handling, and bad-runner detection without carrying an in-process test backend.
 
 ## 15. Open Questions
 
@@ -551,8 +561,9 @@ Now build a purpose-specific EvoTensile benchmark runner before scaling to the 9
 
 ## 16. Immediate Next Steps
 
-- Start the purpose-specific EvoTensile benchmark runner design and prototype against `10-20` known candidate/shape pairs from the repaired and retimed 100-shape artifacts.
-- Keep the generic TensileLite client as the correctness reference while validating the custom runner's timing, validation, and shape/candidate identity output.
-- Add timeout handling and multi-candidate build-failure attribution once failure signatures are better understood.
+- Expand production backend validation from the current 8 accepted retime pairs to `10-20` pairs spanning more shapes, candidates, and generated libraries before starting the 9,681-shape grid.
+- Decide whether to use explicit runner priming, additional warmups, or robust sample filtering for occasional first-use/timing outliers while keeping benchmark protocol identity user-controlled.
+- Improve multi-candidate build-failure/timeout attribution once failure signatures are better understood; single-candidate build timeouts are classified, but multi-candidate failures are still intentionally not negative-cached.
+- Decide whether profile-owned runner build commands should be executable workflow steps; profiles currently record the default runner path/build command, but users still run the build command explicitly.
 - Add non-hindsight refinement operators that learn from cached winners/near-winners without hard-coding the documented `8192^3` neighborhood.
-- Keep the rebuilt-hipBLASLt validation recipe as the standard post-install gate: target `hipblaslt-bench --verify` smoke, upstream `hipblaslt-test` smoke/filtered quick as needed, and the PyTorch/FeatherOps 1024^3 NT performance path before scaling further.
+- Keep the rebuilt-hipBLASLt validation recipe as the standard post-install gate: target `hipblaslt-bench --verify` test, upstream `hipblaslt-test` smoke/filtered quick as needed, and the PyTorch/FeatherOps 1024^3 NT performance path before scaling further.

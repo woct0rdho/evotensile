@@ -6,14 +6,10 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cache import (
-    benchmark_protocol_hash_from_items,
-    normalize_version_name,
-)
-from .cache import (
-    problem_type_hash as default_problem_type_hash,
-)
+from .cache import normalize_version_name
 from .database import EvoTensileDB
+from .profile import DEFAULT_PROFILE
+from .protocol import DEFAULT_BENCHMARK_PROTOCOL
 
 DEFAULT_TENSILELITE_BIN = os.path.expanduser("~/rocm-libraries/projects/hipblaslt/tensilelite/Tensile/bin/Tensile")
 
@@ -30,6 +26,7 @@ class RunResult:
     problem_type_hash: str
     benchmark_protocol_hash: str
     duration_s: float
+    timed_out: bool = False
 
     @property
     def ok(self) -> bool:
@@ -49,26 +46,6 @@ def _without_global_parameter(global_parameters: list[str] | None, key: str) -> 
     return [item for item in global_parameters or [] if not item.strip().startswith(key_prefix)]
 
 
-def serial_benchmark_global_parameters(global_parameters: list[str] | None) -> list[str]:
-    params = _without_global_parameter(global_parameters, "ParallelGpuExecution")
-    # TensileLite's name is unintuitive: ParallelGpuExecution is a GPU count,
-    # so 1 means serial execution and 0 means auto-detect/use multiple GPUs.
-    params.append("ParallelGpuExecution=1")
-    return params
-
-
-def serial_benchmark_protocol_hash(
-    global_parameters: list[str] | None,
-    *,
-    benchmark_protocol_hash: str | None = None,
-) -> str:
-    if benchmark_protocol_hash:
-        return benchmark_protocol_hash
-    # Hash the effective benchmark command, not the user input before the
-    # forced-serial ParallelGpuExecution override.
-    return benchmark_protocol_hash_from_items(serial_benchmark_global_parameters(global_parameters))
-
-
 def _global_parameter_args(
     global_parameters: list[str] | None,
     *,
@@ -76,24 +53,10 @@ def _global_parameter_args(
 ) -> list[str]:
     params = _without_global_parameter(global_parameters, "CpuThreads")
     if cpu_threads is not None:
-        # CpuThreads is phase-specific: compile may use many CPU threads, while
-        # benchmark intentionally uses one to avoid parallel client execution.
         params.append(f"CpuThreads={cpu_threads}")
     if not params:
         return []
     return ["--global-parameters", *params]
-
-
-def _effective_protocol_hash(
-    global_parameters: list[str] | None,
-    *,
-    cpu_threads: int | None,
-    benchmark_protocol_hash: str | None,
-) -> str:
-    if benchmark_protocol_hash:
-        return benchmark_protocol_hash
-    # CpuThreads affects compilation parallelism, not timings, so exclude it from the protocol hash.
-    return benchmark_protocol_hash_from_items(global_parameters)
 
 
 def run_tensilelite(
@@ -102,15 +65,14 @@ def run_tensilelite(
     *,
     tensilelite_bin: str | Path = DEFAULT_TENSILELITE_BIN,
     db: EvoTensileDB | None = None,
-    use_cache: bool = False,
     build_only: bool = False,
     cpu_threads: int | None = None,
     global_parameters: list[str] | None = None,
     version_name: str | None = None,
     problem_type_hash: str | None = None,
     benchmark_protocol_hash: str | None = None,
-    extra_args: list[str] | None = None,
     env: dict[str, str] | None = None,
+    timeout_s: float | None = None,
 ) -> RunResult:
     yaml_path = Path(yaml_path)
     output_dir = Path(output_dir)
@@ -120,35 +82,38 @@ def run_tensilelite(
     stderr_path = output_dir / f"{run_id}.stderr.log"
 
     version = normalize_version_name(version_name)
-    ptype_hash = problem_type_hash or default_problem_type_hash()
-    proto_hash = _effective_protocol_hash(
-        global_parameters, cpu_threads=cpu_threads, benchmark_protocol_hash=benchmark_protocol_hash
-    )
+    ptype_hash = problem_type_hash or DEFAULT_PROFILE.problem_type_hash
+    proto_hash = benchmark_protocol_hash or DEFAULT_PROFILE.benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL)
 
     cmd = [str(tensilelite_bin), str(yaml_path), str(output_dir)]
-    if use_cache:
-        cmd.append("--use-cache")
     if build_only:
         cmd.append("--build-only")
     cmd.extend(_global_parameter_args(global_parameters, cpu_threads=cpu_threads))
-    if extra_args:
-        cmd.extend(extra_args)
 
     start = time.perf_counter()
+    timed_out = False
+    returncode = 0
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
-        proc = subprocess.run(
-            cmd,
-            stdout=stdout,
-            stderr=stderr,
-            text=True,
-            env=_merged_env(env),
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=stdout,
+                stderr=stderr,
+                text=True,
+                env=_merged_env(env),
+                check=False,
+                timeout=timeout_s,
+            )
+            returncode = proc.returncode
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            returncode = 124
+            stderr.write(f"\nTensileLite build timed out after {exc.timeout} seconds\n")
     duration_s = time.perf_counter() - start
 
     result = RunResult(
         run_id=run_id,
-        returncode=proc.returncode,
+        returncode=returncode,
         stdout_path=stdout_path,
         stderr_path=stderr_path,
         output_dir=output_dir,
@@ -157,6 +122,7 @@ def run_tensilelite(
         problem_type_hash=ptype_hash,
         benchmark_protocol_hash=proto_hash,
         duration_s=duration_s,
+        timed_out=timed_out,
     )
     if db is not None:
         db.insert_run(
@@ -164,7 +130,7 @@ def run_tensilelite(
             yaml_path=str(yaml_path),
             output_dir=str(output_dir),
             tensilelite_bin=str(tensilelite_bin),
-            status="ok" if result.ok else "failed",
+            status="timeout" if result.timed_out else "ok" if result.ok else "failed",
             version_name=version,
             problem_type_hash=ptype_hash,
             benchmark_protocol_hash=proto_hash,
@@ -178,63 +144,9 @@ def run_tensilelite(
                     "problem_type_hash": ptype_hash,
                     "benchmark_protocol_hash": proto_hash,
                     "duration_s": duration_s,
+                    "timed_out": timed_out,
                 },
                 sort_keys=True,
             ),
         )
     return result
-
-
-def build_then_benchmark(
-    yaml_path: str | Path,
-    output_dir: str | Path,
-    *,
-    tensilelite_bin: str | Path = DEFAULT_TENSILELITE_BIN,
-    db: EvoTensileDB | None = None,
-    compile_threads: int | None = -1,
-    benchmark_threads: int | None = 1,
-    global_parameters: list[str] | None = None,
-    version_name: str | None = None,
-    problem_type_hash: str | None = None,
-    benchmark_protocol_hash: str | None = None,
-    extra_args: list[str] | None = None,
-    env: dict[str, str] | None = None,
-) -> tuple[RunResult, RunResult | None]:
-    """Compile with --build-only, then benchmark serially with --use-cache."""
-    effective_benchmark_protocol_hash = serial_benchmark_protocol_hash(
-        global_parameters,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-    )
-    build_result = run_tensilelite(
-        yaml_path,
-        output_dir,
-        tensilelite_bin=tensilelite_bin,
-        db=db,
-        build_only=True,
-        cpu_threads=compile_threads,
-        global_parameters=global_parameters,
-        version_name=version_name,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=effective_benchmark_protocol_hash,
-        extra_args=extra_args,
-        env=env,
-    )
-    if not build_result.ok:
-        return build_result, None
-
-    benchmark_globals = serial_benchmark_global_parameters(global_parameters)
-    bench_result = run_tensilelite(
-        yaml_path,
-        output_dir,
-        tensilelite_bin=tensilelite_bin,
-        db=db,
-        use_cache=True,
-        cpu_threads=benchmark_threads,
-        global_parameters=benchmark_globals,
-        version_name=version_name,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=effective_benchmark_protocol_hash,
-        extra_args=extra_args,
-        env=env,
-    )
-    return build_result, bench_result

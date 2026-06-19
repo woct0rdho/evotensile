@@ -1,6 +1,7 @@
-from evotensile.cache import CacheKey, benchmark_protocol_hash_from_items, normalize_version_name, problem_type_hash
+from evotensile.cache import CacheKey, benchmark_protocol_hash, normalize_version_name, problem_type_hash
 from evotensile.database import EvoTensileDB
-from evotensile.runner import serial_benchmark_global_parameters, serial_benchmark_protocol_hash
+from evotensile.profile import DEFAULT_PROFILE
+from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.search_space import known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
 
@@ -10,19 +11,15 @@ def test_version_name_is_manual_namespace():
     assert normalize_version_name("  local_patch_a ") == "local_patch_a"
 
 
-def test_protocol_hash_changes_with_timing_params_not_cpu_threads():
-    base = benchmark_protocol_hash_from_items([])
-    changed = benchmark_protocol_hash_from_items(["NumWarmups=5"])
-    cpu_only = benchmark_protocol_hash_from_items(["CpuThreads=16"])
+def test_protocol_hash_changes_with_typed_timing_params():
+    base = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL)
+    changed = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=5))
     assert base != changed
-    assert base == cpu_only
 
 
-def test_serial_benchmark_globals_override_parallel_gpu_execution():
-    params = serial_benchmark_global_parameters(["ParallelGpuExecution=0", "NumWarmups=5"])
-
-    assert params == ["NumWarmups=5", "ParallelGpuExecution=1"]
-    assert serial_benchmark_protocol_hash(["ParallelGpuExecution=0"]) == serial_benchmark_protocol_hash([])
+def test_profile_derives_cache_identity():
+    assert problem_type_hash() == DEFAULT_PROFILE.problem_type_hash
+    assert benchmark_protocol_hash(DEFAULT_PROFILE.default_protocol) == DEFAULT_PROFILE.benchmark_protocol_hash()
 
 
 def test_db_cache_key_lookup(tmp_path):
@@ -30,8 +27,8 @@ def test_db_cache_key_lookup(tmp_path):
     db.init()
     candidate = known_seed_candidates()[0]
     shape = pilot_100_shapes()[0]
-    p_hash = problem_type_hash()
-    b_hash = benchmark_protocol_hash_from_items([])
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     key = CacheKey(
         version_name="v0",
         problem_type_hash=p_hash,
@@ -61,8 +58,8 @@ def test_negative_cache_statuses_are_reusable_but_not_rankable(tmp_path):
     db.init()
     candidate = known_seed_candidates()[0]
     shape = pilot_100_shapes()[0]
-    p_hash = problem_type_hash()
-    b_hash = benchmark_protocol_hash_from_items([])
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     key = CacheKey(
         version_name="v0",
         problem_type_hash=p_hash,
