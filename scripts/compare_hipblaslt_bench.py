@@ -20,7 +20,7 @@ from evotensile.shapes import shape_from_id
 from evotensile.tensilelite_keys import DIRECT_SOLUTION_MATCH_KEYS
 from evotensile.yaml_writer import write_tensilelite_yaml
 
-DEFAULT_BENCH = Path.home() / "rocm-libraries/build/hipblaslt-bench-current/clients/hipblaslt-bench"
+DEFAULT_BENCH = Path.home() / "rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench"
 DEFAULT_ROCM_DEVEL = Path.home() / "venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel"
 DEFAULT_ROCM_LIBRARIES = Path.home() / "venv_torch/lib/python3.14/site-packages/_rocm_sdk_libraries"
 DEFAULT_WIN_CSV = Path("out/grid100_full_20260618_top4_retime_export/winners.csv")

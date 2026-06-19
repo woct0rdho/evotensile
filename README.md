@@ -1,6 +1,6 @@
 # EvoTensile
 
-Work in progress. README is AI-generated.
+Work in progress. README is AI-generated. I'm writing a faster runner without all the boilerplates of `tensilelite-client`.
 
 EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, runs TensileLite as the evaluator, and stores reproducible timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion) and [rocm_wmma_gemm](https://github.com/adelj88/rocm_wmma_gemm).
 
@@ -18,7 +18,8 @@ A normal EvoTensile tuning loop is:
 4. Retime top-K finalists with stronger validation.
 5. Compare with current hipBLASLt and export hybrid winners.
 6. Update checked-in hipBLASLt GridBased logic YAMLs from the hybrid export.
-7. Rebuild and validate the installed hipBLASLt behavior with an application-level benchmark.
+7. Rebuild hipBLASLt and validate installed performance.
+8. Verify installed hipBLASLt correctness with repeatable CPU-reference checks.
 
 ## Repository Pieces
 
@@ -34,6 +35,7 @@ A normal EvoTensile tuning loop is:
 - `scripts/retime_topk.py`: exact top-K finalist retiming.
 - `scripts/compare_hipblaslt_bench.py`: installed hipBLASLt comparison and hybrid export.
 - `scripts/update_hipblaslt_gridbased_logic.py`: update checked-in hipBLASLt GridBased YAMLs from a hybrid export.
+- `scripts/verify_installed_hipblaslt.py`: quick installed hipBLASLt correctness smoke using `hipblaslt-bench --verify`.
 
 ## 1. Define Problem, Shapes, And Search Space
 
@@ -151,7 +153,7 @@ python3 scripts/compare_hipblaslt_bench.py \
   --winners-csv out/topk_retime_export/winners.csv \
   --output-dir out/hipblaslt_bench_compare \
   --bench ~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench \
-  --tensile-libpath ~/venv_torch/lib/python3.14/site-packages/_rocm_sdk_libraries/lib/hipblaslt/library/gfx1151 \
+  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/gfx1151" \
   --hybrid-export-dir out/hybrid_best_export
 ```
 
@@ -175,18 +177,45 @@ cd ~/rocm-libraries
 git diff --stat -- projects/hipblaslt/library/src/amd_detail/rocblaslt/src/Tensile/Logic/asm_full/gfx1151/GridBased
 ```
 
-## 7. Rebuild And Validate hipBLASLt
+## 7. Rebuild And Validate Performance
 
-Rebuild hipBLASLt from the modified `~/rocm-libraries` tree and install into the intended ROCm SDK prefix. The current local helper is:
+Rebuild hipBLASLt from the modified `~/rocm-libraries` tree and install into the intended ROCm SDK prefix. By convention, keep the normal hipBLASLt build tree at `~/rocm-libraries/build/hipblaslt/`; only override `BUILD_DIR` when comparing multiple versions.
 
 ```bash
 cd ~/rocm-libraries
-BUILD_DIR="$PWD/build/hipblaslt-gfx1151-grid100-hybrid" \
-GPU_TARGETS=gfx1151 \
-./build_hipblaslt.sh
+GPU_TARGETS=gfx1151 ./build_hipblaslt.sh
+```
+
+Build client tools in the normal client build tree `~/rocm-libraries/build/hipblaslt-bench/`, also avoiding `BUILD_DIR` overrides unless comparing versions:
+
+```bash
+cd ~/rocm-libraries
+TARGET=hipblaslt-bench GPU_TARGETS=gfx1151 ./build_hipblaslt_bench.sh
+TARGET=hipblaslt-test GPU_TARGETS=gfx1151 ./build_hipblaslt_bench.sh
 ```
 
 Then run an application-level benchmark with the intended runtime environment. If the Python runtime uses a separate TensileLite asset package, point `HIPBLASLT_TENSILE_LIBPATH` at the newly installed assets so the rebuilt logic is actually used.
+
+## 8. Verify Installed Correctness
+
+After performance validation, run repeatable installed-library correctness checks. The lightweight target-specific gate uses `hipblaslt-bench --verify` through the EvoTensile verifier and writes `summary.json`, `results.csv`, and per-case logs:
+
+```bash
+cd ~/evotensile
+python3 scripts/verify_installed_hipblaslt.py \
+  --bench ~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench \
+  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/gfx1151" \
+  --output-dir out/hipblaslt_correctness_smoke
+```
+
+For broader upstream regression coverage, run `hipblaslt-test` with GTest XML output:
+
+```bash
+cd ~/rocm-libraries/build/hipblaslt-bench/clients
+HIPBLASLT_TENSILE_LIBPATH="$ROCM_PATH/lib/hipblaslt/library/gfx1151" \
+LD_LIBRARY_PATH="$ROCM_PATH/llvm/lib:$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}" \
+./hipblaslt-test --gtest_filter='*smoke*' --gtest_output=xml:/tmp/hipblaslt_test_smoke.xml
+```
 
 ## Benchmark Protocol
 
