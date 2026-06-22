@@ -10,6 +10,8 @@ from .cache import POSITIVE_CACHE_STATUSES, REUSABLE_CACHE_STATUSES, CacheKey
 from .candidate import Candidate, Shape
 from .metrics import gflops_from_us
 
+VALIDATION_PASS_TOKENS = ("PASSED", "OK", "VALID")
+
 
 def _median(values: list[float]) -> float | None:
     if not values:
@@ -451,6 +453,41 @@ class EvoTensileDB:
             key = (row["shape_id"], row["candidate_hash"])
             counts.setdefault(key, {})[row["status"]] = int(row["n"])
         return counts
+
+    def validated_cache_entries(
+        self,
+        *,
+        problem_type_hash: str,
+        benchmark_protocol_hash: str,
+        shape_ids: list[str],
+        candidate_hashes: list[str],
+    ) -> set[tuple[str, str]]:
+        if not shape_ids or not candidate_hashes:
+            return set()
+        shape_placeholders = ",".join("?" for _ in shape_ids)
+        candidate_placeholders = ",".join("?" for _ in candidate_hashes)
+        validation_placeholders = ",".join("?" for _ in VALIDATION_PASS_TOKENS)
+        with self.connection() as con:
+            rows = con.execute(
+                f"""
+                SELECT DISTINCT shape_id, candidate_hash
+                FROM evaluations
+                WHERE problem_type_hash = ?
+                  AND benchmark_protocol_hash = ?
+                  AND shape_id IN ({shape_placeholders})
+                  AND candidate_hash IN ({candidate_placeholders})
+                  AND status = 'ok'
+                  AND UPPER(validation) IN ({validation_placeholders})
+                """,
+                (
+                    problem_type_hash,
+                    benchmark_protocol_hash,
+                    *shape_ids,
+                    *candidate_hashes,
+                    *VALIDATION_PASS_TOKENS,
+                ),
+            ).fetchall()
+        return {(row["shape_id"], row["candidate_hash"]) for row in rows}
 
     def reusable_cache_entries(
         self,

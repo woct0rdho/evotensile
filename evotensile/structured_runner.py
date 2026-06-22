@@ -189,12 +189,16 @@ def build_runnable_pairs(
     return runnable, negative
 
 
-def _normalized_sample_status(sample: StructuredSample) -> str:
+def _normalized_sample_status(sample: StructuredSample, *, allow_no_check: bool = False) -> str:
     status = sample.status
     if status == "ok":
         if sample.validation is None:
             return "validation_unknown"
-        if sample.validation.upper() not in {"PASSED", "OK", "VALID"}:
+        validation = sample.validation.upper()
+        if validation == "NO_CHECK":
+            if not allow_no_check:
+                return "validation_unknown"
+        elif validation not in {"PASSED", "OK", "VALID"}:
             return "validation_fail"
         if not _finite_positive(sample.time_us):
             return "invalid"
@@ -207,6 +211,7 @@ def validate_structured_samples(
     runnable_pairs: list[RunnablePair],
     protocol: BenchmarkProtocol,
     runner_returncode: int = 0,
+    allow_no_check: bool = False,
 ) -> list[EvaluationInsert]:
     allowed = {(pair.shape_id, pair.candidate_hash): pair for pair in runnable_pairs}
     grouped: dict[tuple[str, str], list[StructuredSample]] = {key: [] for key in allowed}
@@ -243,7 +248,7 @@ def validate_structured_samples(
                 f"expected {sorted(expected_indices)}, got {sorted(actual_indices)}"
             )
         for sample in sorted(pair_samples, key=lambda item: item.sample_index if item.sample_index is not None else -1):
-            status = _normalized_sample_status(sample)
+            status = _normalized_sample_status(sample, allow_no_check=allow_no_check)
             if status == "ok":
                 positive_status_seen = True
             inserts.append(
@@ -335,6 +340,7 @@ def build_then_structured_benchmark(
     protocol: BenchmarkProtocol,
     runner_bin: str | Path | None = None,
     env: dict[str, str] | None = None,
+    trust_prior_validation: bool = False,
     build_timeout_s: float | None = None,
     runner_timeout_s: float | None = None,
 ) -> tuple[RunResult, StructuredRunOutput | None, list[EvaluationInsert], list[str]]:
@@ -417,6 +423,7 @@ def build_then_structured_benchmark(
             runnable_pairs=runnable,
             protocol=protocol,
             runner_returncode=structured.returncode,
+            allow_no_check=trust_prior_validation,
         )
     except Exception as exc:
         return build_result, structured, negative, [str(exc)]
