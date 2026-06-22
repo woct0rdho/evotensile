@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .database import EvoTensileDB
-from .profile import DEFAULT_PROFILE
-from .protocol import DEFAULT_BENCHMARK_PROTOCOL
 
 DEFAULT_TENSILELITE_BIN = os.path.expanduser("~/rocm-libraries/projects/hipblaslt/tensilelite/Tensile/bin/Tensile")
 
@@ -21,8 +19,6 @@ class RunResult:
     stderr_path: Path
     output_dir: Path
     command: list[str]
-    problem_type_hash: str
-    benchmark_protocol_hash: str
     duration_s: float
     timed_out: bool = False
 
@@ -66,8 +62,6 @@ def run_tensilelite(
     build_only: bool = False,
     cpu_threads: int | None = None,
     global_parameters: list[str] | None = None,
-    problem_type_hash: str | None = None,
-    benchmark_protocol_hash: str | None = None,
     env: dict[str, str] | None = None,
     timeout_s: float | None = None,
 ) -> RunResult:
@@ -77,9 +71,6 @@ def run_tensilelite(
     run_id = f"run_{uuid.uuid4().hex[:12]}"
     stdout_path = output_dir / f"{run_id}.stdout.log"
     stderr_path = output_dir / f"{run_id}.stderr.log"
-
-    ptype_hash = problem_type_hash or DEFAULT_PROFILE.problem_type_hash
-    proto_hash = benchmark_protocol_hash or DEFAULT_PROFILE.benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL)
 
     cmd = [str(tensilelite_bin), str(yaml_path), str(output_dir)]
     if build_only:
@@ -114,8 +105,6 @@ def run_tensilelite(
         stderr_path=stderr_path,
         output_dir=output_dir,
         command=cmd,
-        problem_type_hash=ptype_hash,
-        benchmark_protocol_hash=proto_hash,
         duration_s=duration_s,
         timed_out=timed_out,
     )
@@ -124,19 +113,14 @@ def run_tensilelite(
             run_id,
             yaml_path=str(yaml_path),
             output_dir=str(output_dir),
-            tensilelite_bin=str(tensilelite_bin),
             status="timeout" if result.timed_out else "ok" if result.ok else "failed",
-            problem_type_hash=ptype_hash,
-            benchmark_protocol_hash=proto_hash,
             returncode=result.returncode,
-            stdout_path=str(stdout_path),
-            stderr_path=str(stderr_path),
             metadata_json=json.dumps(
                 {
                     "command": cmd,
-                    "problem_type_hash": ptype_hash,
-                    "benchmark_protocol_hash": proto_hash,
                     "duration_s": duration_s,
+                    "stdout_path": str(stdout_path),
+                    "stderr_path": str(stderr_path),
                     "timed_out": timed_out,
                 },
                 sort_keys=True,

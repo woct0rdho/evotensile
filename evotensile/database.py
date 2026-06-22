@@ -76,15 +76,10 @@ CREATE TABLE IF NOT EXISTS shapes (
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY,
   timestamp REAL NOT NULL,
-  problem_type_hash TEXT,
-  benchmark_protocol_hash TEXT,
   yaml_path TEXT,
   output_dir TEXT,
-  tensilelite_bin TEXT,
   status TEXT NOT NULL,
   returncode INTEGER,
-  stdout_path TEXT,
-  stderr_path TEXT,
   metadata_json TEXT
 );
 
@@ -247,49 +242,26 @@ class EvoTensileDB:
         *,
         yaml_path: str | None,
         output_dir: str | None,
-        tensilelite_bin: str | None,
         status: str,
-        problem_type_hash: str | None = None,
-        benchmark_protocol_hash: str | None = None,
         returncode: int | None = None,
-        stdout_path: str | None = None,
-        stderr_path: str | None = None,
         metadata_json: str | None = None,
     ) -> None:
         with self.connection() as con:
             con.execute(
                 """
                 INSERT OR REPLACE INTO runs
-                  (run_id, timestamp, problem_type_hash, benchmark_protocol_hash,
-                   yaml_path, output_dir, tensilelite_bin, status, returncode, stdout_path, stderr_path,
-                   metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (run_id, timestamp, yaml_path, output_dir, status, returncode, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
                     time.time(),
-                    problem_type_hash,
-                    benchmark_protocol_hash,
                     yaml_path,
                     output_dir,
-                    tensilelite_bin,
                     status,
                     returncode,
-                    stdout_path,
-                    stderr_path,
                     metadata_json,
                 ),
-            )
-
-    def update_run_status(self, run_id: str, *, status: str) -> None:
-        with self.connection() as con:
-            con.execute(
-                """
-                UPDATE runs
-                SET status = ?
-                WHERE run_id = ?
-                """,
-                (status, run_id),
             )
 
     def insert_evaluation(

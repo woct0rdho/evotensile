@@ -356,8 +356,6 @@ def build_then_structured_benchmark(
         build_only=True,
         cpu_threads=compile_threads,
         global_parameters=build_globals,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
         env=env,
         timeout_s=build_timeout_s,
     )
@@ -397,17 +395,14 @@ def build_then_structured_benchmark(
         structured_run_id,
         yaml_path=str(yaml_path),
         output_dir=str(run_dir),
-        tensilelite_bin=str(runner_bin),
         status="timeout" if structured.timed_out else "ok" if structured.ok else "failed",
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
         returncode=structured.returncode,
-        stdout_path=str(structured.stdout_path),
-        stderr_path=str(structured.stderr_path),
         metadata_json=json.dumps(
             {
                 "command": structured.command,
                 "results_path": str(structured.results_path),
+                "stdout_path": str(structured.stdout_path),
+                "stderr_path": str(structured.stderr_path),
                 "duration_s": structured.duration_s,
                 "timed_out": structured.timed_out,
                 "runnable_pairs": len(runnable),

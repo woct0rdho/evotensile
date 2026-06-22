@@ -195,9 +195,9 @@ Core tables:
 
 - `candidate_hash TEXT PRIMARY KEY`
 - `candidate_json TEXT`
-- `created_at TEXT`
 - `source TEXT` - random, seed, mutation, crossover, imported, etc.
 - `parent_hashes TEXT`
+- `created_at REAL`
 
 ### `shapes`
 
@@ -206,21 +206,16 @@ Core tables:
 - `n INTEGER`
 - `batch INTEGER`
 - `k INTEGER`
-- derived features: `log_m`, `log_n`, `log_k`, aspect ratios, etc.
+- `created_at REAL`
 
 ### `runs`
 
 - `run_id TEXT PRIMARY KEY`
 - `timestamp REAL`
-- `problem_type_hash TEXT`
-- `benchmark_protocol_hash TEXT`
 - `yaml_path TEXT`
 - `output_dir TEXT`
-- `tensilelite_bin TEXT`
 - `status TEXT`
 - `returncode INTEGER`
-- `stdout_path TEXT`
-- `stderr_path TEXT`
 - `metadata_json TEXT`
 
 ### `evaluations`
