@@ -8,7 +8,6 @@ BENCHMARK_PROTOCOL_KEYS = (
     "KernelTime",
     "PreciseKernelTime",
     "NumWarmups",
-    "NumBenchmarks",
     "EnqueuesPerSync",
     "SyncsPerBenchmark",
     "SleepPercent",
@@ -109,8 +108,11 @@ class BenchmarkProtocol:
             "ParallelGpuExecution": self.parallel_gpu_execution,
         }
 
+    def identity_parameters(self) -> dict[str, Any]:
+        return {key: value for key, value in self.global_parameters().items() if key in BENCHMARK_PROTOCOL_KEYS}
+
     def protocol_hash(self) -> str:
-        return stable_hash(self.global_parameters(), prefix="bproto_")[:23]
+        return stable_hash(self.identity_parameters(), prefix="bproto_")[:23]
 
 
 def benchmark_protocol_hash(protocol: BenchmarkProtocol) -> str:
@@ -120,6 +122,8 @@ def benchmark_protocol_hash(protocol: BenchmarkProtocol) -> str:
 def _format_global_value(value: Any) -> str:
     if isinstance(value, bool):
         return "True" if value else "False"
+    if isinstance(value, str):
+        return repr(value)
     return str(value)
 
 

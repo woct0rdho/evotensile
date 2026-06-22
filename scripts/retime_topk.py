@@ -5,7 +5,6 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from evotensile.cache import normalize_version_name
 from evotensile.candidate import Candidate
 from evotensile.database import EvaluationSummary, EvoTensileDB
 from evotensile.profile import PROFILES, TargetProfile, get_profile
@@ -18,7 +17,6 @@ from evotensile.shapes import Shape, shape_from_id
 def _collect_topk(
     db: EvoTensileDB,
     *,
-    version_name: str,
     problem_hash: str,
     protocol_hash: str,
     top_k: int,
@@ -27,7 +25,6 @@ def _collect_topk(
 ) -> dict[str, list[EvaluationSummary]]:
     by_shape: dict[str, list[EvaluationSummary]] = defaultdict(list)
     summaries = db.rank_evaluations(
-        version_name=version_name,
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
         min_samples=min_samples,
@@ -96,8 +93,6 @@ def main() -> int:
     parser.add_argument("--db", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--profile", choices=sorted(PROFILES), default=None)
-    parser.add_argument("--source-version-name", required=True)
-    parser.add_argument("--target-version-name", required=True)
     parser.add_argument("--top-k", type=int, default=4)
     parser.add_argument("--min-samples", type=int, default=10)
     parser.add_argument("--shape-id", action="append", default=[])
@@ -130,8 +125,6 @@ def main() -> int:
     runner_bin = args.runner_bin or profile.default_runner_bin
     db = EvoTensileDB.connect(args.db)
     db.init()
-    source_version = normalize_version_name(args.source_version_name)
-    target_version = normalize_version_name(args.target_version_name)
     source_problem_hash = profile.problem_type_hash
     source_protocol_hash = profile.benchmark_protocol_hash(source_protocol)
     target_problem_hash = profile.problem_type_hash
@@ -140,7 +133,6 @@ def main() -> int:
     shape_filter = _parse_shape_ids(args.shape_id)
     topk_by_shape = _collect_topk(
         db,
-        version_name=source_version,
         problem_hash=source_problem_hash,
         protocol_hash=source_protocol_hash,
         top_k=args.top_k,
@@ -162,8 +154,6 @@ def main() -> int:
         "db": args.db,
         "output_dir": args.output_dir,
         "profile": profile.name,
-        "source_version_name": source_version,
-        "target_version_name": target_version,
         "source_problem_type_hash": source_problem_hash,
         "source_benchmark_protocol_hash": source_protocol_hash,
         "target_problem_type_hash": target_problem_hash,
@@ -194,7 +184,6 @@ def main() -> int:
                 shapes=shapes,
                 candidates=candidates,
                 output_root=group_dir,
-                version_name=target_version,
                 target_profile=profile,
                 protocol=target_protocol,
                 min_samples=args.min_samples,

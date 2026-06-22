@@ -1,14 +1,9 @@
-from evotensile.cache import CacheKey, benchmark_protocol_hash, normalize_version_name, problem_type_hash
+from evotensile.cache import CacheKey, benchmark_protocol_hash, problem_type_hash
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
-from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
+from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL, global_parameter_items
 from evotensile.search_space import known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
-
-
-def test_version_name_is_manual_namespace():
-    assert normalize_version_name(None) == "unversioned"
-    assert normalize_version_name("  local_patch_a ") == "local_patch_a"
 
 
 def test_default_protocol_uses_full_validation():
@@ -16,10 +11,19 @@ def test_default_protocol_uses_full_validation():
     assert DEFAULT_PROFILE.benchmark_protocol_hash() == DEFAULT_BENCHMARK_PROTOCOL.protocol_hash()
 
 
-def test_protocol_hash_changes_with_typed_timing_params():
+def test_string_global_parameters_are_quoted_for_tensilelite_cli():
+    assert global_parameter_items({"RuntimeLanguage": "HIP", "MinimumRequiredVersion": "5.0.0"}) == [
+        "RuntimeLanguage='HIP'",
+        "MinimumRequiredVersion='5.0.0'",
+    ]
+
+
+def test_protocol_hash_ignores_sample_budget_but_tracks_timing_protocol():
     base = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL)
-    changed = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=5))
-    assert base != changed
+    more_samples = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=120))
+    changed_warmups = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=5))
+    assert base == more_samples
+    assert base != changed_warmups
 
 
 def test_profile_derives_cache_identity():
@@ -35,7 +39,6 @@ def test_db_cache_key_lookup(tmp_path):
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     key = CacheKey(
-        version_name="v0",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         shape_id=shape.id,
@@ -48,14 +51,13 @@ def test_db_cache_key_lookup(tmp_path):
         candidate_hash=candidate.hash,
         run_id="run_test",
         status="ok",
-        version_name="v0",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=123.0,
     )
     assert db.has_cached_evaluation(key)
     assert db.has_reusable_cache_entry(key)
-    assert db.cache_summary(version_name="v0") == {"ok": 1}
+    assert db.cache_summary() == {"ok": 1}
 
 
 def test_negative_cache_statuses_are_reusable_but_not_rankable(tmp_path):
@@ -66,7 +68,6 @@ def test_negative_cache_statuses_are_reusable_but_not_rankable(tmp_path):
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     key = CacheKey(
-        version_name="v0",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         shape_id=shape.id,
@@ -78,12 +79,11 @@ def test_negative_cache_statuses_are_reusable_but_not_rankable(tmp_path):
         candidate_hash=candidate.hash,
         run_id="run_test",
         status="rejected",
-        version_name="v0",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
     )
 
     assert not db.has_cached_evaluation(key)
     assert db.has_reusable_cache_entry(key)
-    assert db.rank_evaluations(version_name="v0") == []
-    assert db.cache_summary(version_name="v0") == {"rejected": 1}
+    assert db.rank_evaluations() == []
+    assert db.cache_summary() == {"rejected": 1}
