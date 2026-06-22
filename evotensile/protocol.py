@@ -12,7 +12,6 @@ BENCHMARK_PROTOCOL_KEYS = (
     "SyncsPerBenchmark",
     "SleepPercent",
     "HardwareMonitor",
-    "NumElementsToValidate",
     "DataInitTypeA",
     "DataInitTypeB",
     "DataInitTypeC",

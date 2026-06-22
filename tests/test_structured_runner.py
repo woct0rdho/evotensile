@@ -7,7 +7,13 @@ from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.scheduler import execute_schedule
 from evotensile.search_space import known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
-from evotensile.structured_runner import _library_dir_from_run, read_structured_results
+from evotensile.structured_runner import (
+    RunnablePair,
+    StructuredSample,
+    _library_dir_from_run,
+    read_structured_results,
+    validate_structured_samples,
+)
 
 
 def _fake_structured_runner(path: Path) -> Path:
@@ -39,7 +45,7 @@ def _fake_structured_runner(path: Path) -> Path:
                                     "status": "ok",
                                     "sample_index": sample_index,
                                     "time_us": time_us,
-                                    "validation": "PASSED",
+                                    "validation": "NO_CHECK" if pair.get("num_elements_to_validate") == 0 else "PASSED",
                                     "solution_index": pair["library_solution_index"],
                                 },
                                 sort_keys=True,
@@ -95,6 +101,63 @@ def _fake_build_tensile(path: Path) -> Path:
     )
     script.chmod(0o755)
     return script
+
+
+def test_validate_structured_samples_requires_prior_validation_for_no_check_rows():
+    pair = RunnablePair(
+        shape_id="m1_n1_b1_k1",
+        candidate_hash="cand_1",
+        problem_index=0,
+        requested_solution_index=0,
+        library_solution_index=0,
+        manifest_solution_index=0,
+    )
+    sample = StructuredSample(
+        shape_id=pair.shape_id,
+        candidate_hash=pair.candidate_hash,
+        status="ok",
+        sample_index=0,
+        time_us=1.0,
+        validation="NO_CHECK",
+        solution_index=0,
+    )
+
+    inserts = validate_structured_samples(
+        [sample],
+        runnable_pairs=[pair],
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1, num_elements_to_validate=0),
+    )
+
+    assert inserts[0].status == "validation_unknown"
+
+
+def test_validate_structured_samples_accepts_trusted_no_check_rows():
+    pair = RunnablePair(
+        shape_id="m1_n1_b1_k1",
+        candidate_hash="cand_1",
+        problem_index=0,
+        requested_solution_index=0,
+        library_solution_index=0,
+        manifest_solution_index=0,
+    )
+    sample = StructuredSample(
+        shape_id=pair.shape_id,
+        candidate_hash=pair.candidate_hash,
+        status="ok",
+        sample_index=0,
+        time_us=1.0,
+        validation="NO_CHECK",
+        solution_index=0,
+    )
+
+    inserts = validate_structured_samples(
+        [sample],
+        runnable_pairs=[pair],
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1, num_elements_to_validate=0),
+        allow_no_check=True,
+    )
+
+    assert inserts[0].status == "ok"
 
 
 def test_library_dir_from_run_accepts_tensilelite_build_only_cache_layout(tmp_path: Path):
@@ -158,6 +221,48 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
             "WHERE status='ok' GROUP BY shape_id, candidate_hash ORDER BY shape_id, candidate_hash"
         ).fetchall()
     assert rows == sorted((shape.id, candidate.hash, 3) for shape in shapes for candidate in candidates)
+
+
+def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path):
+    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidate = known_seed_candidates()[0]
+    shape = pilot_100_shapes()[0]
+
+    first = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=[candidate],
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+    )
+    second = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=[candidate],
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
+        min_samples=2,
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+    )
+
+    assert first.executed_batches[0].planned.requires_validation
+    assert not second.executed_batches[0].planned.requires_validation
+    with sqlite3.connect(tmp_path / "sched.sqlite") as con:
+        rows = con.execute(
+            "SELECT status, validation, COUNT(*) FROM evaluations GROUP BY status, validation ORDER BY validation"
+        ).fetchall()
+    assert rows == [("ok", "NO_CHECK", 1), ("ok", "PASSED", 1)]
 
 
 def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):

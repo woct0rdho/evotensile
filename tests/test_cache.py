@@ -18,11 +18,13 @@ def test_string_global_parameters_are_quoted_for_tensilelite_cli():
     ]
 
 
-def test_protocol_hash_ignores_sample_budget_but_tracks_timing_protocol():
+def test_protocol_hash_ignores_sampling_budget_and_validation_execution():
     base = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL)
     more_samples = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=120))
+    gpu_only_topup = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_elements_to_validate=0))
     changed_warmups = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=5))
     assert base == more_samples
+    assert base == gpu_only_topup
     assert base != changed_warmups
 
 

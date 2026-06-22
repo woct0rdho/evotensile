@@ -4,7 +4,7 @@ Work in progress. README is AI-generated.
 
 EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, uses TensileLite for solution/code-object generation, and records structured timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion) and [rocm_wmma_gemm](https://github.com/adelj88/rocm_wmma_gemm).
 
-The repository currently includes one concrete target configuration, but the core code is intended to stay reusable: candidate hashing, shape handling, search-space encoding, YAML emission, runner orchestration, benchmark-protocol hashing, validation-aware ingestion, ranking, finalist retiming, current-hipBLASLt comparison, and logic-file update helpers.
+The repository currently includes one concrete target configuration, but the core code is intended to stay reusable: candidate hashing, shape handling, search-space encoding, YAML emission, runner orchestration, benchmark-protocol hashing, validation-aware ingestion, ranking, adaptive finalist top-ups, current-hipBLASLt comparison, and logic-file update helpers.
 
 Target-specific notes, exact artifacts, measured results, and remaining kernel-specific work are in `PLAN.md`.
 
@@ -15,7 +15,7 @@ A normal EvoTensile tuning loop is:
 1. Define problem, shapes, and search space.
 2. Search configs with validation-gated TensileLite measurements.
 3. Inspect and rank cached results.
-4. Retime top-K finalists with stronger validation.
+4. Adaptively top up uncertain finalists until timing confidence is sufficient.
 5. Compare with current hipBLASLt and export hybrid winners.
 6. Update checked-in hipBLASLt GridBased logic YAMLs from the hybrid export.
 7. Rebuild hipBLASLt and validate installed performance.
@@ -33,8 +33,7 @@ A normal EvoTensile tuning loop is:
 - `csrc/structured_runner.cpp`: narrow production HIP/TensileLite backend for the current gfx1151 FP16 NT HHS target.
 - `scripts/build_structured_runner.sh`: builds `./build/evotensile-structured-runner` against an existing TensileLite client build.
 - `evotensile/database.py` and `evotensile/cache.py`: SQLite storage and cache queries.
-- `evotensile/scheduler.py`: cache-aware batch planning and execution.
-- `scripts/retime_topk.py`: exact top-K finalist retiming.
+- `evotensile/scheduler.py`: cache-aware adaptive batch planning and execution.
 - `scripts/compare_hipblaslt_bench.py`: installed hipBLASLt comparison and hybrid export.
 - `scripts/update_hipblaslt_gridbased_logic.py`: update checked-in hipBLASLt GridBased YAMLs from a hybrid export.
 - `scripts/verify_installed_hipblaslt.py`: quick installed hipBLASLt correctness test using `hipblaslt-bench --verify`.
@@ -84,7 +83,7 @@ scripts/build_structured_runner.sh
 
 The runner build script validates that the expected TensileLite client static libraries exist under `~/rocm-libraries/build/tensilelite-client` before compiling `./build/evotensile-structured-runner`.
 
-Run planned batches:
+Run planned batches with adaptive sampling:
 
 ```bash
 python3 -m evotensile.cli schedule-batches \
@@ -102,6 +101,10 @@ python3 -m evotensile.cli schedule-batches \
   --runner-bin ./build/evotensile-structured-runner \
   --build-timeout 1800 \
   --runner-timeout 600 \
+  --adaptive-sampling \
+  --adaptive-initial-samples 3 \
+  --adaptive-min-samples 20 \
+  --adaptive-max-samples 80 \
   --keep-going
 ```
 
@@ -109,9 +112,9 @@ The external runner consumes TensileLite build artifacts from either full-client
 
 Useful proposal modes include `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`.
 
-Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, and `--num-elements-to-validate`. The default uses full validation with `NumElementsToValidate=-1`; unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
+Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, and `--num-elements-to-validate`. `NumBenchmarks` and `NumElementsToValidate` are execution budgets rather than cache identity fields, so adaptive top-ups pool with the fully validated timing evidence. The default uses full validation with `NumElementsToValidate=-1`; unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
 
-Validation is a hard gate: only `status=ok` rows with passing validation should be ranked or used as positive cache entries. Unknown validation is never ranked as positive.
+Validation is a hard gate: only `status=ok` rows with passing validation, or GPU-only top-up rows backed by prior passing validation for the same pair, should be ranked or used as positive cache entries. Unknown validation is never ranked as positive.
 
 ## 3. Inspect And Rank Cached Results
 
@@ -132,34 +135,99 @@ python3 -m evotensile.cli rank-evals \
   --min-samples 2
 ```
 
-Structured schedule/retime runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
+Structured scheduler runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
 
-## 4. Retime Top-K Finalists
+## 4. Adaptive Finalist Top-Ups
 
-Search-time timing is noisy enough that top-1 screening can miss the final winner. Use `scripts/retime_topk.py` to retime the top candidates per shape with the same full-validation correctness gate and more reliable finalist timing.
+Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches --adaptive-sampling` starts with a small timing budget, then appends only the missing samples for statistically plausible contenders. The first validated run for each `(shape, candidate)` pair performs CPU/OpenBLAS validation; later GPU-only top-ups use `NumElementsToValidate=0` and are accepted only when prior validation evidence exists.
 
-```bash
-python3 scripts/retime_topk.py \
-  --db out/evotensile.sqlite \
-  --output-dir out/topk_retime \
-  --profile gfx1151-nt-hhs \
-  --top-k 4 \
-  --compile-threads 4 \
-  --runner-bin ./build/evotensile-structured-runner \
-  --build-timeout 1800 \
-  --runner-timeout 600 \
-  --keep-going
-```
-
-After retiming, export the per-shape winners using the project export script for the current target/artifact layout:
+After adaptive sampling, export the per-shape winners using the project export script for the current target/artifact layout:
 
 ```bash
 python3 scripts/export_winners.py \
   --db out/evotensile.sqlite \
-  --output-dir out/topk_retime_export \
+  --output-dir out/winners_export \
   --profile gfx1151-nt-hhs \
   --min-samples 10
 ```
+
+## Winner Selection Math
+
+For each shape, EvoTensile treats each validation-passed candidate as one noisy timing arm. Timing samples are analyzed in log-time space so multiplicative noise and percent gaps are handled consistently.
+
+For candidate $c$ with positive timing samples $t_{c,1}, \dots, t_{c,n}$:
+
+$$
+y_{c,i}=\log(t_{c,i}), \qquad s_c=\mathrm{median}(y_{c,*}).
+$$
+
+The score $s_c$ is the median log time, so lower is better. The robust log-noise estimate is:
+
+$$
+\sigma_c = \max\left(\mathrm{stdev}(y_c),\ 1.483\mathrm{MAD}(y_c),\ \frac{\mathrm{IQR}(y_c)}{1.349}\right).
+$$
+
+The approximate standard error of the median log time is:
+
+$$
+\mathrm{SE}_c = 1.253\frac{\sigma_c}{\sqrt{n}}.
+$$
+
+Let $b$ be the current best candidate by lowest $s_c$. For another candidate $c$, define the log-time gap and confidence interval:
+
+$$
+g_c = s_c - s_b,
+$$
+
+$$
+\mathrm{CI}_c = g_c \pm z_\alpha\sqrt{\mathrm{SE}_c^2 + \mathrm{SE}_b^2}.
+$$
+
+A candidate remains plausible if its lower confidence bound is within the indifference zone $\epsilon$:
+
+$$
+\mathrm{CI}_{c,\mathrm{low}} \le \log(1 + \epsilon/100).
+$$
+
+This means the candidate is not confidently slower than the current best by more than the requested percent tolerance. If no non-best candidate is plausible, the best is resolved. If all plausible candidates are mutually inside the $\pm\epsilon$ zone, the shape is marked practically equivalent and no more samples are scheduled.
+
+When a shape remains unresolved, EvoTensile estimates a target sample count for the plausible contenders. For contender $c$:
+
+$$
+d_c = \max\left(|\,|s_c-s_b|-\epsilon_{\log}\,|,\ \delta_{\min}\right),
+$$
+
+$$
+n_c = \left\lceil\left(\frac{z_\alpha \cdot 1.253\sqrt{\sigma_b^2+\sigma_c^2}}{d_c}\right)^2\right\rceil.
+$$
+
+The scheduled target is the maximum requested $n_c$, rounded up to `--adaptive-sample-step` and clamped to `--adaptive-min-samples` / `--adaptive-max-samples`. `--adaptive-max-k` limits how many plausible candidates are topped up for one shape.
+
+Pseudocode:
+
+```text
+for each shape:
+  samples = validation-passed timing rows for this DB/profile/protocol
+  stats = robust log-time stats per candidate
+  best = candidate with lowest median log time
+  plausible = [best]
+
+  for contender in candidates sorted by median log time:
+    gap = contender.score - best.score
+    ci = gap ± z * sqrt(best.se^2 + contender.se^2)
+    if ci.low <= epsilon_log:
+      plausible.append(contender)
+
+  if plausible == [best]:
+    accept best
+  elif plausible candidates are pairwise equivalent within epsilon_log:
+    accept the fastest as representative of an equivalent set
+  else:
+    target_samples = estimate_needed_samples(plausible)
+    schedule only missing samples for plausible[:adaptive_max_k]
+```
+
+Correctness is handled separately from repetition count. The first accepted run for a `(shape, candidate)` pair performs CPU/OpenBLAS validation. Later adaptive top-ups set `NumElementsToValidate=0` and are accepted only if the DB already contains passing validation evidence for that pair.
 
 ## 5. Compare With Current hipBLASLt And Export Hybrid Winners
 
@@ -167,7 +235,7 @@ Use `scripts/compare_hipblaslt_bench.py` when `hipblaslt-bench` can express the 
 
 ```bash
 python3 scripts/compare_hipblaslt_bench.py \
-  --winners-csv out/topk_retime_export/winners.csv \
+  --winners-csv out/winners_export/winners.csv \
   --output-dir out/hipblaslt_bench_compare \
   --bench ~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench \
   --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/gfx1151" \
@@ -250,7 +318,7 @@ NumElementsToValidate: -1
 
 Cold-loop behavior is intentionally not tracked during tuning because it increases tuning time and optimizes for first-run or bursty-idle effects rather than sustained throughput. Analyze cold-loop behavior later only if first-request latency becomes important.
 
-Benchmark protocol is represented by the typed `BenchmarkProtocol` profile object and included in the benchmark-protocol hash. Compile-only settings such as `CpuThreads` are phase-specific and intentionally excluded from benchmark protocol identity.
+Benchmark protocol is represented by the typed `BenchmarkProtocol` profile object and included in the benchmark-protocol hash. `NumBenchmarks` and `NumElementsToValidate` are intentionally excluded from benchmark protocol identity because they control sampling/validation execution, not timing compatibility. Compile-only settings such as `CpuThreads` are phase-specific and also excluded.
 
 ## Current Limitations
 

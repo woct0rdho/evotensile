@@ -68,6 +68,7 @@ def test_plan_batches_requests_only_missing_sample_count(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
+        validation="PASSED",
     )
 
     batches = plan_batches(
@@ -85,6 +86,40 @@ def test_plan_batches_requests_only_missing_sample_count(tmp_path: Path):
     assert batches[0].missing_pairs == 1
     assert batches[0].samples_per_pair == 2
     assert batches[0].missing_samples == 2
+    assert not batches[0].requires_validation
+
+
+def test_plan_batches_requires_validation_without_prior_validation_evidence(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = known_seed_candidates()[:1]
+    shapes = pilot_100_shapes()[:1]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.insert_evaluation(
+        shape_id=shapes[0].id,
+        candidate_hash=candidates[0].hash,
+        run_id="cached",
+        status="ok",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        time_us=1.0,
+        validation="NO_CHECK",
+    )
+
+    batches = plan_batches(
+        db,
+        shapes=shapes,
+        candidates=candidates,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        min_samples=3,
+        candidate_batch_size=1,
+        shape_batch_size=1,
+    )
+
+    assert len(batches) == 1
+    assert batches[0].requires_validation
 
 
 def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):

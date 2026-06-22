@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
 
+from .adaptive_retime import AdaptivePolicy, decide_retime_by_shape, load_timing_stats
 from .cache import POSITIVE_CACHE_STATUSES
 from .candidate import Candidate, Shape, stable_hash
 from .database import EvaluationInsert, EvoTensileDB
@@ -28,6 +29,7 @@ class PlannedBatch:
     missing_pairs: int
     nominal_pairs: int
     samples_per_pair: int
+    requires_validation: bool = True
 
     @property
     def extra_pairs(self) -> int:
@@ -70,6 +72,7 @@ class ExecutedBatch:
 class ScheduleResult:
     planned_batches: list[PlannedBatch]
     executed_batches: list[ExecutedBatch] = field(default_factory=list)
+    adaptive_rounds: int = 0
 
     @property
     def missing_pairs(self) -> int:
@@ -321,19 +324,28 @@ def _missing_candidate_indices_by_shape(
     benchmark_protocol_hash: str,
     min_samples: int,
     ignore_cache: bool = False,
-) -> dict[int, tuple[tuple[int, int], ...]]:
+) -> dict[int, tuple[tuple[int, int, bool], ...]]:
     counts: dict[tuple[str, str], dict[str, int]] = {}
+    validated: set[tuple[str, str]] = set()
+    shape_ids = [shape.id for shape in shapes]
+    candidate_hashes = [candidate.hash for candidate in candidates]
     if not ignore_cache:
         counts = db.reusable_cache_entry_counts(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
-            shape_ids=[shape.id for shape in shapes],
-            candidate_hashes=[candidate.hash for candidate in candidates],
+            shape_ids=shape_ids,
+            candidate_hashes=candidate_hashes,
+        )
+        validated = db.validated_cache_entries(
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            shape_ids=shape_ids,
+            candidate_hashes=candidate_hashes,
         )
 
-    missing: dict[int, tuple[tuple[int, int], ...]] = {}
+    missing: dict[int, tuple[tuple[int, int, bool], ...]] = {}
     for shape_index, shape in enumerate(shapes):
-        missing_items: list[tuple[int, int]] = []
+        missing_items: list[tuple[int, int, bool]] = []
         for candidate_index, candidate in enumerate(candidates):
             status_counts = {} if ignore_cache else counts.get((shape.id, candidate.hash), {})
             negative_count = sum(
@@ -344,7 +356,7 @@ def _missing_candidate_indices_by_shape(
             ok_count = sum(status_counts.get(status, 0) for status in POSITIVE_CACHE_STATUSES)
             remaining = max(0, min_samples - ok_count)
             if remaining > 0:
-                missing_items.append((candidate_index, remaining))
+                missing_items.append((candidate_index, remaining, (shape.id, candidate.hash) not in validated))
         if missing_items:
             missing[shape_index] = tuple(missing_items)
     return missing
@@ -355,20 +367,22 @@ def _pair_exact_batches(
     batch_index_start: int,
     shapes: list[Shape],
     candidates: list[Candidate],
-    missing_by_shape: dict[int, tuple[tuple[int, int], ...]],
+    missing_by_shape: dict[int, tuple[tuple[int, int, bool], ...]],
     max_batches: int | None = None,
 ) -> list[PlannedBatch]:
-    grouped_shapes: dict[tuple[int, tuple[int, ...]], list[Shape]] = {}
+    grouped_shapes: dict[tuple[int, bool, tuple[int, ...]], list[Shape]] = {}
     for shape_index, missing_items in missing_by_shape.items():
-        by_remaining: dict[int, list[int]] = {}
-        for candidate_index, remaining in missing_items:
-            by_remaining.setdefault(remaining, []).append(candidate_index)
-        for remaining, missing_indices in by_remaining.items():
-            grouped_shapes.setdefault((remaining, tuple(missing_indices)), []).append(shapes[shape_index])
+        by_remaining: dict[tuple[int, bool], list[int]] = {}
+        for candidate_index, remaining, requires_validation in missing_items:
+            by_remaining.setdefault((remaining, requires_validation), []).append(candidate_index)
+        for (remaining, requires_validation), missing_indices in by_remaining.items():
+            grouped_shapes.setdefault((remaining, requires_validation, tuple(missing_indices)), []).append(
+                shapes[shape_index]
+            )
 
     planned: list[PlannedBatch] = []
     batch_index = batch_index_start
-    for (samples_per_pair, missing_indices), group_shapes in grouped_shapes.items():
+    for (samples_per_pair, requires_validation, missing_indices), group_shapes in grouped_shapes.items():
         group_candidates = [candidates[idx] for idx in missing_indices]
         # This rectangular cover is exact because every shape in the group has
         # the same missing candidate subset. Empty-cache runs still collapse to
@@ -381,6 +395,7 @@ def _pair_exact_batches(
                 missing_pairs=len(group_candidates) * len(group_shapes),
                 nominal_pairs=len(group_candidates) * len(group_shapes),
                 samples_per_pair=samples_per_pair,
+                requires_validation=requires_validation,
             )
         )
         batch_index += 1
@@ -434,6 +449,7 @@ def plan_batches(
 def _batch_fingerprint(batch: PlannedBatch) -> str:
     payload = {
         "candidates": [candidate.hash for candidate in batch.candidates],
+        "requires_validation": batch.requires_validation,
         "samples_per_pair": batch.samples_per_pair,
         "shapes": [shape.id for shape in batch.shapes],
     }
@@ -514,6 +530,62 @@ def _ingest_result_from_inserts(
     )
 
 
+def _adaptive_topup_groups(
+    db: EvoTensileDB,
+    *,
+    shapes: list[Shape],
+    candidates: list[Candidate],
+    problem_type_hash: str,
+    benchmark_protocol_hash: str,
+    policy: AdaptivePolicy,
+    min_samples: int,
+) -> list[tuple[int, list[Shape], list[Candidate]]]:
+    shape_by_id = {shape.id: shape for shape in shapes}
+    candidate_by_hash = {candidate.hash: candidate for candidate in candidates}
+    stats_by_shape = load_timing_stats(
+        db,
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hashes=[benchmark_protocol_hash],
+        min_samples=min_samples,
+        shape_ids=set(shape_by_id),
+        candidate_hashes=set(candidate_by_hash),
+    )
+    decisions = decide_retime_by_shape(stats_by_shape, policy=policy)
+    grouped: dict[tuple[int, tuple[str, ...]], list[Shape]] = {}
+    rank_order_by_key: dict[tuple[int, tuple[str, ...]], dict[str, int]] = {}
+    for decision in decisions.values():
+        if not decision.needs_retime or decision.target_samples <= 0:
+            continue
+        available_hashes = tuple(
+            candidate_hash for candidate_hash in decision.retime_candidate_hashes if candidate_hash in candidate_by_hash
+        )
+        if len(available_hashes) < 2:
+            continue
+        key = (decision.target_samples, tuple(sorted(available_hashes)))
+        shape = shape_by_id.get(decision.shape_id)
+        if shape is None:
+            continue
+        grouped.setdefault(key, []).append(shape)
+        ranks = rank_order_by_key.setdefault(key, {})
+        for rank, candidate_hash in enumerate(available_hashes):
+            ranks.setdefault(candidate_hash, rank)
+
+    groups: list[tuple[int, list[Shape], list[Candidate]]] = []
+    for (target_samples, candidate_hashes), group_shapes in sorted(
+        grouped.items(), key=lambda item: (item[0][0], len(item[1]), item[0][1]), reverse=True
+    ):
+        ranks = rank_order_by_key[(target_samples, candidate_hashes)]
+        ordered_hashes = sorted(candidate_hashes, key=lambda candidate_hash: (ranks[candidate_hash], candidate_hash))
+        groups.append(
+            (
+                target_samples,
+                sorted(group_shapes, key=lambda shape: shape.id),
+                [candidate_by_hash[h] for h in ordered_hashes],
+            )
+        )
+    return groups
+
+
 def execute_schedule(
     db: EvoTensileDB,
     *,
@@ -535,14 +607,100 @@ def execute_schedule(
     runner_bin: str | Path | None = None,
     build_timeout_s: float | None = None,
     runner_timeout_s: float | None = None,
+    adaptive_policy: AdaptivePolicy | None = None,
+    adaptive_initial_samples: int = 3,
+    adaptive_max_rounds: int = 4,
 ) -> ScheduleResult:
     if not dry_run and not generate_only and runner_bin is None:
         raise ValueError("--runner-bin is required")
 
     protocol = protocol or target_profile.default_protocol
-    target_samples = max(min_samples, protocol.num_benchmarks)
     problem_type_hash = target_profile.problem_type_hash
     benchmark_protocol_hash = target_profile.benchmark_protocol_hash(protocol)
+
+    if adaptive_policy is not None:
+        if adaptive_initial_samples <= 0:
+            raise ValueError("adaptive_initial_samples must be positive")
+        if adaptive_max_rounds < 0:
+            raise ValueError("adaptive_max_rounds must be non-negative")
+        initial_protocol = protocol.with_overrides(num_benchmarks=adaptive_initial_samples)
+        initial = execute_schedule(
+            db,
+            shapes=shapes,
+            candidates=candidates,
+            output_root=output_root,
+            target_profile=target_profile,
+            protocol=initial_protocol,
+            min_samples=adaptive_initial_samples,
+            candidate_batch_size=candidate_batch_size,
+            shape_batch_size=shape_batch_size,
+            ignore_cache=ignore_cache,
+            max_batches=max_batches,
+            dry_run=dry_run,
+            generate_only=generate_only,
+            tensilelite_bin=tensilelite_bin,
+            compile_threads=compile_threads,
+            keep_going=keep_going,
+            runner_bin=runner_bin,
+            build_timeout_s=build_timeout_s,
+            runner_timeout_s=runner_timeout_s,
+        )
+        planned = list(initial.planned_batches)
+        executed = list(initial.executed_batches)
+        if dry_run or generate_only:
+            return ScheduleResult(planned_batches=planned, executed_batches=executed, adaptive_rounds=0)
+        completed_rounds = 0
+        for _ in range(adaptive_max_rounds):
+            groups = _adaptive_topup_groups(
+                db,
+                shapes=shapes,
+                candidates=candidates,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                policy=adaptive_policy,
+                min_samples=adaptive_initial_samples,
+            )
+            if not groups:
+                break
+            ran_round = False
+            for target_samples, group_shapes, group_candidates in groups:
+                topup = execute_schedule(
+                    db,
+                    shapes=group_shapes,
+                    candidates=group_candidates,
+                    output_root=output_root,
+                    target_profile=target_profile,
+                    protocol=protocol.with_overrides(num_benchmarks=target_samples),
+                    min_samples=target_samples,
+                    candidate_batch_size=max(1, len(group_candidates)),
+                    shape_batch_size=shape_batch_size,
+                    ignore_cache=False,
+                    max_batches=None,
+                    dry_run=False,
+                    generate_only=False,
+                    tensilelite_bin=tensilelite_bin,
+                    compile_threads=compile_threads,
+                    keep_going=keep_going,
+                    runner_bin=runner_bin,
+                    build_timeout_s=build_timeout_s,
+                    runner_timeout_s=runner_timeout_s,
+                )
+                planned.extend(topup.planned_batches)
+                executed.extend(topup.executed_batches)
+                if topup.executed_batches:
+                    ran_round = True
+                if topup.executed_batches and not keep_going:
+                    last_ingest = topup.executed_batches[-1].ingest
+                    if last_ingest is not None and not last_ingest.ok:
+                        return ScheduleResult(
+                            planned_batches=planned, executed_batches=executed, adaptive_rounds=completed_rounds
+                        )
+            if not ran_round:
+                break
+            completed_rounds += 1
+        return ScheduleResult(planned_batches=planned, executed_batches=executed, adaptive_rounds=completed_rounds)
+
+    target_samples = max(min_samples, protocol.num_benchmarks)
 
     db.init()
     db.register_candidates(candidates)
@@ -583,7 +741,10 @@ def execute_schedule(
             missing_by_shape=missing_by_shape,
         )
         for current in current_batches:
-            current_protocol = protocol.with_overrides(num_benchmarks=current.samples_per_pair)
+            current_protocol = protocol.with_overrides(
+                num_benchmarks=current.samples_per_pair,
+                num_elements_to_validate=protocol.num_elements_to_validate if current.requires_validation else 0,
+            )
             yaml_path, manifest_path, run_dir = write_batch_inputs(
                 current,
                 output_root,
@@ -610,6 +771,7 @@ def execute_schedule(
                 target_profile=target_profile,
                 protocol=current_protocol,
                 runner_bin=runner_bin,
+                trust_prior_validation=not current.requires_validation,
                 build_timeout_s=build_timeout_s,
                 runner_timeout_s=runner_timeout_s,
             )

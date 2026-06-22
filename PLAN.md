@@ -1,6 +1,6 @@
 # EvoTensile Plan
 
-EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The current completed pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, followed by hybrid export into checked-in hipBLASLt HHS/HHS+AuxH/BBS/BBS+AuxB GridBased YAMLs, rebuild, PyTorch-level performance validation, and repeatable installed-library correctness validation. The current runner target is replacing the generic TensileLite client measurement path with a structured exact-pair backend before scaling to finer/larger shape grids.
+EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The current completed pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, followed by hybrid export into checked-in hipBLASLt HHS/HHS+AuxH/BBS/BBS+AuxB GridBased YAMLs, rebuild, PyTorch-level performance validation, and repeatable installed-library correctness validation. The current workflow uses a structured exact-pair backend with adaptive sampling before scaling to finer/larger shape grids.
 
 ## 1. Motivation
 
@@ -72,7 +72,7 @@ Generic implemented capabilities are summarized in `README.md`. Target-specific 
 - runner support exists for direct runs, compile-then-serial-benchmark runs, and an exact-pair structured backend path;
 - DB schema uses each SQLite file as the evidence namespace and keys cache reuse by `problem_type_hash`, `benchmark_protocol_hash`, exact shape, and candidate hash;
 - structured JSONL result ingestion exists, using TensileLite final solution YAML as the source of truth for candidate mapping;
-- cache-aware batch scheduling exists for missing `ok` observations, with compile-only, serial benchmark, and immediate ingestion phases;
+- cache-aware batch scheduling exists for missing `ok` observations, including adaptive top-ups that reuse prior validation evidence and run GPU-only timing when safe;
 - `scripts/update_hipblaslt_gridbased_logic.py` now emits build-valid checked-in YAMLs for HHS/HHS+AuxH/BBS/BBS+AuxB variants, including Aux `UseE` handling and scalar type normalization;
 - a real one-shape harness under `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that hindsight-directed local refinement can reproduce the documented `8192^3` winner, but this operator is not part of the generic scheduler because it bakes in the known winner neighborhood.
 
@@ -339,7 +339,7 @@ For finer grids:
   - mutations around nearest winners;
   - a few global robust candidates;
   - a few random exploratory candidates.
-- Run a smaller budget, e.g. 16-64 configs/shape, then retime finalists.
+- Run a smaller budget, e.g. 16-64 configs/shape, then let adaptive sampling top up uncertain finalists.
 
 Shape features:
 
@@ -374,10 +374,9 @@ Cold-loop behavior is intentionally not part of the tuning loop. Tracking it wou
 ### Final confirmation protocol
 
 For top candidates per shape:
-- retime top 3-10 candidates with the same hot-loop protocol;
-- use repeated samples;
-- report median / trimmed mean;
-- keep validation enabled;
+- adaptively top up statistically plausible contenders with the same hot-loop timing protocol;
+- use repeated samples and report robust medians / timing summaries;
+- validate once per `(shape, candidate)` pair, then allow GPU-only timing top-ups only with prior validation evidence;
 - compare against existing hipBLASLt logic and known baseline configs.
 
 Final results should separate:
@@ -397,22 +396,21 @@ Final results should separate:
 - TensileLite YAML emission with `Groups` exists.
 - Default hot-loop protocol is encoded.
 
-### M3: runner, parser, and cache identity - mostly done
+### M3: runner, structured ingestion, and cache identity - mostly done
 
 Done:
 - invoke TensileLite in a subprocess;
 - capture logs and output paths;
-- parse CSV files for inspection;
 - initialize SQLite schema;
-- record run metadata and manual cache identity;
+- record run metadata with DB-file evidence namespaces;
 - query cache identity/status/missing evaluations and rank only validation-passed observations;
-- schedule missing `ok` observations into candidate/shape batches and ingest each completed batch.
-
-Implemented now:
-- rejected final-YAML candidates, validation failures, and single-candidate build failures are reusable negative-cache entries that scheduler skips.
+- schedule missing `ok` observations into candidate/shape batches and ingest each completed batch;
+- use the structured exact-pair JSONL backend instead of CSV/log parsing;
+- reuse rejected final-YAML candidates, validation failures, and single-candidate build failures as negative-cache entries that scheduler skips;
+- adaptively top up unresolved contenders and skip repeated CPU validation when prior validation evidence exists.
 
 Remaining:
-- classify timeouts, multi-candidate build failures, and parse failures robustly beyond validation pass/fail rows.
+- classify multi-candidate build failures robustly beyond validation pass/fail rows.
 
 ### M4: first pilot scan - done
 
@@ -454,7 +452,7 @@ Post-100-shape status and remaining risks:
 - Pair-level cache inefficiency has a first fix: scheduler now groups shapes by exact missing candidate subset within each candidate/shape chunk, so planned batches do not deliberately re-run cached pairs. Future dense-merge heuristics may allow a small number of `ok` extras if compile overhead dominates.
 - APU thermal coupling: compile and benchmark are sequential, but a highly threaded compile can heat Strix Halo immediately before GPU timing. Default policy is still no deliberate compile/benchmark overlap and no deliberate cool-down sleep; reduce `--compile-threads` if pilot timings look thermally biased.
 - Multi-candidate build failure attribution: only single-candidate build failures are negative-cached today. If a multi-candidate batch fails, isolate with `--candidate-batch-size 1` before marking candidates bad.
-- Search-time validation now defaults to full validation (`NumElementsToValidate=-1`) after adding the OpenBLAS-backed structured-runner reference path. The retained 100-shape first-pass DB hash was migrated to the full-validation protocol identity because the retimed top-4 subset showed no 128-element-pass/full-validation-fail cases.
+- Search-time validation now defaults to full validation (`NumElementsToValidate=-1`) after adding the OpenBLAS-backed structured-runner reference path. `NumElementsToValidate` is an execution budget, not a timing-cache identity field, so GPU-only top-ups with prior validation evidence append under the same benchmark protocol hash.
 - Final-YAML mapping was repaired after the full scan. The repaired mapper handles TLDS2-derived `1LDSBuffer`/`PrefetchLocalRead` rewrites and inactive `StaggerU=0` `StaggerUMapping`/`StaggerUStride` normalization. Re-ingest now reports zero unmapped rows and zero unmatched final solutions.
 
 Suggested pre-grid test:
@@ -471,7 +469,7 @@ python3 -m evotensile.cli schedule-batches \
 
 ## 14. Pilot Timing Data
 
-Measured pre-full-run data on Radeon 8060S gfx1151 with the standalone TensileLite client and `--compile-threads 4 --benchmark-threads 1`:
+Measured pre-structured-runner data on Radeon 8060S gfx1151 with the former standalone TensileLite client path:
 - 1 shape x 1 candidate test: wall `13.28s`; build `4.464s`; benchmark `8.529s`; inserted `10 ok`; summed recorded GEMM time `0.000144s`; non-GEMM runner time `12.993s`.
 - 2 shapes x 2 candidates test: wall `11.34s`; build `4.284s`; benchmark `6.623s`; inserted `20 ok` and `2 rejected`; summed recorded GEMM time `0.000352s`; non-GEMM runner time `10.907s`.
 - 10 shapes x 8 candidates medium probe: wall `19.50s`; build `4.428s`; benchmark `7.655s`; inserted `700 ok` and `10 rejected`; summed recorded GEMM time `0.03047s`; non-GEMM runner time `12.053s`.
@@ -483,7 +481,7 @@ Pre-full-run estimate:
 - A conservative full-grid wall estimate before running is `20-35 minutes`, dominated by TensileLite client validation/logging and code-object/build orchestration rather than matmul kernel time.
 
 Actual 100-shape first-pass results:
-- Launch: `schedule-batches --proposal seed-random-gomea --candidate-batch-size 32 --shape-batch-size 100 --compile-threads 4 --benchmark-threads 1 --keep-going` with the standalone TensileLite client.
+- Launch used the former standalone TensileLite client path with `seed-random-gomea`, candidate batch size `32`, shape batch size `100`, and compile threads `4`.
 - Wall time was `1265.21s` (`21.1 min`) for `135` proposed candidates x `100` shapes planned as `13,500` pairs in `5` batches.
 - Recorded TensileLite subprocess durations summed to `562.6s`; Python ingestion/log processing and filesystem overhead were the rest, confirming that orchestration dominates the generic client path.
 - Initial DB before mapper repair had `64,000 ok`, `2,000 validation_fail`, and `6,900 rejected` rows, with accepted rows under-mapped as rejected/unmapped.
@@ -491,14 +489,14 @@ Actual 100-shape first-pass results:
 - First-pass summed recorded ok GEMM time was `17.178s`; validation-failed GEMM time was `0.348s`. The remaining wall time is compile/client/log/validation/database overhead rather than matmul time.
 
 Actual top-4 full-validation retime:
-- Script: `scripts/retime_topk.py` selected top-4 per shape from the repaired first-pass DB and grouped exact pair sets without cross-product extras.
-- Protocol: default full validation with `NumElementsToValidate=-1`, producing benchmark protocol hash `bproto_61f1740f84f49502`.
+- Historical fixed top-4 retime selected top-4 per shape from the repaired first-pass DB and grouped exact pair sets without cross-product extras.
+- Protocol: default full validation with `NumElementsToValidate=-1`, producing current benchmark protocol hash `bproto_d8085f528519ae64`.
 - Coverage: `400` intended pairs, `35` unique candidates, `57` groups, `4,000 ok` samples, `0` rejected/unmapped/validation-fail rows.
 - Wall time was `675.86s`; summed retime ok GEMM time was `0.256s`, so this was almost entirely generic TensileLite compile/client overhead.
-- Full-validation retime changed `57` of `100` per-shape winners versus the first-pass screen, so top-K retiming is required before export.
-- Top-k sensitivity from the final retime: the final winner's first-pass rank was `1` for `43` shapes, `2` for `27`, `3` for `17`, and `4` for `13`. Retiming only top-1 would miss `57/100` final winners, top-2 would miss `30/100`, and top-3 would miss `13/100`; top-4 captured every final winner observed in this run.
+- Historical fixed full-validation retime changed `57` of `100` per-shape winners versus the first-pass screen, which motivated integrated adaptive sampling before export.
+- Top-k sensitivity from the historical final top-up: the final winner's first-pass rank was `1` for `43` shapes, `2` for `27`, `3` for `17`, and `4` for `13`. Topping up only top-1 would miss `57/100` final winners, top-2 would miss `30/100`, and top-3 would miss `13/100`; top-4 captured every final winner observed in this run.
 - The retimed winner versus the retimed first-pass top-1 improved by median `0.367%`, mean `3.904%`, and max `35.202%`; `21` shapes improved by more than `5%`, and `13` improved by more than `10%`.
-- Current policy: the 100-shape artifact needs no further retime, but future grids should keep finalist retiming with `top_k=4` as the minimum proven setting. For the 9,681-shape grid, sample top-8/top-10 on a subset after the custom runner exists to check whether rank-5+ candidates sometimes overtake top-4.
+- Current policy: the 100-shape artifact needs no further top-up, but future grids should use integrated adaptive sampling with at least top-8/top-10 plausible contenders on staged subsets to check whether rank-5+ candidates sometimes overtake top-4.
 - Exported rebuild-ready artifacts: `out/grid100_full_20260618_top4_retime_export/winners.csv`, `per_shape_yaml/`, `candidates_json/`, and `metadata.json`.
 - Analysis artifacts: `out/grid100_full_20260618_analysis/summary.json` and `winner_comparison.csv`.
 
@@ -510,8 +508,8 @@ Build-directory convention for current work:
 Actual installed hipBLASLt comparison:
 - Built `hipblaslt-bench` with `~/rocm-libraries/build_hipblaslt_bench.sh`. The normal binary path is `~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench`.
 - Before the tuned rebuild/install, the installed `_rocm_sdk_devel` package had `libhipblaslt.so` but not the gfx1151 TensileLite assets at the default path, so comparison used `HIPBLASLT_TENSILE_LIBPATH=~/venv_torch/lib/python3.14/site-packages/_rocm_sdk_libraries/lib/hipblaslt/library/gfx1151`. Post-install validation should use `HIPBLASLT_TENSILE_LIBPATH=$ROCM_PATH/lib/hipblaslt/library/gfx1151`.
-- Reusable comparison script: `scripts/compare_hipblaslt_bench.py`. It reads the top-4 full-validation export winners, runs `hipblaslt-bench`, writes per-shape stdout/stderr logs, and joins hipBLASLt results against EvoTensile median winner metrics.
-- Protocol: FP16 NT HHS, batch `1`, bias vector type `f16_r`, bias source `d`, `scaleAlpha_vector`, activation `none`, `alpha=2`, `beta=2`, `--initialization hpl`, `--cold_iters 10`, `--iters 100`, `--use_gpu_timer`, `--requested_solution 1`. `alpha=2`/`beta=2` match the retime `ClientParameters.ini` init modes (`init-alpha=Two`, `init-beta=Two`); use `--beta 0` later for the wrapper-contract variant if needed.
+- Reusable comparison script: `scripts/compare_hipblaslt_bench.py`. It reads exported EvoTensile winners, runs `hipblaslt-bench`, writes per-shape stdout/stderr logs, and joins hipBLASLt results against EvoTensile median winner metrics.
+- Protocol: FP16 NT HHS, batch `1`, bias vector type `f16_r`, bias source `d`, `scaleAlpha_vector`, activation `none`, `alpha=2`, `beta=2`, `--initialization hpl`, `--cold_iters 10`, `--iters 100`, `--use_gpu_timer`, `--requested_solution 1`. `alpha=2`/`beta=2` match the EvoTensile structured-runner init modes (`init-alpha=Two`, `init-beta=Two`); use `--beta 0` later for the wrapper-contract variant if needed.
 - Method caveat: `hipblaslt-bench` reports one average over `iters` hot launches, while EvoTensile reports the median of 10 TensileLite benchmark groups with 10 enqueues each. Treat this as a practical installed-library comparison, not a perfectly identical timing protocol.
 - Run output: `out/hipblaslt_bench_grid100_20260619/comparison.csv`, `summary.json`, `metadata.json`, and `logs/`. Wall time was `20.97s`, with `100/100 ok` and no hipblaslt-bench failures.
 - Aggregate result versus installed hipBLASLt `100400` git `62d3a262`: median speedup `1.303x`, geometric-mean speedup `1.269x`, mean speedup `1.318x`, min `0.702x`, max `2.638x`. EvoTensile median throughput stats: median `16,750.8 GFLOP/s`, mean `17,903.4`; installed hipBLASLt stats: median `14,517.9 GFLOP/s`, mean `14,532.1`.
@@ -534,7 +532,7 @@ Actual rebuilt hipBLASLt validation:
 Structured runner refactor status:
 - `evotensile/profile.py` and `evotensile/protocol.py` define the bundled `gfx1151-nt-hhs` target profile and typed benchmark protocol. The search CLI derives `problem_type_hash` and `benchmark_protocol_hash` from those objects rather than accepting raw hash/global-parameter overrides.
 - `evotensile/structured_runner.py` now defines the exact-pair JSONL contract, maps accepted final-YAML solutions back to `(shape_id, candidate_hash)` once after codegen, dispatches the external structured runner, validates emitted rows, and writes DB evaluations directly without TensileLite client CSV/log archaeology.
-- `schedule-batches` uses the structured path only; the old TensileLite `LibraryClient` CSV/log runner path and in-process test backend have been removed.
+- `schedule-batches` uses the structured path only; the old TensileLite `LibraryClient` CSV/log runner path, standalone retime scripts, and in-process test backend have been removed.
 - The structured result format carries `shape_id` and `candidate_hash` in every sample row, so IO mapping correctness no longer depends on stdout order, problem-progress strings, or kernel names.
 - `csrc/structured_runner.cpp` now implements a narrow production HIP/TensileLite backend for the current gfx1151 FP16 NT HHS bias + `scaleAlpha_vector` target. It loads generated `TensileLibrary_gfx1151.yaml` or build-only `TensileLibrary.yaml` plus `.co`/`.hsaco` artifacts, selects exact solution indices, launches via `TensileLite::hip::SolutionAdapter`, validates CPU-reference samples, and emits JSONL rows.
 - `scripts/build_structured_runner.sh` builds `./build/evotensile-structured-runner` against the existing TensileLite client build under `~/rocm-libraries/build/tensilelite-client`.
@@ -555,7 +553,7 @@ Structured runner refactor status:
 
 ## 16. Immediate Next Steps
 
-- Expand production backend validation from the current 8 accepted retime pairs to `10-20` pairs spanning more shapes, candidates, and generated libraries before starting the 9,681-shape grid.
+- Expand production backend validation from the current accepted top-up pairs to `10-20` pairs spanning more shapes, candidates, and generated libraries before starting the 9,681-shape grid.
 - Decide whether to use explicit runner priming, additional warmups, or robust sample filtering for occasional first-use/timing outliers while keeping benchmark protocol identity user-controlled.
 - Improve multi-candidate build-failure/timeout attribution once failure signatures are better understood; single-candidate build timeouts are classified, but multi-candidate failures are still intentionally not negative-cached.
 - Decide whether profile-owned runner build commands should be executable workflow steps; profiles currently record the default runner path/build command, but users still run the build command explicitly.

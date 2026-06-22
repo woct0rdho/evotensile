@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 
+from .adaptive_retime import AdaptivePolicy
 from .candidate import Shape
 from .database import EvoTensileDB
 from .profile import DEFAULT_PROFILE, PROFILES, TargetProfile, get_profile
@@ -177,6 +178,17 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         random_gene_rate=args.random_gene_rate,
     )
     runner_bin = args.runner_bin or profile.default_runner_bin
+    adaptive_policy = None
+    if args.adaptive_sampling:
+        adaptive_policy = AdaptivePolicy(
+            epsilon_pct=args.adaptive_epsilon_pct,
+            confidence=args.adaptive_confidence,
+            min_retime_samples=args.adaptive_min_samples,
+            max_retime_samples=args.adaptive_max_samples,
+            sample_step=args.adaptive_sample_step,
+            max_k=args.adaptive_max_k,
+            min_effect_pct=args.adaptive_min_effect_pct,
+        )
     result = execute_schedule(
         db,
         shapes=shapes,
@@ -197,6 +209,9 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         runner_bin=runner_bin,
         build_timeout_s=args.build_timeout,
         runner_timeout_s=args.runner_timeout,
+        adaptive_policy=adaptive_policy,
+        adaptive_initial_samples=args.adaptive_initial_samples,
+        adaptive_max_rounds=args.adaptive_max_rounds,
     )
     print(f"db: {args.db}")
     print(f"output_dir: {args.output_dir}")
@@ -219,6 +234,7 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
             f"batch {batch.batch_index:04d}: candidates={len(batch.candidates)} "
             f"shapes={len(batch.shapes)} missing_pairs={batch.missing_pairs} "
             f"nominal_pairs={batch.nominal_pairs} samples_per_pair={batch.samples_per_pair} "
+            f"requires_validation={batch.requires_validation} "
             f"missing_samples={batch.missing_samples} extra_pairs={batch.extra_pairs}"
         )
     output_dir = Path(args.output_dir)
@@ -242,6 +258,11 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         "runner_bin": str(runner_bin) if runner_bin else None,
         "build_timeout_s": args.build_timeout,
         "runner_timeout_s": args.runner_timeout,
+        "adaptive_sampling": args.adaptive_sampling,
+        "adaptive_initial_samples": args.adaptive_initial_samples,
+        "adaptive_max_rounds": args.adaptive_max_rounds,
+        "adaptive_rounds": result.adaptive_rounds,
+        "adaptive_policy": None if adaptive_policy is None else adaptive_policy.__dict__,
         "planned_batches": len(result.planned_batches),
         "planned_missing_pairs": result.missing_pairs,
         "planned_nominal_pairs": result.nominal_pairs,
@@ -255,6 +276,7 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
                 "missing_pairs": batch.missing_pairs,
                 "nominal_pairs": batch.nominal_pairs,
                 "samples_per_pair": batch.samples_per_pair,
+                "requires_validation": batch.requires_validation,
                 "missing_samples": batch.missing_samples,
                 "nominal_samples": batch.nominal_samples,
                 "extra_pairs": batch.extra_pairs,
@@ -273,6 +295,7 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
                 "batch_index": executed.planned.batch_index,
                 "build_returncode": executed.build_returncode,
                 "runner_returncode": executed.runner_returncode,
+                "requires_validation": executed.planned.requires_validation,
                 "yaml_path": str(executed.yaml_path),
                 "manifest_path": str(executed.manifest_path),
                 "output_dir": str(executed.output_dir),
@@ -355,6 +378,16 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument("--build-timeout", type=float, default=None, help="TensileLite build timeout in seconds")
     cmd.add_argument("--runner-timeout", type=float, default=None, help="Structured runner timeout in seconds")
     cmd.add_argument("--keep-going", action="store_true")
+    cmd.add_argument("--adaptive-sampling", action="store_true")
+    cmd.add_argument("--adaptive-initial-samples", type=int, default=3)
+    cmd.add_argument("--adaptive-max-rounds", type=int, default=4)
+    cmd.add_argument("--adaptive-epsilon-pct", type=float, default=2.0)
+    cmd.add_argument("--adaptive-confidence", type=float, default=0.90)
+    cmd.add_argument("--adaptive-min-samples", type=int, default=20)
+    cmd.add_argument("--adaptive-max-samples", type=int, default=80)
+    cmd.add_argument("--adaptive-sample-step", type=int, default=10)
+    cmd.add_argument("--adaptive-max-k", type=int, default=8)
+    cmd.add_argument("--adaptive-min-effect-pct", type=float, default=0.5)
     cmd.set_defaults(func=cmd_schedule_batches)
 
     cmd = sub.add_parser("cache-summary", help="Summarize cached evaluation statuses")
