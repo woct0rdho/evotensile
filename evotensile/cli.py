@@ -3,7 +3,6 @@ import json
 import sys
 from pathlib import Path
 
-from .cache import normalize_version_name
 from .candidate import Shape
 from .database import EvoTensileDB
 from .profile import DEFAULT_PROFILE, PROFILES, TargetProfile, get_profile
@@ -71,11 +70,6 @@ def _add_candidate_shape_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_cache_identity_args(parser: argparse.ArgumentParser) -> None:
     _add_profile_arg(parser)
-    parser.add_argument(
-        "--version-name",
-        default="unversioned",
-        help="Manual timing-cache namespace; use this to control cache refreshes",
-    )
 
 
 def _add_protocol_args(parser: argparse.ArgumentParser) -> None:
@@ -116,13 +110,11 @@ def cmd_cache_summary(args: argparse.Namespace) -> int:
     db = EvoTensileDB.connect(args.db)
     db.init()
     summary = db.cache_summary(
-        version_name=args.version_name,
         problem_type_hash=profile.problem_type_hash,
         benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
     )
     print(f"db: {args.db}")
     print(f"profile: {profile.name}")
-    print(f"version_name: {normalize_version_name(args.version_name)}")
     print(f"problem_type_hash: {profile.problem_type_hash}")
     print(f"benchmark_protocol_hash: {profile.benchmark_protocol_hash(protocol)}")
     print("status counts:")
@@ -131,7 +123,6 @@ def cmd_cache_summary(args: argparse.Namespace) -> int:
             print(f"  {status}: {count}")
     else:
         print("  <none>")
-    print("known versions:", ", ".join(db.distinct_versions()) or "<none>")
     return 0
 
 
@@ -140,7 +131,6 @@ def cmd_rank_evals(args: argparse.Namespace) -> int:
     protocol = _protocol(args, profile)
     db = EvoTensileDB.connect(args.db)
     summaries = db.rank_evaluations(
-        version_name=args.version_name,
         problem_type_hash=profile.problem_type_hash,
         benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
         shape_id=args.shape_id,
@@ -164,7 +154,6 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
     protocol = _protocol(args, profile)
     db = EvoTensileDB.connect(args.db)
     db.init()
-    version = normalize_version_name(args.version_name)
     problem_hash = profile.problem_type_hash
     protocol_hash = profile.benchmark_protocol_hash(protocol)
     shapes = _parse_shapes(args, profile)
@@ -173,7 +162,6 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         proposal=args.proposal,
         num_random=args.num_random,
         seed=args.seed,
-        version_name=version,
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
         shape_id=args.proposal_shape_id,
@@ -194,7 +182,6 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         shapes=shapes,
         candidates=candidates,
         output_root=args.output_dir,
-        version_name=version,
         target_profile=profile,
         protocol=protocol,
         min_samples=args.min_samples,
@@ -214,7 +201,6 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
     print(f"db: {args.db}")
     print(f"output_dir: {args.output_dir}")
     print(f"profile: {profile.name}")
-    print(f"version_name: {version}")
     print(f"problem_type_hash: {problem_hash}")
     print(f"benchmark_protocol_hash: {protocol_hash}")
     print(f"proposal: {args.proposal}")
@@ -224,13 +210,16 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
     if runner_bin:
         print(f"runner_bin: {runner_bin}")
     print(f"planned batches: {len(result.planned_batches)}")
-    print(f"planned missing evaluations: {result.missing_pairs}")
-    print(f"planned nominal evaluations: {result.nominal_pairs}")
+    print(f"planned missing pairs: {result.missing_pairs}")
+    print(f"planned nominal pairs: {result.nominal_pairs}")
+    print(f"planned missing samples: {sum(batch.missing_samples for batch in result.planned_batches)}")
+    print(f"planned nominal samples: {sum(batch.nominal_samples for batch in result.planned_batches)}")
     for batch in result.planned_batches:
         print(
             f"batch {batch.batch_index:04d}: candidates={len(batch.candidates)} "
-            f"shapes={len(batch.shapes)} missing={batch.missing_pairs} nominal={batch.nominal_pairs} "
-            f"extra={batch.extra_pairs}"
+            f"shapes={len(batch.shapes)} missing_pairs={batch.missing_pairs} "
+            f"nominal_pairs={batch.nominal_pairs} samples_per_pair={batch.samples_per_pair} "
+            f"missing_samples={batch.missing_samples} extra_pairs={batch.extra_pairs}"
         )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -238,7 +227,6 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         "db": args.db,
         "output_dir": args.output_dir,
         "profile": profile.name,
-        "version_name": version,
         "problem_type_hash": problem_hash,
         "benchmark_protocol_hash": protocol_hash,
         "protocol": protocol.global_parameters(),
@@ -255,8 +243,10 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         "build_timeout_s": args.build_timeout,
         "runner_timeout_s": args.runner_timeout,
         "planned_batches": len(result.planned_batches),
-        "planned_missing_evaluations": result.missing_pairs,
-        "planned_nominal_evaluations": result.nominal_pairs,
+        "planned_missing_pairs": result.missing_pairs,
+        "planned_nominal_pairs": result.nominal_pairs,
+        "planned_missing_samples": sum(batch.missing_samples for batch in result.planned_batches),
+        "planned_nominal_samples": sum(batch.nominal_samples for batch in result.planned_batches),
         "batches": [
             {
                 "batch_index": batch.batch_index,
@@ -264,6 +254,9 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
                 "shapes": len(batch.shapes),
                 "missing_pairs": batch.missing_pairs,
                 "nominal_pairs": batch.nominal_pairs,
+                "samples_per_pair": batch.samples_per_pair,
+                "missing_samples": batch.missing_samples,
+                "nominal_samples": batch.nominal_samples,
                 "extra_pairs": batch.extra_pairs,
             }
             for batch in result.planned_batches

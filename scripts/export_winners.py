@@ -15,13 +15,11 @@ from evotensile.yaml_writer import write_tensilelite_yaml
 def _load_winners(
     db: EvoTensileDB,
     *,
-    version_name: str,
     profile: TargetProfile,
     protocol: BenchmarkProtocol,
     min_samples: int,
 ) -> list:
     summaries = db.rank_evaluations(
-        version_name=version_name,
         problem_type_hash=profile.problem_type_hash,
         benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
         min_samples=min_samples,
@@ -47,7 +45,6 @@ def main() -> int:
     parser.add_argument("--db", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--profile", choices=sorted(PROFILES), default=None)
-    parser.add_argument("--version-name", required=True)
     parser.add_argument("--min-samples", type=int, default=1)
     parser.add_argument("--num-warmups", type=int, default=None)
     parser.add_argument("--num-benchmarks", type=int, default=None)
@@ -67,7 +64,6 @@ def main() -> int:
 
     winners = _load_winners(
         db,
-        version_name=args.version_name,
         profile=profile,
         protocol=protocol,
         min_samples=args.min_samples,
@@ -125,7 +121,6 @@ def main() -> int:
     metadata = {
         "db": str(args.db),
         "profile": profile.name,
-        "version_name": args.version_name,
         "problem_type_hash": profile.problem_type_hash,
         "benchmark_protocol_hash": profile.benchmark_protocol_hash(protocol),
         "protocol": protocol.global_parameters(),

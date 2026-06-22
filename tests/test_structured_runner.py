@@ -39,7 +39,6 @@ def _fake_structured_runner(path: Path) -> Path:
                                     "status": "ok",
                                     "sample_index": sample_index,
                                     "time_us": time_us,
-                                    "gflops": flops / time_us / 1000.0,
                                     "validation": "PASSED",
                                     "solution_index": pair["library_solution_index"],
                                 },
@@ -129,7 +128,6 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
         shapes=shapes,
         candidates=candidates,
         output_root=tmp_path / "batches",
-        version_name="structured_test",
         protocol=protocol,
         candidate_batch_size=2,
         shape_batch_size=2,
@@ -144,7 +142,7 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
     assert executed.runner_returncode == 0
     assert executed.ingest is not None
     assert executed.ingest.status_counts == {"ok": 12}
-    assert db.cache_summary(version_name="structured_test") == {"ok": 12}
+    assert db.cache_summary() == {"ok": 12}
 
     result_files = list(executed.output_dir.glob("*.results.jsonl"))
     assert len(result_files) == 1
@@ -186,7 +184,6 @@ def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
                             "candidate_hash": "cand_bad",
                             "status": "ok",
                             "time_us": 1,
-                            "gflops": 1,
                             "validation": "PASSED",
                         }
                     )
@@ -204,7 +201,6 @@ def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
         shapes=pilot_100_shapes()[:1],
         candidates=known_seed_candidates()[:1],
         output_root=tmp_path / "batches",
-        version_name="structured_bad",
         tensilelite_bin=fake_tensile,
         runner_bin=runner,
         keep_going=True,
@@ -214,7 +210,7 @@ def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
     assert result.executed_batches[0].ingest is not None
     assert result.executed_batches[0].ingest.ok is False
     assert "unexpected pair" in result.executed_batches[0].ingest.errors[0]
-    assert db.cache_summary(version_name="structured_bad") == {}
+    assert db.cache_summary() == {}
 
 
 def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path):
@@ -243,7 +239,6 @@ def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path
                             "status": "ok",
                             "sample_index": 0,
                             "time_us": 1,
-                            "gflops": 1,
                             "validation": "PASSED",
                             "solution_index": pair["library_solution_index"] + 1,
                         }
@@ -262,7 +257,6 @@ def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path
         shapes=pilot_100_shapes()[:1],
         candidates=known_seed_candidates()[:1],
         output_root=tmp_path / "batches",
-        version_name="structured_wrong_solution",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         tensilelite_bin=fake_tensile,
         runner_bin=runner,
@@ -273,7 +267,7 @@ def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path
     assert ingest is not None
     assert ingest.ok is False
     assert "wrong solution_index" in ingest.errors[0]
-    assert db.cache_summary(version_name="structured_wrong_solution") == {}
+    assert db.cache_summary() == {}
 
 
 def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
@@ -302,7 +296,6 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
                             "status": "ok",
                             "sample_index": 0,
                             "time_us": 1,
-                            "gflops": 1,
                             "validation": "PASSED",
                             "solution_index": pair["library_solution_index"],
                         }
@@ -321,7 +314,6 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
         shapes=pilot_100_shapes()[:1],
         candidates=known_seed_candidates()[:1],
         output_root=tmp_path / "batches",
-        version_name="structured_incomplete",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         tensilelite_bin=fake_tensile,
         runner_bin=runner,
@@ -332,7 +324,7 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
     assert ingest is not None
     assert ingest.ok is False
     assert "incomplete sample set" in ingest.errors[0]
-    assert db.cache_summary(version_name="structured_incomplete") == {}
+    assert db.cache_summary() == {}
 
 
 def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: Path):
@@ -362,8 +354,7 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
                                 "status": "ok",
                                 "sample_index": 0,
                                 "time_us": 1,
-                                "gflops": 1,
-                                "validation": "PASSED",
+                                    "validation": "PASSED",
                                 "solution_index": pair["library_solution_index"],
                             }
                         )
@@ -381,7 +372,6 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
         shapes=pilot_100_shapes()[:1],
         candidates=known_seed_candidates()[:1],
         output_root=tmp_path / "batches",
-        version_name="structured_duplicate",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         tensilelite_bin=fake_tensile,
         runner_bin=runner,
@@ -392,7 +382,7 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
     assert ingest is not None
     assert ingest.ok is False
     assert "duplicate sample_index" in ingest.errors[0]
-    assert db.cache_summary(version_name="structured_duplicate") == {}
+    assert db.cache_summary() == {}
 
 
 def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(tmp_path: Path):
@@ -422,7 +412,6 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
                             "status": "ok",
                             "sample_index": 0,
                             "time_us": 1,
-                            "gflops": 1,
                             "validation": "PASSED",
                             "solution_index": pair["library_solution_index"],
                         }
@@ -442,7 +431,6 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
         shapes=pilot_100_shapes()[:1],
         candidates=known_seed_candidates()[:1],
         output_root=tmp_path / "batches",
-        version_name="structured_nonzero",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         tensilelite_bin=fake_tensile,
         runner_bin=runner,
@@ -454,7 +442,7 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
     assert ingest is not None
     assert ingest.ok is False
     assert "positive result rows" in ingest.errors[0]
-    assert db.cache_summary(version_name="structured_nonzero") == {}
+    assert db.cache_summary() == {}
 
 
 def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
@@ -479,7 +467,6 @@ def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
         shapes=pilot_100_shapes()[:1],
         candidates=known_seed_candidates()[:1],
         output_root=tmp_path / "batches",
-        version_name="structured_timeout",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         tensilelite_bin=fake_tensile,
         runner_bin=runner,
@@ -492,7 +479,7 @@ def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
     assert executed.ingest is not None
     assert executed.ingest.ok is False
     assert "incomplete sample set" in executed.ingest.errors[0]
-    assert db.cache_summary(version_name="structured_timeout") == {"runner_timeout": 1}
+    assert db.cache_summary() == {"runner_timeout": 1}
 
 
 def test_structured_records_rejected_candidate_from_final_yaml(tmp_path: Path):
@@ -539,7 +526,6 @@ def test_structured_records_rejected_candidate_from_final_yaml(tmp_path: Path):
         shapes=pilot_100_shapes()[:1],
         candidates=candidates,
         output_root=tmp_path / "batches",
-        version_name="structured_reject",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         tensilelite_bin=script,
         runner_bin=_fake_structured_runner(tmp_path),
@@ -549,4 +535,4 @@ def test_structured_records_rejected_candidate_from_final_yaml(tmp_path: Path):
     assert len(result.executed_batches) == 1
     assert result.executed_batches[0].ingest is not None
     assert result.executed_batches[0].ingest.status_counts == {"ok": 2, "rejected": 1}
-    assert db.cache_summary(version_name="structured_reject") == {"ok": 2, "rejected": 1}
+    assert db.cache_summary() == {"ok": 2, "rejected": 1}

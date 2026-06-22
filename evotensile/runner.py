@@ -6,7 +6,6 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cache import normalize_version_name
 from .database import EvoTensileDB
 from .profile import DEFAULT_PROFILE
 from .protocol import DEFAULT_BENCHMARK_PROTOCOL
@@ -22,7 +21,6 @@ class RunResult:
     stderr_path: Path
     output_dir: Path
     command: list[str]
-    version_name: str
     problem_type_hash: str
     benchmark_protocol_hash: str
     duration_s: float
@@ -68,7 +66,6 @@ def run_tensilelite(
     build_only: bool = False,
     cpu_threads: int | None = None,
     global_parameters: list[str] | None = None,
-    version_name: str | None = None,
     problem_type_hash: str | None = None,
     benchmark_protocol_hash: str | None = None,
     env: dict[str, str] | None = None,
@@ -81,7 +78,6 @@ def run_tensilelite(
     stdout_path = output_dir / f"{run_id}.stdout.log"
     stderr_path = output_dir / f"{run_id}.stderr.log"
 
-    version = normalize_version_name(version_name)
     ptype_hash = problem_type_hash or DEFAULT_PROFILE.problem_type_hash
     proto_hash = benchmark_protocol_hash or DEFAULT_PROFILE.benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL)
 
@@ -118,7 +114,6 @@ def run_tensilelite(
         stderr_path=stderr_path,
         output_dir=output_dir,
         command=cmd,
-        version_name=version,
         problem_type_hash=ptype_hash,
         benchmark_protocol_hash=proto_hash,
         duration_s=duration_s,
@@ -131,7 +126,6 @@ def run_tensilelite(
             output_dir=str(output_dir),
             tensilelite_bin=str(tensilelite_bin),
             status="timeout" if result.timed_out else "ok" if result.ok else "failed",
-            version_name=version,
             problem_type_hash=ptype_hash,
             benchmark_protocol_hash=proto_hash,
             returncode=result.returncode,
@@ -140,7 +134,6 @@ def run_tensilelite(
             metadata_json=json.dumps(
                 {
                     "command": cmd,
-                    "version_name": version,
                     "problem_type_hash": ptype_hash,
                     "benchmark_protocol_hash": proto_hash,
                     "duration_s": duration_s,

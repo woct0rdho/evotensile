@@ -5,7 +5,6 @@ from .candidate import stable_hash
 from .profile import DEFAULT_PROFILE
 from .protocol import DEFAULT_BENCHMARK_PROTOCOL, BenchmarkProtocol
 
-DEFAULT_VERSION_NAME = "unversioned"
 POSITIVE_CACHE_STATUSES = ("ok",)
 NEGATIVE_CACHE_STATUSES = ("rejected", "validation_fail", "build_failed")
 REUSABLE_CACHE_STATUSES = (*POSITIVE_CACHE_STATUSES, *NEGATIVE_CACHE_STATUSES)
@@ -13,17 +12,10 @@ REUSABLE_CACHE_STATUSES = (*POSITIVE_CACHE_STATUSES, *NEGATIVE_CACHE_STATUSES)
 
 @dataclass(frozen=True)
 class CacheKey:
-    version_name: str
     problem_type_hash: str
     benchmark_protocol_hash: str
     shape_id: str
     candidate_hash: str
-
-
-def normalize_version_name(version_name: str | None) -> str:
-    if version_name is None or not version_name.strip():
-        return DEFAULT_VERSION_NAME
-    return version_name.strip()
 
 
 def problem_type_hash(problem_type: dict[str, Any] | None = None) -> str:

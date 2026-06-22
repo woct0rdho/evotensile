@@ -1,6 +1,6 @@
 # EvoTensile
 
-Work in progress. README is AI-generated. I'm working on some better math to determine what configs to keep.
+Work in progress. README is AI-generated.
 
 EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, uses TensileLite for solution/code-object generation, and records structured timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion) and [rocm_wmma_gemm](https://github.com/adelj88/rocm_wmma_gemm).
 
@@ -66,7 +66,6 @@ Dry-run a plan:
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/search \
-  --version-name my_target_hotloop_v0 \
   --profile gfx1151-nt-hhs \
   --limit-shapes 100 \
   --candidate-batch-size 32 \
@@ -91,7 +90,6 @@ Run planned batches:
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/search \
-  --version-name my_target_hotloop_v0 \
   --profile gfx1151-nt-hhs \
   --proposal seed-random-gomea \
   --num-random 64 \
@@ -107,7 +105,7 @@ python3 -m evotensile.cli schedule-batches \
   --keep-going
 ```
 
-The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout.
+The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each SQLite DB file is one evidence namespace for a target hardware/environment/campaign. Use separate DB paths when comparing incompatible campaigns. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout.
 
 Useful proposal modes include `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`.
 
@@ -122,7 +120,6 @@ Summarize cache status:
 ```bash
 python3 -m evotensile.cli cache-summary \
   --db out/evotensile.sqlite \
-  --version-name my_target_hotloop_v0 \
   --profile gfx1151-nt-hhs
 ```
 
@@ -131,7 +128,6 @@ Rank validation-passed observations:
 ```bash
 python3 -m evotensile.cli rank-evals \
   --db out/evotensile.sqlite \
-  --version-name my_target_hotloop_v0 \
   --profile gfx1151-nt-hhs \
   --min-samples 2
 ```
@@ -146,8 +142,6 @@ Search-time timing is noisy enough that top-1 screening can miss the final winne
 python3 scripts/retime_topk.py \
   --db out/evotensile.sqlite \
   --output-dir out/topk_retime \
-  --source-version-name my_target_hotloop_v0 \
-  --target-version-name my_target_hotloop_v0_top4_fullval \
   --profile gfx1151-nt-hhs \
   --top-k 4 \
   --compile-threads 4 \
@@ -163,7 +157,6 @@ After retiming, export the per-shape winners using the project export script for
 python3 scripts/export_winners.py \
   --db out/evotensile.sqlite \
   --output-dir out/topk_retime_export \
-  --version-name my_target_hotloop_v0_top4_fullval \
   --profile gfx1151-nt-hhs \
   --min-samples 10
 ```

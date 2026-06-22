@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
 
-from .cache import normalize_version_name
+from .cache import POSITIVE_CACHE_STATUSES
 from .candidate import Candidate, Shape, stable_hash
 from .database import EvaluationInsert, EvoTensileDB
 from .manifest import write_manifest
@@ -27,10 +27,19 @@ class PlannedBatch:
     shapes: list[Shape]
     missing_pairs: int
     nominal_pairs: int
+    samples_per_pair: int
 
     @property
     def extra_pairs(self) -> int:
         return self.nominal_pairs - self.missing_pairs
+
+    @property
+    def missing_samples(self) -> int:
+        return self.missing_pairs * self.samples_per_pair
+
+    @property
+    def nominal_samples(self) -> int:
+        return self.nominal_pairs * self.samples_per_pair
 
 
 @dataclass(frozen=True)
@@ -106,14 +115,12 @@ def _dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
 def _ranked_elites(
     db: EvoTensileDB,
     *,
-    version_name: str | None,
     problem_type_hash: str | None,
     benchmark_protocol_hash: str | None,
     shape_id: str | None,
     elite_count: int,
 ) -> list[Candidate]:
     summaries = db.rank_evaluations(
-        version_name=version_name,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         shape_id=shape_id,
@@ -154,7 +161,6 @@ def _transfer_elites(
     db: EvoTensileDB,
     *,
     target_shapes: list[Shape],
-    version_name: str | None,
     problem_type_hash: str | None,
     benchmark_protocol_hash: str | None,
     nearest_shape_count: int,
@@ -163,7 +169,6 @@ def _transfer_elites(
     if nearest_shape_count <= 0 or per_shape <= 0 or not target_shapes:
         return []
     summaries = db.rank_evaluations(
-        version_name=version_name,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         min_samples=1,
@@ -174,7 +179,6 @@ def _transfer_elites(
     seen_hashes: set[str] = set()
     for source_shape_id in nearest_shape_ids:
         source_summaries = db.rank_evaluations(
-            version_name=version_name,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
             shape_id=source_shape_id,
@@ -200,7 +204,6 @@ def propose_candidates(
     proposal: str = DEFAULT_PROPOSAL,
     num_random: int = DEFAULT_NUM_RANDOM,
     seed: int = 1,
-    version_name: str | None = None,
     problem_type_hash: str | None = None,
     benchmark_protocol_hash: str | None = None,
     shape_id: str | None = None,
@@ -233,7 +236,6 @@ def propose_candidates(
     elites = (
         _ranked_elites(
             db,
-            version_name=version_name,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
             shape_id=shape_id,
@@ -246,7 +248,6 @@ def propose_candidates(
         _transfer_elites(
             db,
             target_shapes=target_shapes or [],
-            version_name=version_name,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
             nearest_shape_count=transfer_shape_count,
@@ -316,32 +317,36 @@ def _missing_candidate_indices_by_shape(
     *,
     shapes: list[Shape],
     candidates: list[Candidate],
-    version_name: str,
     problem_type_hash: str,
     benchmark_protocol_hash: str,
     min_samples: int,
     ignore_cache: bool = False,
-) -> dict[int, tuple[int, ...]]:
-    cached_pairs = set()
+) -> dict[int, tuple[tuple[int, int], ...]]:
+    counts: dict[tuple[str, str], dict[str, int]] = {}
     if not ignore_cache:
-        cached_pairs = db.reusable_cache_entries(
-            version_name=version_name,
+        counts = db.reusable_cache_entry_counts(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
             shape_ids=[shape.id for shape in shapes],
             candidate_hashes=[candidate.hash for candidate in candidates],
-            min_ok_samples=min_samples,
         )
 
-    missing: dict[int, tuple[int, ...]] = {}
+    missing: dict[int, tuple[tuple[int, int], ...]] = {}
     for shape_index, shape in enumerate(shapes):
-        missing_indices = tuple(
-            candidate_index
-            for candidate_index, candidate in enumerate(candidates)
-            if (shape.id, candidate.hash) not in cached_pairs
-        )
-        if missing_indices:
-            missing[shape_index] = missing_indices
+        missing_items: list[tuple[int, int]] = []
+        for candidate_index, candidate in enumerate(candidates):
+            status_counts = {} if ignore_cache else counts.get((shape.id, candidate.hash), {})
+            negative_count = sum(
+                count for status, count in status_counts.items() if status not in POSITIVE_CACHE_STATUSES
+            )
+            if negative_count > 0:
+                continue
+            ok_count = sum(status_counts.get(status, 0) for status in POSITIVE_CACHE_STATUSES)
+            remaining = max(0, min_samples - ok_count)
+            if remaining > 0:
+                missing_items.append((candidate_index, remaining))
+        if missing_items:
+            missing[shape_index] = tuple(missing_items)
     return missing
 
 
@@ -350,16 +355,20 @@ def _pair_exact_batches(
     batch_index_start: int,
     shapes: list[Shape],
     candidates: list[Candidate],
-    missing_by_shape: dict[int, tuple[int, ...]],
+    missing_by_shape: dict[int, tuple[tuple[int, int], ...]],
     max_batches: int | None = None,
 ) -> list[PlannedBatch]:
-    grouped_shapes: dict[tuple[int, ...], list[Shape]] = {}
-    for shape_index, missing_indices in missing_by_shape.items():
-        grouped_shapes.setdefault(missing_indices, []).append(shapes[shape_index])
+    grouped_shapes: dict[tuple[int, tuple[int, ...]], list[Shape]] = {}
+    for shape_index, missing_items in missing_by_shape.items():
+        by_remaining: dict[int, list[int]] = {}
+        for candidate_index, remaining in missing_items:
+            by_remaining.setdefault(remaining, []).append(candidate_index)
+        for remaining, missing_indices in by_remaining.items():
+            grouped_shapes.setdefault((remaining, tuple(missing_indices)), []).append(shapes[shape_index])
 
     planned: list[PlannedBatch] = []
     batch_index = batch_index_start
-    for missing_indices, group_shapes in grouped_shapes.items():
+    for (samples_per_pair, missing_indices), group_shapes in grouped_shapes.items():
         group_candidates = [candidates[idx] for idx in missing_indices]
         # This rectangular cover is exact because every shape in the group has
         # the same missing candidate subset. Empty-cache runs still collapse to
@@ -371,6 +380,7 @@ def _pair_exact_batches(
                 shapes=group_shapes,
                 missing_pairs=len(group_candidates) * len(group_shapes),
                 nominal_pairs=len(group_candidates) * len(group_shapes),
+                samples_per_pair=samples_per_pair,
             )
         )
         batch_index += 1
@@ -384,7 +394,6 @@ def plan_batches(
     *,
     shapes: list[Shape],
     candidates: list[Candidate],
-    version_name: str,
     problem_type_hash: str,
     benchmark_protocol_hash: str,
     min_samples: int = 1,
@@ -393,7 +402,6 @@ def plan_batches(
     ignore_cache: bool = False,
     max_batches: int | None = None,
 ) -> list[PlannedBatch]:
-    version = normalize_version_name(version_name)
     planned: list[PlannedBatch] = []
     batch_index = 0
     for candidate_chunk in _chunks(candidates, candidate_batch_size):
@@ -402,7 +410,6 @@ def plan_batches(
                 db,
                 shapes=shape_chunk,
                 candidates=candidate_chunk,
-                version_name=version,
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
                 min_samples=min_samples,
@@ -427,6 +434,7 @@ def plan_batches(
 def _batch_fingerprint(batch: PlannedBatch) -> str:
     payload = {
         "candidates": [candidate.hash for candidate in batch.candidates],
+        "samples_per_pair": batch.samples_per_pair,
         "shapes": [shape.id for shape in batch.shapes],
     }
     return stable_hash(payload, prefix="batch_")[:18]
@@ -463,7 +471,6 @@ def _record_batch_status(
     *,
     status: str,
     run_id: str | None,
-    version_name: str,
     problem_type_hash: str,
     benchmark_protocol_hash: str,
 ) -> int:
@@ -473,7 +480,6 @@ def _record_batch_status(
             candidate_hash=candidate.hash,
             run_id=run_id,
             status=status,
-            version_name=version_name,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
         )
@@ -514,7 +520,6 @@ def execute_schedule(
     shapes: list[Shape],
     candidates: list[Candidate],
     output_root: str | Path,
-    version_name: str,
     target_profile: TargetProfile = DEFAULT_PROFILE,
     protocol: BenchmarkProtocol | None = None,
     min_samples: int = 1,
@@ -535,21 +540,20 @@ def execute_schedule(
         raise ValueError("--runner-bin is required")
 
     protocol = protocol or target_profile.default_protocol
+    target_samples = max(min_samples, protocol.num_benchmarks)
     problem_type_hash = target_profile.problem_type_hash
     benchmark_protocol_hash = target_profile.benchmark_protocol_hash(protocol)
 
     db.init()
     db.register_candidates(candidates)
     db.register_shapes(shapes)
-    version = normalize_version_name(version_name)
     planned = plan_batches(
         db,
         shapes=shapes,
         candidates=candidates,
-        version_name=version,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
-        min_samples=min_samples,
+        min_samples=target_samples,
         candidate_batch_size=candidate_batch_size,
         shape_batch_size=shape_batch_size,
         ignore_cache=ignore_cache,
@@ -565,10 +569,9 @@ def execute_schedule(
             db,
             shapes=batch.shapes,
             candidates=batch.candidates,
-            version_name=version,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
-            min_samples=min_samples,
+            min_samples=target_samples,
             ignore_cache=ignore_cache,
         )
         if not missing_by_shape:
@@ -580,11 +583,12 @@ def execute_schedule(
             missing_by_shape=missing_by_shape,
         )
         for current in current_batches:
+            current_protocol = protocol.with_overrides(num_benchmarks=current.samples_per_pair)
             yaml_path, manifest_path, run_dir = write_batch_inputs(
                 current,
                 output_root,
                 target_profile=target_profile,
-                protocol=protocol,
+                protocol=current_protocol,
                 unique_run_dir=not generate_only,
             )
             if generate_only:
@@ -604,8 +608,7 @@ def execute_schedule(
                 tensilelite_bin=tensilelite_bin,
                 compile_threads=compile_threads,
                 target_profile=target_profile,
-                protocol=protocol,
-                version_name=version,
+                protocol=current_protocol,
                 runner_bin=runner_bin,
                 build_timeout_s=build_timeout_s,
                 runner_timeout_s=runner_timeout_s,
@@ -616,7 +619,6 @@ def execute_schedule(
                     current,
                     status="build_timeout",
                     run_id=build_result.run_id,
-                    version_name=version,
                     problem_type_hash=problem_type_hash,
                     benchmark_protocol_hash=benchmark_protocol_hash,
                 )
@@ -627,7 +629,6 @@ def execute_schedule(
                     current,
                     status="build_failed",
                     run_id=build_result.run_id,
-                    version_name=version,
                     problem_type_hash=problem_type_hash,
                     benchmark_protocol_hash=benchmark_protocol_hash,
                 )
@@ -640,7 +641,6 @@ def execute_schedule(
                         current,
                         status="runner_timeout",
                         run_id=None,
-                        version_name=version,
                         problem_type_hash=problem_type_hash,
                         benchmark_protocol_hash=benchmark_protocol_hash,
                     )

@@ -130,7 +130,6 @@ def parse_bench_output(stdout: str) -> dict[str, Any]:
         "hipblaslt_git_version": match_or_none(HIPBLASLT_GIT_VERSION_RE),
         "device_name": device_name,
         "device_arch": device_arch,
-        "raw_csv_row": row,
     }
 
 

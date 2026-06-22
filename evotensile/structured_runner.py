@@ -34,7 +34,6 @@ class StructuredSample:
     status: str
     sample_index: int | None = None
     time_us: float | None = None
-    gflops: float | None = None
     validation: str | None = None
     solution_index: int | None = None
     raw: dict[str, Any] = field(default_factory=dict)
@@ -71,7 +70,6 @@ def _sample_from_json(value: dict[str, Any]) -> StructuredSample:
     candidate_hash = str(value["candidate_hash"])
     status = str(value.get("status") or "ok")
     time_us = float(value["time_us"]) if value.get("time_us") not in (None, "") else None
-    gflops = float(value["gflops"]) if value.get("gflops") not in (None, "") else None
     validation = value.get("validation")
     if validation is not None:
         validation = str(validation)
@@ -82,7 +80,6 @@ def _sample_from_json(value: dict[str, Any]) -> StructuredSample:
         status=status,
         sample_index=int(value["sample_index"]) if value.get("sample_index") not in (None, "") else None,
         time_us=time_us,
-        gflops=gflops,
         validation=validation,
         solution_index=int(solution_index) if solution_index not in (None, "") else None,
         raw=value,
@@ -199,7 +196,7 @@ def _normalized_sample_status(sample: StructuredSample) -> str:
             return "validation_unknown"
         if sample.validation.upper() not in {"PASSED", "OK", "VALID"}:
             return "validation_fail"
-        if not _finite_positive(sample.time_us) or not _finite_positive(sample.gflops):
+        if not _finite_positive(sample.time_us):
             return "invalid"
     return status
 
@@ -256,10 +253,8 @@ def validate_structured_samples(
                     run_id=None,
                     status=status,
                     time_us=sample.time_us,
-                    gflops=sample.gflops,
                     validation=sample.validation,
                     solution_index=sample.solution_index,
-                    raw_csv_row=json.dumps(sample.raw, sort_keys=True),
                 )
             )
 
@@ -338,7 +333,6 @@ def build_then_structured_benchmark(
     compile_threads: int | None,
     target_profile: TargetProfile,
     protocol: BenchmarkProtocol,
-    version_name: str,
     runner_bin: str | Path | None = None,
     env: dict[str, str] | None = None,
     build_timeout_s: float | None = None,
@@ -356,7 +350,6 @@ def build_then_structured_benchmark(
         build_only=True,
         cpu_threads=compile_threads,
         global_parameters=build_globals,
-        version_name=version_name,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         env=env,
@@ -378,7 +371,6 @@ def build_then_structured_benchmark(
             candidate_hash=item.candidate_hash,
             run_id=build_result.run_id,
             status=item.status,
-            version_name=version_name,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
         )
@@ -401,7 +393,6 @@ def build_then_structured_benchmark(
         output_dir=str(run_dir),
         tensilelite_bin=str(runner_bin),
         status="timeout" if structured.timed_out else "ok" if structured.ok else "failed",
-        version_name=version_name,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         returncode=structured.returncode,
@@ -435,14 +426,11 @@ def build_then_structured_benchmark(
             candidate_hash=item.candidate_hash,
             run_id=structured_run_id,
             status=item.status,
-            version_name=version_name,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
             time_us=item.time_us,
-            gflops=item.gflops,
             validation=item.validation,
             solution_index=item.solution_index,
-            raw_csv_row=item.raw_csv_row,
         )
         for item in inserts
     ]

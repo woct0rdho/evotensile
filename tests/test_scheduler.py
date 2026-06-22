@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 
-from evotensile.cache import normalize_version_name
 from evotensile.cli import build_parser
 from evotensile.cli import main as cli_main
 from evotensile.database import EvoTensileDB
@@ -30,7 +29,6 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
         candidate_hash=candidates[0].hash,
         run_id="cached",
         status="ok",
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
     )
@@ -39,7 +37,6 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
         db,
         shapes=shapes,
         candidates=candidates,
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         candidate_batch_size=2,
@@ -56,6 +53,40 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
     assert [shape.id for shape in batches[1].shapes] == [shapes[1].id]
 
 
+def test_plan_batches_requests_only_missing_sample_count(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = known_seed_candidates()[:1]
+    shapes = pilot_100_shapes()[:1]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.insert_evaluation(
+        shape_id=shapes[0].id,
+        candidate_hash=candidates[0].hash,
+        run_id="cached",
+        status="ok",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        time_us=1.0,
+    )
+
+    batches = plan_batches(
+        db,
+        shapes=shapes,
+        candidates=candidates,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        min_samples=3,
+        candidate_batch_size=1,
+        shape_batch_size=1,
+    )
+
+    assert len(batches) == 1
+    assert batches[0].missing_pairs == 1
+    assert batches[0].samples_per_pair == 2
+    assert batches[0].missing_samples == 2
+
+
 def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -68,7 +99,6 @@ def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):
         candidate_hash=candidates[0].hash,
         run_id="cached",
         status="rejected",
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
     )
@@ -77,7 +107,6 @@ def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):
         candidate_hash=candidates[1].hash,
         run_id="cached",
         status="build_failed",
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
     )
@@ -86,7 +115,6 @@ def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):
         db,
         shapes=shapes,
         candidates=candidates,
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         candidate_batch_size=2,
@@ -104,21 +132,20 @@ def test_local_proposal_mutates_cached_elites(tmp_path: Path):
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     db.register_candidates(candidates)
+    db.register_shapes(shapes)
     db.insert_evaluation(
         shape_id=shapes[0].id,
         candidate_hash=candidates[0].hash,
         run_id="cached",
         status="ok",
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
-        gflops=10.0,
+        time_us=10.0,
     )
 
     proposed = propose_candidates(
         db,
         proposal="local",
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         local_count=1,
@@ -141,16 +168,16 @@ def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     db.register_candidates(candidates)
-    for shape, candidate, gflops in ((near_shape, candidates[1], 200.0), (far_shape, candidates[2], 300.0)):
+    db.register_shapes([target, near_shape, far_shape])
+    for shape, candidate, time_us in ((near_shape, candidates[1], 5.0), (far_shape, candidates[2], 3.0)):
         db.insert_evaluation(
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
             status="ok",
-            version_name="vtest",
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
-            gflops=gflops,
+            time_us=time_us,
         )
 
     proposed = propose_candidates(
@@ -161,7 +188,6 @@ def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
         target_shapes=[target],
         transfer_shape_count=1,
         transfer_per_shape=1,
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
     )
@@ -181,25 +207,24 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     db.register_candidates(candidates)
+    db.register_shapes([target, exact_shape, transfer_shape])
     db.insert_evaluation(
         shape_id=exact_shape.id,
         candidate_hash=candidates[0].hash,
         run_id="cached",
         status="ok",
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
-        gflops=100.0,
+        time_us=1.0,
     )
     db.insert_evaluation(
         shape_id=transfer_shape.id,
         candidate_hash=candidates[1].hash,
         run_id="cached",
         status="ok",
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
-        gflops=200.0,
+        time_us=0.5,
     )
 
     proposed = propose_candidates(
@@ -210,7 +235,6 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
         shape_id=exact_shape.id,
         transfer_shape_count=4,
         transfer_per_shape=1,
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
     )
@@ -228,16 +252,16 @@ def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     db.register_candidates(candidates)
+    db.register_shapes([shape])
     for idx, candidate in enumerate(candidates):
         db.insert_evaluation(
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
             status="ok",
-            version_name="vtest",
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
-            gflops=100.0 - idx,
+            time_us=1.0 + idx,
         )
 
     proposed = propose_candidates(
@@ -248,7 +272,6 @@ def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
         de_count=2,
         gomea_count=2,
         elite_count=3,
-        version_name="vtest",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         seed=7,
@@ -308,7 +331,6 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
         shapes=[shape],
         candidates=[candidate],
         output_root=tmp_path / "batches",
-        version_name="vtimeout",
         candidate_batch_size=1,
         shape_batch_size=1,
         tensilelite_bin=fake_tensile,
@@ -318,14 +340,13 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
 
     assert len(result.executed_batches) == 1
     assert result.executed_batches[0].build_returncode == 124
-    assert db.cache_summary(version_name="vtimeout") == {"build_timeout": 1}
+    assert db.cache_summary() == {"build_timeout": 1}
     assert (
         len(
             plan_batches(
                 db,
                 shapes=[shape],
                 candidates=[candidate],
-                version_name="vtimeout",
                 problem_type_hash=p_hash,
                 benchmark_protocol_hash=b_hash,
                 candidate_batch_size=1,
@@ -351,7 +372,6 @@ def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path)
         shapes=[shape],
         candidates=[candidate],
         output_root=tmp_path / "batches",
-        version_name="vtest",
         candidate_batch_size=1,
         shape_batch_size=1,
         tensilelite_bin=fake_tensile,
@@ -359,13 +379,12 @@ def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path)
     )
 
     assert len(result.executed_batches) == 1
-    assert db.cache_summary(version_name="vtest") == {"build_failed": 1}
+    assert db.cache_summary() == {"build_failed": 1}
     assert (
         plan_batches(
             db,
             shapes=[shape],
             candidates=[candidate],
-            version_name="vtest",
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             candidate_batch_size=1,
@@ -386,8 +405,6 @@ def test_schedule_cli_writes_machine_readable_metadata(tmp_path: Path):
             str(db_path),
             "--output-dir",
             str(output_dir),
-            "--version-name",
-            "vmetadata",
             "--num-random",
             "1",
             "--limit-shapes",
@@ -403,7 +420,6 @@ def test_schedule_cli_writes_machine_readable_metadata(tmp_path: Path):
     assert rc == 0
     metadata = json.loads((output_dir / "schedule_metadata.json").read_text(encoding="utf-8"))
     assert metadata["profile"] == DEFAULT_PROFILE.name
-    assert metadata["version_name"] == "vmetadata"
     assert metadata["planned_batches"] >= 1
     assert metadata["executed_batches"] == []
     assert metadata["runner_bin"] == DEFAULT_PROFILE.default_runner_bin
@@ -419,7 +435,6 @@ def test_execute_schedule_generate_only_writes_batch_inputs(tmp_path: Path):
         shapes=shapes,
         candidates=candidates,
         output_root=tmp_path / "batches",
-        version_name=normalize_version_name("vtest"),
         candidate_batch_size=1,
         shape_batch_size=1,
         generate_only=True,

@@ -6,14 +6,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cache import (
-    DEFAULT_VERSION_NAME,
-    POSITIVE_CACHE_STATUSES,
-    REUSABLE_CACHE_STATUSES,
-    CacheKey,
-    normalize_version_name,
-)
+from .cache import POSITIVE_CACHE_STATUSES, REUSABLE_CACHE_STATUSES, CacheKey
 from .candidate import Candidate, Shape
+from .metrics import gflops_from_us
 
 
 def _median(values: list[float]) -> float | None:
@@ -32,14 +27,17 @@ class EvaluationInsert:
     candidate_hash: str
     run_id: str | None
     status: str
-    version_name: str | None = None
     problem_type_hash: str = ""
     benchmark_protocol_hash: str = ""
     time_us: float | None = None
-    gflops: float | None = None
     validation: str | None = None
     solution_index: int | None = None
-    raw_csv_row: str | None = None
+
+
+@dataclass
+class _TimingBucket:
+    shape: Shape
+    time_us: list[float]
 
 
 @dataclass(frozen=True)
@@ -70,14 +68,12 @@ CREATE TABLE IF NOT EXISTS shapes (
   n INTEGER NOT NULL,
   batch INTEGER NOT NULL,
   k INTEGER NOT NULL,
-  features_json TEXT NOT NULL,
   created_at REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY,
   timestamp REAL NOT NULL,
-  version_name TEXT NOT NULL DEFAULT 'unversioned',
   problem_type_hash TEXT,
   benchmark_protocol_hash TEXT,
   yaml_path TEXT,
@@ -92,7 +88,6 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE TABLE IF NOT EXISTS evaluations (
   eval_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  version_name TEXT NOT NULL DEFAULT 'unversioned',
   problem_type_hash TEXT NOT NULL DEFAULT '',
   benchmark_protocol_hash TEXT NOT NULL DEFAULT '',
   shape_id TEXT NOT NULL,
@@ -100,21 +95,19 @@ CREATE TABLE IF NOT EXISTS evaluations (
   run_id TEXT,
   status TEXT NOT NULL,
   time_us REAL,
-  gflops REAL,
   validation TEXT,
   solution_index INTEGER,
-  raw_csv_row TEXT,
   created_at REAL NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_evaluations_cache_key
-  ON evaluations(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash);
+  ON evaluations(problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash);
 
 CREATE INDEX IF NOT EXISTS idx_evaluations_shape_candidate
   ON evaluations(shape_id, candidate_hash);
 
 CREATE INDEX IF NOT EXISTS idx_evaluations_shape_time
-  ON evaluations(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, time_us);
+  ON evaluations(problem_type_hash, benchmark_protocol_hash, shape_id, time_us);
 """
 
 
@@ -163,8 +156,8 @@ class EvoTensileDB:
             con.execute(
                 """
                 INSERT OR IGNORE INTO shapes
-                  (shape_id, m, n, batch, k, features_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                  (shape_id, m, n, batch, k, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     shape.id,
@@ -172,7 +165,6 @@ class EvoTensileDB:
                     shape.n,
                     shape.batch,
                     shape.k,
-                    json.dumps(shape.features(), sort_keys=True),
                     time.time(),
                 ),
             )
@@ -208,8 +200,8 @@ class EvoTensileDB:
             con.executemany(
                 """
                 INSERT OR IGNORE INTO shapes
-                  (shape_id, m, n, batch, k, features_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                  (shape_id, m, n, batch, k, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -218,7 +210,6 @@ class EvoTensileDB:
                         shape.n,
                         shape.batch,
                         shape.k,
-                        json.dumps(shape.features(), sort_keys=True),
                         now,
                     )
                     for shape in shapes
@@ -256,7 +247,6 @@ class EvoTensileDB:
         output_dir: str | None,
         tensilelite_bin: str | None,
         status: str,
-        version_name: str | None = None,
         problem_type_hash: str | None = None,
         benchmark_protocol_hash: str | None = None,
         returncode: int | None = None,
@@ -268,15 +258,14 @@ class EvoTensileDB:
             con.execute(
                 """
                 INSERT OR REPLACE INTO runs
-                  (run_id, timestamp, version_name, problem_type_hash, benchmark_protocol_hash,
+                  (run_id, timestamp, problem_type_hash, benchmark_protocol_hash,
                    yaml_path, output_dir, tensilelite_bin, status, returncode, stdout_path, stderr_path,
                    metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
                     time.time(),
-                    normalize_version_name(version_name),
                     problem_type_hash,
                     benchmark_protocol_hash,
                     yaml_path,
@@ -308,25 +297,21 @@ class EvoTensileDB:
         candidate_hash: str,
         run_id: str | None,
         status: str,
-        version_name: str | None = None,
         problem_type_hash: str = "",
         benchmark_protocol_hash: str = "",
         time_us: float | None = None,
-        gflops: float | None = None,
         validation: str | None = None,
         solution_index: int | None = None,
-        raw_csv_row: str | None = None,
     ) -> None:
         with self.connection() as con:
             con.execute(
                 """
                 INSERT INTO evaluations
-                  (version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
-                   run_id, status, time_us, gflops, validation, solution_index, raw_csv_row, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
+                   run_id, status, time_us, validation, solution_index, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    normalize_version_name(version_name),
                     problem_type_hash,
                     benchmark_protocol_hash,
                     shape_id,
@@ -334,10 +319,8 @@ class EvoTensileDB:
                     run_id,
                     status,
                     time_us,
-                    gflops,
                     validation,
                     solution_index,
-                    raw_csv_row,
                     time.time(),
                 ),
             )
@@ -350,13 +333,12 @@ class EvoTensileDB:
             con.executemany(
                 """
                 INSERT INTO evaluations
-                  (version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
-                   run_id, status, time_us, gflops, validation, solution_index, raw_csv_row, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
+                   run_id, status, time_us, validation, solution_index, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
-                        normalize_version_name(evaluation.version_name),
                         evaluation.problem_type_hash,
                         evaluation.benchmark_protocol_hash,
                         evaluation.shape_id,
@@ -364,10 +346,8 @@ class EvoTensileDB:
                         evaluation.run_id,
                         evaluation.status,
                         evaluation.time_us,
-                        evaluation.gflops,
                         evaluation.validation,
                         evaluation.solution_index,
-                        evaluation.raw_csv_row,
                         now,
                     )
                     for evaluation in evaluations
@@ -377,7 +357,6 @@ class EvoTensileDB:
     def cached_evaluation_count(
         self,
         *,
-        version_name: str | None,
         problem_type_hash: str,
         benchmark_protocol_hash: str,
         shape_id: str,
@@ -390,15 +369,13 @@ class EvoTensileDB:
                 f"""
                 SELECT COUNT(*) AS n
                 FROM evaluations
-                WHERE version_name = ?
-                  AND problem_type_hash = ?
+                WHERE problem_type_hash = ?
                   AND benchmark_protocol_hash = ?
                   AND shape_id = ?
                   AND candidate_hash = ?
                   AND status IN ({placeholders})
                 """,
                 (
-                    normalize_version_name(version_name),
                     problem_type_hash,
                     benchmark_protocol_hash,
                     shape_id,
@@ -417,7 +394,6 @@ class EvoTensileDB:
     ) -> bool:
         return (
             self.cached_evaluation_count(
-                version_name=key.version_name,
                 problem_type_hash=key.problem_type_hash,
                 benchmark_protocol_hash=key.benchmark_protocol_hash,
                 shape_id=key.shape_id,
@@ -429,7 +405,6 @@ class EvoTensileDB:
 
     def has_reusable_cache_entry(self, key: CacheKey, *, min_ok_samples: int = 1) -> bool:
         return (key.shape_id, key.candidate_hash) in self.reusable_cache_entries(
-            version_name=key.version_name,
             problem_type_hash=key.problem_type_hash,
             benchmark_protocol_hash=key.benchmark_protocol_hash,
             shape_ids=[key.shape_id],
@@ -437,18 +412,16 @@ class EvoTensileDB:
             min_ok_samples=min_ok_samples,
         )
 
-    def reusable_cache_entries(
+    def reusable_cache_entry_counts(
         self,
         *,
-        version_name: str | None,
         problem_type_hash: str,
         benchmark_protocol_hash: str,
         shape_ids: list[str],
         candidate_hashes: list[str],
-        min_ok_samples: int = 1,
-    ) -> set[tuple[str, str]]:
+    ) -> dict[tuple[str, str], dict[str, int]]:
         if not shape_ids or not candidate_hashes:
-            return set()
+            return {}
         shape_placeholders = ",".join("?" for _ in shape_ids)
         candidate_placeholders = ",".join("?" for _ in candidate_hashes)
         status_placeholders = ",".join("?" for _ in REUSABLE_CACHE_STATUSES)
@@ -457,8 +430,7 @@ class EvoTensileDB:
                 f"""
                 SELECT shape_id, candidate_hash, status, COUNT(*) AS n
                 FROM evaluations
-                WHERE version_name = ?
-                  AND problem_type_hash = ?
+                WHERE problem_type_hash = ?
                   AND benchmark_protocol_hash = ?
                   AND shape_id IN ({shape_placeholders})
                   AND candidate_hash IN ({candidate_placeholders})
@@ -466,7 +438,6 @@ class EvoTensileDB:
                 GROUP BY shape_id, candidate_hash, status
                 """,
                 (
-                    normalize_version_name(version_name),
                     problem_type_hash,
                     benchmark_protocol_hash,
                     *shape_ids,
@@ -479,7 +450,23 @@ class EvoTensileDB:
         for row in rows:
             key = (row["shape_id"], row["candidate_hash"])
             counts.setdefault(key, {})[row["status"]] = int(row["n"])
+        return counts
 
+    def reusable_cache_entries(
+        self,
+        *,
+        problem_type_hash: str,
+        benchmark_protocol_hash: str,
+        shape_ids: list[str],
+        candidate_hashes: list[str],
+        min_ok_samples: int = 1,
+    ) -> set[tuple[str, str]]:
+        counts = self.reusable_cache_entry_counts(
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            shape_ids=shape_ids,
+            candidate_hashes=candidate_hashes,
+        )
         reusable: set[tuple[str, str]] = set()
         for key, status_counts in counts.items():
             ok_count = sum(status_counts.get(status, 0) for status in POSITIVE_CACHE_STATUSES)
@@ -493,69 +480,74 @@ class EvoTensileDB:
     def rank_evaluations(
         self,
         *,
-        version_name: str | None = None,
         problem_type_hash: str | None = None,
         benchmark_protocol_hash: str | None = None,
         shape_id: str | None = None,
         min_samples: int = 1,
         limit: int | None = None,
     ) -> list[EvaluationSummary]:
-        clauses = ["status = 'ok'"]
+        clauses = ["e.status = 'ok'"]
         params: list[str] = []
-        if version_name is not None:
-            clauses.append("version_name = ?")
-            params.append(normalize_version_name(version_name))
         if problem_type_hash is not None:
-            clauses.append("problem_type_hash = ?")
+            clauses.append("e.problem_type_hash = ?")
             params.append(problem_type_hash)
         if benchmark_protocol_hash is not None:
-            clauses.append("benchmark_protocol_hash = ?")
+            clauses.append("e.benchmark_protocol_hash = ?")
             params.append(benchmark_protocol_hash)
         if shape_id is not None:
-            clauses.append("shape_id = ?")
+            clauses.append("e.shape_id = ?")
             params.append(shape_id)
         where = "WHERE " + " AND ".join(clauses)
         with self.connection() as con:
             rows = con.execute(
                 f"""
-                SELECT shape_id, candidate_hash, time_us, gflops
-                FROM evaluations
+                SELECT e.shape_id, e.candidate_hash, e.time_us, s.m, s.n, s.batch, s.k
+                FROM evaluations AS e
+                JOIN shapes AS s ON s.shape_id = e.shape_id
                 {where}
                 """,
                 params,
             ).fetchall()
-        grouped: dict[tuple[str, str], dict[str, list[float]]] = {}
+        grouped: dict[tuple[str, str], _TimingBucket] = {}
         for row in rows:
             key = (row["shape_id"], row["candidate_hash"])
-            bucket = grouped.setdefault(key, {"time_us": [], "gflops": []})
+            bucket = grouped.setdefault(
+                key,
+                _TimingBucket(
+                    shape=Shape(
+                        m=int(row["m"]),
+                        n=int(row["n"]),
+                        batch=int(row["batch"]),
+                        k=int(row["k"]),
+                    ),
+                    time_us=[],
+                ),
+            )
             if row["time_us"] is not None:
-                bucket["time_us"].append(float(row["time_us"]))
-            if row["gflops"] is not None:
-                bucket["gflops"].append(float(row["gflops"]))
+                bucket.time_us.append(float(row["time_us"]))
 
         summaries: list[EvaluationSummary] = []
         for (sid, chash), bucket in grouped.items():
-            samples = max(len(bucket["time_us"]), len(bucket["gflops"]))
+            samples = len(bucket.time_us)
             if samples < min_samples:
                 continue
+            gflops_values = [gflops_from_us(bucket.shape, time_us) for time_us in bucket.time_us]
             summaries.append(
                 EvaluationSummary(
                     shape_id=sid,
                     candidate_hash=chash,
                     samples=samples,
-                    median_gflops=_median(bucket["gflops"]),
-                    best_gflops=max(bucket["gflops"]) if bucket["gflops"] else None,
-                    median_time_us=_median(bucket["time_us"]),
-                    best_time_us=min(bucket["time_us"]) if bucket["time_us"] else None,
+                    median_gflops=_median(gflops_values),
+                    best_gflops=max(gflops_values) if gflops_values else None,
+                    median_time_us=_median(bucket.time_us),
+                    best_time_us=min(bucket.time_us) if bucket.time_us else None,
                 )
             )
 
         def sort_key(summary: EvaluationSummary) -> tuple[int, float, float]:
-            if summary.median_gflops is not None:
-                return (1, summary.median_gflops, -(summary.median_time_us or float("inf")))
             if summary.median_time_us is not None:
-                return (0, -summary.median_time_us, 0.0)
-            return (-1, 0.0, 0.0)
+                return (1, -summary.median_time_us, summary.median_gflops or 0.0)
+            return (0, 0.0, 0.0)
 
         summaries.sort(key=sort_key, reverse=True)
         return summaries[:limit] if limit is not None else summaries
@@ -563,15 +555,11 @@ class EvoTensileDB:
     def cache_summary(
         self,
         *,
-        version_name: str | None = None,
         problem_type_hash: str | None = None,
         benchmark_protocol_hash: str | None = None,
     ) -> dict[str, int]:
         clauses = []
         params: list[str] = []
-        if version_name is not None:
-            clauses.append("version_name = ?")
-            params.append(normalize_version_name(version_name))
         if problem_type_hash is not None:
             clauses.append("problem_type_hash = ?")
             params.append(problem_type_hash)
@@ -598,10 +586,3 @@ class EvoTensileDB:
                 table: con.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
                 for table in ["candidates", "shapes", "runs", "evaluations"]
             }
-
-    def distinct_versions(self) -> list[str]:
-        with self.connection() as con:
-            rows = con.execute(
-                "SELECT DISTINCT version_name FROM runs UNION SELECT DISTINCT version_name FROM evaluations"
-            ).fetchall()
-            return sorted(row["version_name"] or DEFAULT_VERSION_NAME for row in rows)

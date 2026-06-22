@@ -70,7 +70,7 @@ Generic implemented capabilities are summarized in `README.md`. Target-specific 
 - the completed first-pass scan, repaired ingestion, top-4 full-validation retime, installed hipBLASLt comparison, hybrid export, GridBased YAML update, hipBLASLt rebuild/install, PyTorch benchmark validation, `hipblaslt-bench --verify` correctness test, and upstream `hipblaslt-test` smoke/quick/pre_checkin validation are done for the 100-shape pilot;
 - generated YAML uses complete candidate `Groups` rather than independent Cartesian products;
 - runner support exists for direct runs, compile-then-serial-benchmark runs, and an exact-pair structured backend path;
-- DB schema includes manual cache namespace fields (`version_name`, `problem_type_hash`, `benchmark_protocol_hash`);
+- DB schema uses each SQLite file as the evidence namespace and keys cache reuse by `problem_type_hash`, `benchmark_protocol_hash`, exact shape, and candidate hash;
 - structured JSONL result ingestion exists, using TensileLite final solution YAML as the source of truth for candidate mapping;
 - cache-aware batch scheduling exists for missing `ok` observations, with compile-only, serial benchmark, and immediate ingestion phases;
 - `scripts/update_hipblaslt_gridbased_logic.py` now emits build-valid checked-in YAMLs for HHS/HHS+AuxH/BBS/BBS+AuxB variants, including Aux `UseE` handling and scalar type normalization;
@@ -176,14 +176,13 @@ The scheduler should choose batch sizes to balance code-object build overhead, p
 
 ### Caching
 
-Use TensileLite `--build-only` and `--use-cache` where helpful, but do not rely only on TensileLite's build cache. EvoTensile maintains DB-level timing-cache identity fields based on:
-- user-controlled `version_name` / `tensilelite_version_name` namespace;
+Use TensileLite `--build-only` and `--use-cache` where helpful, but do not rely only on TensileLite's build cache. EvoTensile treats one SQLite DB file as one evidence namespace for a target hardware/environment/campaign. Within that DB, cache identity is based on:
 - problem type hash;
 - benchmark protocol hash;
 - exact shape;
 - candidate hash.
 
-Do not automatically key invalidation on a `rocm-libraries` commit hash. Store commit/source metadata for audit, but make cache refresh explicit through the user-controlled version namespace.
+Do not automatically key invalidation on a `rocm-libraries` commit hash. Store commit/source metadata for audit, but compare incompatible environments or campaigns through separate DB files.
 
 ## 8. Result Database
 
@@ -212,7 +211,6 @@ Core tables:
 
 - `run_id TEXT PRIMARY KEY`
 - `timestamp REAL`
-- `version_name TEXT`
 - `problem_type_hash TEXT`
 - `benchmark_protocol_hash TEXT`
 - `yaml_path TEXT`
@@ -227,7 +225,6 @@ Core tables:
 ### `evaluations`
 
 - `eval_id INTEGER PRIMARY KEY`
-- `version_name TEXT`
 - `problem_type_hash TEXT`
 - `benchmark_protocol_hash TEXT`
 - `shape_id TEXT`
@@ -235,13 +232,11 @@ Core tables:
 - `run_id TEXT`
 - `status TEXT` - ok, invalid, compile_fail, validation_fail, timeout, parse_fail
 - `time_us REAL`
-- `gflops REAL`
 - `validation TEXT`
 - `solution_index INTEGER`
-- `raw_csv_row TEXT`
 - `created_at REAL`
 
-Index `(version_name, problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash)` heavily for cache lookups.
+Index `(problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash)` heavily for cache lookups.
 
 ## 9. Search Algorithms
 
@@ -436,7 +431,7 @@ Remaining:
 
 Done for the 100-shape pilot:
 - Repaired final-YAML mapping and re-ingested the full scan into `out/grid100_full_20260618_repaired.sqlite`.
-- Retimed top-4 per shape with full validation under `gfx1151_fp16_nt_hhs_grid100_20260618_top4_retime_fullval`.
+- Retimed top-4 per shape with full validation under `gfx1151_fp16_nt_hhs_grid100_20260618_repaired`.
 - Exported selected candidate bundles to `out/grid100_full_20260618_top4_retime_export`.
 - Compared against installed hipBLASLt and exported `out/grid100_full_20260618_hybrid_best_export`, keeping EvoTensile on `78/100` shapes and replacing `22/100` regressions with installed-hipBLASLt selected configs.
 - Added `scripts/update_hipblaslt_gridbased_logic.py` and used it to directly overwrite the tracked gfx1151 GridBased HHS/HHS+AuxH/BBS/BBS+AuxB YAMLs in `~/rocm-libraries`.
@@ -468,7 +463,6 @@ Suggested pre-grid test:
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/pregrid_test \
-  --version-name gfx1151_hotloop_pregrid_test \
   --limit-shapes 2 \
   --candidate-batch-size 4 \
   --max-batches 1 \
@@ -498,7 +492,7 @@ Actual 100-shape first-pass results:
 
 Actual top-4 full-validation retime:
 - Script: `scripts/retime_topk.py` selected top-4 per shape from the repaired first-pass DB and grouped exact pair sets without cross-product extras.
-- Protocol: default full validation with `NumElementsToValidate=-1`, producing benchmark protocol hash `bproto_3742f70e30b73ce5`.
+- Protocol: default full validation with `NumElementsToValidate=-1`, producing benchmark protocol hash `bproto_61f1740f84f49502`.
 - Coverage: `400` intended pairs, `35` unique candidates, `57` groups, `4,000 ok` samples, `0` rejected/unmapped/validation-fail rows.
 - Wall time was `675.86s`; summed retime ok GEMM time was `0.256s`, so this was almost entirely generic TensileLite compile/client overhead.
 - Full-validation retime changed `57` of `100` per-shape winners versus the first-pass screen, so top-K retiming is required before export.
