@@ -11,13 +11,22 @@ _VALUE_TO_INDEX: dict[str, dict[str, int]] = {
 }
 
 
+def _domain_value_key(name: str, value: Any) -> str:
+    values = DOMAINS[name]
+    if isinstance(value, bool) and any(type(domain_value) is int for domain_value in values):
+        value = int(value)
+    elif type(value) is int and any(isinstance(domain_value, bool) for domain_value in values):
+        value = bool(value)
+    return canonical_json(value)
+
+
 def ordered_domain_values(name: str, current: Any | None = None) -> list[Any]:
     values = list(DOMAINS[name])
     if current is None:
         return values
-    key = canonical_json(current)
+    key = _domain_value_key(name, current)
     for idx, value in enumerate(values):
-        if canonical_json(value) == key:
+        if _domain_value_key(name, value) == key:
             return [value, *values[:idx], *values[idx + 1 :]]
     return values
 
@@ -28,7 +37,7 @@ def candidate_to_genome(candidate: Candidate) -> tuple[int, ...]:
     for name in PARAM_NAMES:
         value = params.get(name, DOMAINS[name][0])
         try:
-            genome.append(_VALUE_TO_INDEX[name][canonical_json(value)])
+            genome.append(_VALUE_TO_INDEX[name][_domain_value_key(name, value)])
         except KeyError as exc:
             raise ValueError(f"candidate has value outside domain for {name}: {value!r}") from exc
     return tuple(genome)

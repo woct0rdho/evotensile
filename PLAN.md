@@ -1,6 +1,6 @@
 # EvoTensile Plan
 
-EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The current completed pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, followed by checked-in hipBLASLt HHS/HHS+AuxH/BBS/BBS+AuxB GridBased YAML updates, rebuild, PyTorch-level performance validation, and repeatable installed-library correctness validation. The current workflow uses imported current-hipBLASLt baseline candidates, a structured exact-pair backend, and adaptive sampling before scaling to finer/larger shape grids.
+EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The current completed pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, followed by checked-in hipBLASLt HHS/HHS+AuxH/BBS/BBS+AuxB GridBased YAML updates, rebuild, PyTorch-level performance validation, and repeatable installed-library correctness validation. The current workflow uses imported current-hipBLASLt baseline candidates, a structured exact-pair backend, adaptive sampling, and optional local-outlier repair before scaling to finer/larger shape grids.
 
 ## 1. Motivation
 
@@ -73,6 +73,7 @@ Generic implemented capabilities are summarized in `README.md`. Target-specific 
 - DB schema uses each SQLite file as the evidence namespace and keys cache reuse by `problem_type_hash`, `benchmark_protocol_hash`, exact shape, and candidate hash;
 - structured JSONL result ingestion exists, using TensileLite final solution YAML as the source of truth for candidate mapping;
 - cache-aware batch scheduling exists for missing `ok` observations, including adaptive top-ups that reuse prior validation evidence and run GPU-only timing when safe;
+- local-outlier repair exists via `repair-outliers`, which detects shapes below a robust nearest-neighbor log-GFLOP/s envelope and reruns them with neighbor-seeded configs before GridBased update;
 - current hipBLASLt-selected configs can be imported once per DB/problem/grid as baseline candidates and then compete in normal EvoTensile selection;
 - `scripts/update_hipblaslt_gridbased_logic.py` now emits build-valid checked-in YAMLs for HHS/HHS+AuxH/BBS/BBS+AuxB variants, including Aux `UseE` handling and scalar type normalization;
 - a real one-shape harness under `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` showed that hindsight-directed local refinement can reproduce the documented `8192^3` winner, but this operator is not part of the generic scheduler because it bakes in the known winner neighborhood.
@@ -336,6 +337,7 @@ For finer grids:
   - a few global robust candidates;
   - a few random exploratory candidates.
 - Run a smaller budget, e.g. 16-64 configs/shape, then let adaptive sampling top up uncertain finalists.
+- After the first adaptive pass, run `repair-outliers` to find shapes whose best median GFLOP/s is below a robust nearest-neighbor envelope and rerun only those shapes with neighbor-heavy candidate seeds.
 
 Shape features:
 
@@ -419,7 +421,8 @@ Remaining:
 
 - `seed-random-gomea` plus nearest-shape transfer is the current first-pass proposal policy.
 - GOMEA-style linked neighborhoods reproduced the documented `8192^3` winner without inserting it directly.
-- Future work: richer shape-aware parent selection, elite crossover, failure-aware mutations, and non-hindsight refinement rounds for larger grids.
+- `repair-outliers` implements a non-hindsight refinement round for larger grids by detecting local-envelope performance holes and scheduling neighbor-seeded repair batches before GridBased update.
+- Future work: richer shape-aware parent selection, elite crossover, and failure-aware mutations for larger grids.
 
 ### M6: final confirmation + GridBased update
 
@@ -437,7 +440,8 @@ Done for the 100-shape pilot:
 ### M7: transfer to finer grids
 
 - Nearest-shape seeding is implemented for cached validation-passed winners.
-- Add smaller-budget local refinement for new shapes.
+- Local-envelope outlier repair is implemented for targeted neighbor-seeded reruns after the first adaptive pass.
+- Tune repair thresholds, envelope quantile, and repair budgets on staged larger-grid subsets.
 - Add surrogate-assisted proposal once enough data exists.
 
 ## 13. Pilot Review Notes
@@ -460,8 +464,7 @@ python3 -m evotensile.cli schedule-batches \
   --output-dir out/pregrid_test \
   --limit-shapes 2 \
   --candidate-batch-size 4 \
-  --max-batches 1 \
-  --keep-going
+  --max-batches 1
 ```
 
 ## 14. Pilot Timing Data
@@ -548,5 +551,5 @@ Structured runner refactor status:
 - Decide whether to use explicit runner priming, additional warmups, or robust sample filtering for occasional first-use/timing outliers while keeping benchmark protocol identity user-controlled.
 - Improve multi-candidate build-failure/timeout attribution once failure signatures are better understood; single-candidate build timeouts are classified, but multi-candidate failures are still intentionally not negative-cached.
 - Decide whether profile-owned runner build commands should be executable workflow steps; profiles currently record the default runner path/build command, but users still run the build command explicitly.
-- Add non-hindsight refinement operators that learn from cached winners/near-winners without hard-coding the documented `8192^3` neighborhood.
+- Tune `repair-outliers` thresholds and budgets on staged larger-grid subsets before making it part of the default large-grid workflow.
 - Keep the rebuilt-hipBLASLt validation recipe as the standard post-install gate: target `hipblaslt-bench --verify` test, upstream `hipblaslt-test` smoke/filtered quick as needed, and the PyTorch/FeatherOps 1024^3 NT performance path before scaling further.

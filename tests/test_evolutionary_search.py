@@ -1,3 +1,4 @@
+from evotensile.candidate import Candidate
 from evotensile.search.differential_evolution import differential_evolution_candidates
 from evotensile.search.encoding import candidate_to_genome, genome_to_candidate, ordered_domain_values
 from evotensile.search.gomea import gomea_neighborhood_candidates
@@ -12,6 +13,23 @@ def test_encoding_round_trips_complete_candidate():
 
     assert decoded.hash == candidate.hash
     assert ordered_domain_values("ScheduleIterAlg", 3)[0] == 3
+
+
+def test_encoding_accepts_imported_baseline_domain_values():
+    params = documented_winner_candidate().canonical_params()
+    params.update(
+        {
+            "MatrixInstruction": [16, 16, 16, 1, 1, 2, 3, 4, 1],
+            "WorkGroup": [64, 4, 1],
+            "SourceSwap": True,
+            "LdsBlockSizePerPadA": 4096,
+            "LdsBlockSizePerPadB": 1536,
+            "LdsPadA": 16,
+            "LdsPadB": 16,
+        }
+    )
+
+    assert candidate_to_genome(Candidate(params=params))
 
 
 def test_differential_evolution_generates_valid_candidates():

@@ -295,11 +295,17 @@ def query_baselines(args: argparse.Namespace, shapes: list[Shape], env: dict[str
         proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=args.timeout, check=False)
         stdout_path.write_text(proc.stdout, encoding="utf-8", errors="replace")
         stderr_path.write_text(proc.stderr, encoding="utf-8", errors="replace")
-        if proc.returncode != 0:
-            raise RuntimeError(f"hipblaslt-bench failed for {shape.id}: {stderr_path}")
-        parsed = parse_bench_output(proc.stdout)
-        solution = _match_logic_solution(parsed, logic_solutions, shape.id)
-        candidate = _solution_to_candidate(solution)
+        try:
+            if proc.returncode != 0:
+                raise RuntimeError(f"hipblaslt-bench failed for {shape.id}: {stderr_path}")
+            parsed = parse_bench_output(proc.stdout)
+            solution = _match_logic_solution(parsed, logic_solutions, shape.id)
+            candidate = _solution_to_candidate(solution)
+        except Exception as exc:
+            if args.stop_on_error:
+                raise
+            print(f"warning: skipping {shape.id}: {exc}", flush=True)
+            continue
         selections.append(
             BaselineSelection(
                 shape=shape,
@@ -372,9 +378,11 @@ def main() -> int:
     parser.add_argument("--logic-yaml", type=Path, default=DEFAULT_LOGIC_YAML)
     parser.add_argument("--runner-bin", default=None)
     parser.add_argument("--tensilelite-bin", default=DEFAULT_TENSILELITE_BIN)
-    parser.add_argument("--compile-threads", type=int, default=4)
-    parser.add_argument("--build-timeout", type=float, default=None)
-    parser.add_argument("--runner-timeout", type=float, default=None)
+    parser.add_argument(
+        "--compile-threads", type=int, default=-1, help="TensileLite CpuThreads; -1 uses all CPU threads"
+    )
+    parser.add_argument("--build-timeout", type=float, default=None, help="defaults to the target profile; 0 disables")
+    parser.add_argument("--runner-timeout", type=float, default=None, help="defaults to the target profile; 0 disables")
     parser.add_argument("--limit-shapes", type=int, default=None)
     parser.add_argument("--shapes", nargs="*")
     parser.add_argument("--num-warmups", type=int, default=None)
@@ -390,7 +398,7 @@ def main() -> int:
     parser.add_argument("--requested-solution", type=int, default=1)
     parser.add_argument("--no-gpu-timer", action="store_true")
     parser.add_argument("--timeout", type=float, default=300.0)
-    parser.add_argument("--keep-going", action="store_true")
+    parser.add_argument("--stop-on-error", action="store_true", help="Stop after the first query or schedule error")
     parser.add_argument("--query-only", action="store_true")
     args = parser.parse_args()
 
@@ -403,6 +411,12 @@ def main() -> int:
     profile, protocol = _profile_protocol(args)
     shapes = _parse_shapes(args, profile)
     runner_bin = args.runner_bin or profile.default_runner_bin
+    build_timeout = profile.default_build_timeout_s if args.build_timeout is None else args.build_timeout
+    runner_timeout = profile.default_runner_timeout_s if args.runner_timeout is None else args.runner_timeout
+    if build_timeout is not None and build_timeout <= 0:
+        build_timeout = None
+    if runner_timeout is not None and runner_timeout <= 0:
+        runner_timeout = None
     env = runtime_env(args.rocm_devel, args.rocm_libraries, args.tensile_libpath)
     selections = query_baselines(args, shapes, env)
     selections_csv = args.output_dir / "baseline_selections.csv"
@@ -430,10 +444,10 @@ def main() -> int:
                 shape_batch_size=max(1, len(group_shapes)),
                 tensilelite_bin=args.tensilelite_bin,
                 compile_threads=args.compile_threads,
-                keep_going=args.keep_going,
+                keep_going=not args.stop_on_error,
                 runner_bin=runner_bin,
-                build_timeout_s=args.build_timeout,
-                runner_timeout_s=args.runner_timeout,
+                build_timeout_s=build_timeout,
+                runner_timeout_s=runner_timeout,
             )
             status_counts: dict[str, int] = {}
             for executed in result.executed_batches:
@@ -462,6 +476,9 @@ def main() -> int:
         "unique_candidate_count": len(grouped),
         "selections_csv": str(selections_csv),
         "query_only": args.query_only,
+        "stop_on_error": args.stop_on_error,
+        "build_timeout_s": build_timeout,
+        "runner_timeout_s": runner_timeout,
         "executed_groups": executed_groups,
         "HIPBLASLT_TENSILE_LIBPATH": env["HIPBLASLT_TENSILE_LIBPATH"],
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),

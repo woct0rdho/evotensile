@@ -22,7 +22,7 @@ DEFAULT_BENCH = Path.home() / "rocm-libraries/build/hipblaslt-bench/clients/hipb
 DEFAULT_ROCM_PATH = Path(
     os.environ.get("ROCM_PATH", Path.home() / "venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel")
 )
-DEFAULT_OUTPUT_DIR = Path("out/hipblaslt_correctness_smoke")
+DEFAULT_OUTPUT_DIR = Path("out/hipblaslt_validation")
 
 
 @dataclass(frozen=True)

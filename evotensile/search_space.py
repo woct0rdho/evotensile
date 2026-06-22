@@ -19,6 +19,8 @@ MATRIX_INSTRUCTIONS: list[list[int]] = [
     [16, 16, 16, 1, 1, 2, 4, 2, 2],  # MT64x128
     [16, 16, 16, 1, 1, 4, 3, 2, 2],  # MT128x96
     [16, 16, 16, 1, 1, 2, 6, 4, 1],  # MT128x96 artifact wave shape
+    [16, 16, 16, 1, 1, 2, 3, 4, 1],  # MT128x48 installed baseline
+    [16, 16, 16, 1, 1, 1, 3, 4, 1],  # MT64x48 installed baseline
     [16, 16, 16, 1, 1, 3, 4, 2, 2],  # MT96x128
     [16, 16, 16, 1, 1, 6, 2, 1, 4],  # MT96x128 artifact wave shape
     [16, 16, 16, 1, 1, 4, 4, 2, 2],  # MT128x128
@@ -27,9 +29,10 @@ MATRIX_INSTRUCTIONS: list[list[int]] = [
     [16, 16, 16, 1, 1, 4, 4, 4, 2],  # MT256x128
 ]
 
+# Ordered from most to least preferred
 DOMAINS: dict[str, list[Any]] = {
     "MatrixInstruction": MATRIX_INSTRUCTIONS,
-    "WorkGroup": [[16, 16, 1]],
+    "WorkGroup": [[16, 16, 1], [32, 4, 1], [64, 2, 1], [64, 4, 1]],
     "DepthU": [16, 32, 64],
     "GlobalSplitU": [1, 2, 4],
     "PrefetchGlobalRead": [1, 2, 0],
@@ -51,10 +54,10 @@ DOMAINS: dict[str, list[Any]] = {
     "NumElementsPerBatchStore": [10, 8, 12, 16, 4, 0, 14, 20, 24, 32, 1, 2, 6],
     "StoreSyncOpt": [0, 1, 2, 4],
     "GroupLoadStore": [False, True],
-    "LdsBlockSizePerPadA": [0, 128, 256, 512, 1024, 2048],
-    "LdsBlockSizePerPadB": [0, 128, 256, 512, 1024, 2048],
-    "LdsPadA": [0, 8, 16, 4],
-    "LdsPadB": [0, 8, 16, 4],
+    "LdsBlockSizePerPadA": [0, 128, 256, 512, 1024, 1536, 2048, 3072, 4096],
+    "LdsBlockSizePerPadB": [0, 128, 256, 512, 1024, 1536, 2048, 3072, 4096],
+    "LdsPadA": [0, 4, 8, 16],
+    "LdsPadB": [0, 4, 8, 16],
 }
 
 LDS_PAD_PROFILES: set[tuple[int, int, int, int, int]] = {
@@ -63,6 +66,9 @@ LDS_PAD_PROFILES: set[tuple[int, int, int, int, int]] = {
     (0, 512, 2048, 16, 16),
     (0, 1024, 1024, 16, 16),
     (0, 2048, 512, 16, 16),
+    (0, 2048, 1536, 16, 16),
+    (0, 2048, 3072, 16, 16),
+    (0, 4096, 1536, 16, 16),
     (2, 0, 0, 0, 0),
     (2, 128, 128, 4, 4),
     (2, 128, 128, 8, 8),
