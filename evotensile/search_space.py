@@ -1,82 +1,125 @@
 import random
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
-from .candidate import Candidate
+from .candidate import Candidate, Shape
 
-# MatrixInstruction comments indicate approximate MacroTile when WorkGroup=[16,16,1].
-MATRIX_INSTRUCTIONS: list[list[int]] = [
-    [16, 16, 16, 1, 1, 1, 1, 2, 2],  # MT32x32
-    [16, 16, 16, 1, 1, 1, 1, 1, 4],  # MT16x64
-    [16, 16, 16, 1, 1, 1, 1, 4, 1],  # MT64x16
-    [16, 16, 16, 1, 1, 2, 1, 2, 2],  # MT64x32
-    [16, 16, 16, 1, 1, 1, 2, 2, 2],  # MT32x64
-    [16, 16, 16, 1, 1, 2, 2, 2, 2],  # MT64x64
-    [16, 16, 16, 1, 1, 2, 3, 2, 2],  # MT64x96
-    [16, 16, 16, 1, 1, 3, 2, 2, 2],  # MT96x64
-    [16, 16, 16, 1, 1, 3, 3, 2, 2],  # MT96x96
-    [16, 16, 16, 1, 1, 4, 2, 2, 2],  # MT128x64
-    [16, 16, 16, 1, 1, 2, 4, 2, 2],  # MT64x128
-    [16, 16, 16, 1, 1, 4, 3, 2, 2],  # MT128x96
-    [16, 16, 16, 1, 1, 2, 6, 4, 1],  # MT128x96 artifact wave shape
-    [16, 16, 16, 1, 1, 2, 3, 4, 1],  # MT128x48 installed baseline
-    [16, 16, 16, 1, 1, 1, 3, 4, 1],  # MT64x48 installed baseline
-    [16, 16, 16, 1, 1, 3, 4, 2, 2],  # MT96x128
-    [16, 16, 16, 1, 1, 6, 2, 1, 4],  # MT96x128 artifact wave shape
-    [16, 16, 16, 1, 1, 4, 4, 2, 2],  # MT128x128
-    [16, 16, 16, 1, 1, 4, 4, 4, 1],  # MT256x64
-    [16, 16, 16, 1, 1, 4, 4, 2, 4],  # MT128x256
-    [16, 16, 16, 1, 1, 4, 4, 4, 2],  # MT256x128
-]
 
-# Ordered from most to least preferred
+def _matrix_instruction_macro_tile(instruction: Sequence[int]) -> tuple[int, int]:
+    return (instruction[0] * instruction[5] * instruction[7], instruction[1] * instruction[6] * instruction[8])
+
+
+def _transpose_matrix_instruction(instruction: Sequence[int]) -> tuple[int, ...]:
+    return (
+        instruction[1],
+        instruction[0],
+        instruction[2],
+        instruction[3],
+        instruction[4],
+        instruction[6],
+        instruction[5],
+        instruction[8],
+        instruction[7],
+    )
+
+
+def _with_symmetric_macro_tiles(base_instructions: Sequence[Sequence[int]]) -> list[list[int]]:
+    instructions: list[tuple[int, ...]] = []
+    seen_instructions: set[tuple[int, ...]] = set()
+    seen_macro_tiles: set[tuple[int, int]] = set()
+    for instruction in base_instructions:
+        item = tuple(instruction)
+        if item in seen_instructions:
+            continue
+        instructions.append(item)
+        seen_instructions.add(item)
+        seen_macro_tiles.add(_matrix_instruction_macro_tile(item))
+
+    for instruction in tuple(instructions):
+        transposed = _transpose_matrix_instruction(instruction)
+        transposed_macro_tile = _matrix_instruction_macro_tile(transposed)
+        if transposed_macro_tile in seen_macro_tiles or transposed in seen_instructions:
+            continue
+        instructions.append(transposed)
+        seen_instructions.add(transposed)
+        seen_macro_tiles.add(transposed_macro_tile)
+
+    return [list(instruction) for instruction in instructions]
+
+
+_MATRIX_INSTRUCTION_PREFIX = (16, 16, 16, 1, 1)
+
+
+def _matrix_instruction(shape: Sequence[int]) -> tuple[int, ...]:
+    return (*_MATRIX_INSTRUCTION_PREFIX, *shape)
+
+
+# MatrixInstruction shapes are (MIWaveTile0, MIWaveTile1, MIWaveGroup0, MIWaveGroup1).
+_DEFAULT_MATRIX_INSTRUCTION_SHAPE = (1, 1, 2, 2)  # MT32x32
+_MI_WAVE_TILE0_VALUES = (1, 2, 3, 4, 5, 6, 7, 8, 9)
+_MI_WAVE_TILE1_VALUES = (1, 2, 3, 4, 5, 6, 7, 8, 9)
+_MI_WAVE_GROUPS = ((1, 1), (1, 2), (1, 4), (2, 1), (2, 2), (2, 4), (4, 1), (4, 2))
+
+
+def _matrix_instruction_shape_macro_tile(shape: Sequence[int]) -> tuple[int, int]:
+    return (_MATRIX_INSTRUCTION_PREFIX[0] * shape[0] * shape[2], _MATRIX_INSTRUCTION_PREFIX[1] * shape[1] * shape[3])
+
+
+def _base_matrix_instruction_shapes() -> tuple[tuple[int, int, int, int], ...]:
+    shapes = [_DEFAULT_MATRIX_INSTRUCTION_SHAPE]
+    seen = {_DEFAULT_MATRIX_INSTRUCTION_SHAPE}
+    for wave_tile0 in _MI_WAVE_TILE0_VALUES:
+        for wave_tile1 in _MI_WAVE_TILE1_VALUES:
+            for wave_group0, wave_group1 in _MI_WAVE_GROUPS:
+                shape = (wave_tile0, wave_tile1, wave_group0, wave_group1)
+                macro_tile0, macro_tile1 = _matrix_instruction_shape_macro_tile(shape)
+                if shape in seen or macro_tile0 > 256 or macro_tile1 > 256:
+                    continue
+                shapes.append(shape)
+                seen.add(shape)
+    return tuple(shapes)
+
+
+_BASE_MATRIX_INSTRUCTION_SHAPES = _base_matrix_instruction_shapes()
+_BASE_MATRIX_INSTRUCTIONS = tuple(_matrix_instruction(shape) for shape in _BASE_MATRIX_INSTRUCTION_SHAPES)
+MATRIX_INSTRUCTIONS: list[list[int]] = _with_symmetric_macro_tiles(_BASE_MATRIX_INSTRUCTIONS)
+
+# First value is default
 DOMAINS: dict[str, list[Any]] = {
     "MatrixInstruction": MATRIX_INSTRUCTIONS,
-    "WorkGroup": [[16, 16, 1], [32, 4, 1], [64, 2, 1], [64, 4, 1]],
-    "DepthU": [16, 32, 64],
+    "WorkGroup": [[16, 16, 1], [16, 2, 1], [16, 4, 1], [16, 8, 1], [32, 2, 1], [32, 4, 1], [64, 2, 1], [64, 4, 1]],
+    "DepthU": [16, 32, 64, 128],
     "GlobalSplitU": [1, 2, 4],
-    "PrefetchGlobalRead": [1, 2, 0],
+    "PrefetchGlobalRead": [1, 0, 2],
     "PrefetchLocalRead": [1, 0],
-    "ScheduleIterAlg": [2, 3, 1],
-    "WorkGroupMapping": [8, 16, 5, 4],
-    "StaggerU": [32, 16, 8, 64, 0],
+    "ScheduleIterAlg": [2, 1, 3],
+    "WorkGroupMapping": [8, 4, 5, 16],
+    "StaggerU": [32, 0, 8, 16, 64],
     "StaggerUMapping": [0, 1],
     "SourceSwap": [1, 0],
     "1LDSBuffer": [1, 0],
     "ClusterLocalRead": [0, 1],
-    "TransposeLDS": [0, 2],
-    "VectorWidthB": [2, 1],
-    "GlobalReadVectorWidthA": [8, 4, 2, 1],
-    "GlobalReadVectorWidthB": [8, 4, 2, 1],
-    "StoreVectorWidth": [-1, 1],
+    "TransposeLDS": [0, 1, 2],
+    "VectorWidthA": [1, 2, 4, 8],
+    "VectorWidthB": [2, 1, 4, 8],
+    "GlobalReadVectorWidthA": [8, 1, 2, 4],
+    "GlobalReadVectorWidthB": [8, 1, 2, 4],
+    "StoreVectorWidth": [-1, 1, 2, 4, 8],
+    "StaggerUStride": [256, 0, 64, 128],
+    "ExpandPointerSwap": [0, 1],
+    "AssertFree0ElementMultiple": [8, 1],
+    "AssertFree1ElementMultiple": [8, 1],
+    "AssertSummationElementMultiple": [16, 1],
     "StorePriorityOpt": [True, False],
     # 0 means TensileLite auto-selects the store batch size; nonzero values cap it explicitly.
-    "NumElementsPerBatchStore": [10, 8, 12, 16, 4, 0, 14, 20, 24, 32, 1, 2, 6],
+    "NumElementsPerBatchStore": [10, 0, 1, 2, 4, 6, 8, 12, 14, 16, 20, 24, 32],
     "StoreSyncOpt": [0, 1, 2, 4],
     "GroupLoadStore": [False, True],
-    "LdsBlockSizePerPadA": [0, 128, 256, 512, 1024, 1536, 2048, 3072, 4096],
-    "LdsBlockSizePerPadB": [0, 128, 256, 512, 1024, 1536, 2048, 3072, 4096],
+    "LdsBlockSizePerPadA": [0, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192],
+    "LdsBlockSizePerPadB": [0, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192],
     "LdsPadA": [0, 4, 8, 16],
     "LdsPadB": [0, 4, 8, 16],
-}
-
-LDS_PAD_PROFILES: set[tuple[int, int, int, int, int]] = {
-    (0, 0, 0, 0, 0),
-    (0, 128, 128, 8, 8),
-    (0, 512, 2048, 16, 16),
-    (0, 1024, 1024, 16, 16),
-    (0, 2048, 512, 16, 16),
-    (0, 2048, 1536, 16, 16),
-    (0, 2048, 3072, 16, 16),
-    (0, 4096, 1536, 16, 16),
-    (2, 0, 0, 0, 0),
-    (2, 128, 128, 4, 4),
-    (2, 128, 128, 8, 8),
-    (2, 128, 128, 16, 16),
-    (2, 256, 256, 8, 8),
-    (2, 256, 256, 16, 16),
-    (2, 128, 0, 8, 0),
-    (2, 0, 128, 0, 8),
 }
 
 FIXED_PARAMS: dict[str, Any] = {
@@ -85,70 +128,205 @@ FIXED_PARAMS: dict[str, Any] = {
     "GlobalSplitUAlgorithm": "MultipleBuffer",
     "ScheduleGlobalRead": 1,
     "ScheduleLocalWrite": 1,
-    "StaggerUStride": 256,
-    "VectorWidthA": 1,
     "LocalReadVectorWidth": 16,
     "StoreRemapVectorWidth": 0,
     "MIArchVgpr": 1,
-    "ExpandPointerSwap": 0,
-    "AssertFree0ElementMultiple": 8,
-    "AssertFree1ElementMultiple": 8,
-    "AssertSummationElementMultiple": 16,
 }
 
+macro_tile = _matrix_instruction_macro_tile
 
-def macro_tile(mi: list[int]) -> tuple[int, int]:
-    """Compute approximate macro tile dimensions from 9-field MatrixInstruction."""
-    return (mi[0] * mi[5] * mi[7], mi[1] * mi[6] * mi[8])
+STORE_SYNC_OPT_CHOICES = (0, 2, 4)
+STORE_SYNC_BATCH_CHOICES = (10, 12)
+GROUP_LOAD_STORE_BATCH_CHOICES = (12,)
+
+
+@dataclass(frozen=True)
+class InvalidReason:
+    rule_id: str
+    message: str
+    params: tuple[str, ...]
+    source: str
+    shape_dependent: bool = False
+
+
+def _repair_linked_params(params: dict[str, Any], *, rng: random.Random | None = None) -> dict[str, Any]:
+    params = dict(params)
+    if params["GlobalSplitU"] > 1 and params["DepthU"] < 32:
+        params["DepthU"] = 32
+    if params["TransposeLDS"] == 2:
+        lds_block_multiple = params["DepthU"] * 2
+        for suffix in ("A", "B"):
+            key = f"LdsBlockSizePerPad{suffix}"
+            if params[key] and params[key] % lds_block_multiple != 0:
+                params[key] = 0
+        params["PrefetchGlobalRead"] = 2
+        params["PrefetchLocalRead"] = 0
+        params["VectorWidthB"] = 1
+    if params["StoreSyncOpt"] not in STORE_SYNC_OPT_CHOICES:
+        params["StoreSyncOpt"] = rng.choice(STORE_SYNC_OPT_CHOICES) if rng else 0
+    if params["StoreSyncOpt"] and params["NumElementsPerBatchStore"] not in STORE_SYNC_BATCH_CHOICES:
+        params["NumElementsPerBatchStore"] = rng.choice(STORE_SYNC_BATCH_CHOICES) if rng else 10
+    if params["GroupLoadStore"]:
+        params["StoreSyncOpt"] = 4
+        params["StorePriorityOpt"] = True
+        if params["NumElementsPerBatchStore"] not in GROUP_LOAD_STORE_BATCH_CHOICES:
+            params["NumElementsPerBatchStore"] = rng.choice(GROUP_LOAD_STORE_BATCH_CHOICES) if rng else 12
+    return params
+
+
+def explain_invalid_nt_hhs(params: dict[str, Any], *, shape: Shape | None = None) -> list[InvalidReason]:
+    """Explain known-disallowed NT HHS parameter combinations.
+
+    This is a broad-domain negative rule layer. TensileLite remains authoritative for
+    final acceptance, rejection, and normalization.
+    """
+    reasons: list[InvalidReason] = []
+    mt0, mt1 = macro_tile(params["MatrixInstruction"])
+    if mt0 <= 0 or mt1 <= 0:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.macro_tile.non_positive",
+                "Macro tile dimensions must be positive.",
+                ("MatrixInstruction",),
+                source="solutionstructs",
+            )
+        )
+    if mt0 > 256 or mt1 > 256:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.macro_tile.exceeds_256",
+                "Macro tile dimensions above 256 are currently rejected before TensileLite build.",
+                ("MatrixInstruction",),
+                source="heuristic",
+            )
+        )
+
+    if params["GlobalSplitU"] > 1 and params["DepthU"] < 32:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.gsu.requires_depthu_ge_32",
+                "GlobalSplitU greater than 1 is kept to DepthU >= 32.",
+                ("GlobalSplitU", "DepthU"),
+                source="heuristic",
+            )
+        )
+
+    if params["TransposeLDS"] == 2:
+        lds_block_multiple = params["DepthU"] * 2
+        for suffix in ("A", "B"):
+            value = params[f"LdsBlockSizePerPad{suffix}"]
+            if value and value % lds_block_multiple != 0:
+                reasons.append(
+                    InvalidReason(
+                        f"nt_hhs.lds.tlds2_block_size_{suffix.lower()}_must_divide_depthu_bytes",
+                        "TensileLite rejects TLDS2 block-size-per-pad values that are not multiples of DepthU times 2-byte FP16 LDS elements.",
+                        ("TransposeLDS", "DepthU", f"LdsBlockSizePerPad{suffix}"),
+                        source="solutionstructs",
+                    )
+                )
+        if params["PrefetchGlobalRead"] != 2 or params["PrefetchLocalRead"] != 0:
+            reasons.append(
+                InvalidReason(
+                    "nt_hhs.tlds2.requires_pgr2_plr0",
+                    "Observed NT TLDS2 path requires PrefetchGlobalRead=2 and PrefetchLocalRead=0.",
+                    ("TransposeLDS", "PrefetchGlobalRead", "PrefetchLocalRead"),
+                    source="solutionstructs",
+                )
+            )
+        if params["VectorWidthB"] != 1:
+            reasons.append(
+                InvalidReason(
+                    "nt_hhs.tlds2.requires_vector_width_b_1",
+                    "Observed NT TLDS2 path requires VectorWidthB=1.",
+                    ("TransposeLDS", "VectorWidthB"),
+                    source="solutionstructs",
+                )
+            )
+
+    if params["StoreSyncOpt"] not in STORE_SYNC_OPT_CHOICES:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.store_sync.unsupported_opt",
+                "StoreSyncOpt is outside the supported NT HHS store-sync set.",
+                ("StoreSyncOpt",),
+                source="solutionstructs",
+            )
+        )
+    if params["StoreSyncOpt"] and params["NumElementsPerBatchStore"] not in STORE_SYNC_BATCH_CHOICES:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.store_sync.requires_batch_choice",
+                "StoreSyncOpt requires an observed explicit NumElementsPerBatchStore value.",
+                ("StoreSyncOpt", "NumElementsPerBatchStore"),
+                source="solutionstructs",
+            )
+        )
+    if params["GroupLoadStore"] and params["StoreSyncOpt"] != 4:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.group_load_store.requires_store_sync_4",
+                "GroupLoadStore requires StoreSyncOpt=4 in observed NT HHS configs.",
+                ("GroupLoadStore", "StoreSyncOpt"),
+                source="solutionstructs",
+            )
+        )
+    if params["GroupLoadStore"] and not params["StorePriorityOpt"]:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.group_load_store.requires_store_priority",
+                "GroupLoadStore requires StorePriorityOpt=True in observed NT HHS configs.",
+                ("GroupLoadStore", "StorePriorityOpt"),
+                source="solutionstructs",
+            )
+        )
+    if params["GroupLoadStore"] and params["NumElementsPerBatchStore"] not in GROUP_LOAD_STORE_BATCH_CHOICES:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.group_load_store.requires_batch_choice",
+                "GroupLoadStore requires the observed explicit batch-store value.",
+                ("GroupLoadStore", "NumElementsPerBatchStore"),
+                source="solutionstructs",
+            )
+        )
+
+    if shape is not None:
+        if shape.k % params["AssertSummationElementMultiple"] != 0:
+            reasons.append(
+                InvalidReason(
+                    "nt_hhs.shape.assert_summation_multiple",
+                    "K is not divisible by AssertSummationElementMultiple.",
+                    ("AssertSummationElementMultiple",),
+                    source="schema",
+                    shape_dependent=True,
+                )
+            )
+        if shape.m % params["AssertFree0ElementMultiple"] != 0:
+            reasons.append(
+                InvalidReason(
+                    "nt_hhs.shape.assert_free0_multiple",
+                    "M is not divisible by AssertFree0ElementMultiple.",
+                    ("AssertFree0ElementMultiple",),
+                    source="schema",
+                    shape_dependent=True,
+                )
+            )
+        if shape.n % params["AssertFree1ElementMultiple"] != 0:
+            reasons.append(
+                InvalidReason(
+                    "nt_hhs.shape.assert_free1_multiple",
+                    "N is not divisible by AssertFree1ElementMultiple.",
+                    ("AssertFree1ElementMultiple",),
+                    source="schema",
+                    shape_dependent=True,
+                )
+            )
+
+    return reasons
 
 
 def cheap_constraints(params: dict[str, Any]) -> bool:
     """Cheap pre-TensileLite constraints. TensileLite still performs authoritative validation."""
-    mi = params["MatrixInstruction"]
-    mt0, mt1 = macro_tile(mi)
-    if mt0 <= 0 or mt1 <= 0:
-        return False
-    if mt0 > 256 or mt1 > 256:
-        return False
-
-    # Keep broad-grid candidates conservative for now.
-    if params["GlobalSplitU"] > 1 and params["DepthU"] < 32:
-        return False
-
-    # TensileLite rejects this combination: PGR0 already uses the single-LDS-buffer path.
-    if params["PrefetchGlobalRead"] == 0 and params["1LDSBuffer"] == 0:
-        return False
-
-    # Very small vector reads with DU64 are usually not worth early random budget.
-    if params["DepthU"] == 64 and params["GlobalReadVectorWidthA"] == 1 and params["GlobalReadVectorWidthB"] == 1:
-        return False
-
-    lds_profile = (
-        params["TransposeLDS"],
-        params["LdsBlockSizePerPadA"],
-        params["LdsBlockSizePerPadB"],
-        params["LdsPadA"],
-        params["LdsPadB"],
-    )
-    if lds_profile not in LDS_PAD_PROFILES:
-        return False
-
-    # The observed TLDS2 NT HHS configs use the PGR2/PLR0 path; broader TLDS2 mixing is left to later data.
-    if params["TransposeLDS"] == 2:
-        if params["PrefetchGlobalRead"] != 2 or params["PrefetchLocalRead"] != 0:
-            return False
-        if params["VectorWidthB"] != 1:
-            return False
-
-    # Store sync/load-store grouping are real codegen paths, but prior artifacts only exercised them with explicit batches.
-    if params["StoreSyncOpt"] and params["NumElementsPerBatchStore"] == 0:
-        return False
-    if params["GroupLoadStore"] and (
-        not params["StorePriorityOpt"] or params["NumElementsPerBatchStore"] not in {8, 10, 12}
-    ):
-        return False
-
-    return True
+    return not explain_invalid_nt_hhs(params)
 
 
 def defaulted_params(overrides: dict[str, Any]) -> dict[str, Any]:
@@ -161,44 +339,7 @@ def defaulted_params(overrides: dict[str, Any]) -> dict[str, Any]:
 
 def repair_linked_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
     """Repair linked categorical genes that are invalid when mixed independently."""
-    params = defaulted_params(overrides)
-    lds_profile = (
-        params["TransposeLDS"],
-        params["LdsBlockSizePerPadA"],
-        params["LdsBlockSizePerPadB"],
-        params["LdsPadA"],
-        params["LdsPadB"],
-    )
-    if lds_profile not in LDS_PAD_PROFILES:
-        candidates = sorted(profile for profile in LDS_PAD_PROFILES if profile[0] == params["TransposeLDS"])
-        transpose_lds, block_a, block_b, pad_a, pad_b = next(
-            (profile for profile in candidates if profile[1:] == (0, 0, 0, 0)),
-            candidates[0],
-        )
-        params.update(
-            {
-                "TransposeLDS": transpose_lds,
-                "LdsBlockSizePerPadA": block_a,
-                "LdsBlockSizePerPadB": block_b,
-                "LdsPadA": pad_a,
-                "LdsPadB": pad_b,
-            }
-        )
-    if params["TransposeLDS"] == 2:
-        params["PrefetchGlobalRead"] = 2
-        params["PrefetchLocalRead"] = 0
-        params["VectorWidthB"] = 1
-    if params["PrefetchGlobalRead"] == 0 and params["1LDSBuffer"] == 0:
-        params["1LDSBuffer"] = 1
-    if params["DepthU"] == 64 and params["GlobalReadVectorWidthA"] == 1 and params["GlobalReadVectorWidthB"] == 1:
-        params["GlobalReadVectorWidthA"] = 2
-    if params["StoreSyncOpt"] and params["NumElementsPerBatchStore"] == 0:
-        params["NumElementsPerBatchStore"] = 10
-    if params["GroupLoadStore"]:
-        params["StorePriorityOpt"] = True
-        if params["NumElementsPerBatchStore"] not in {8, 10, 12}:
-            params["NumElementsPerBatchStore"] = 10
-    return params
+    return _repair_linked_params(defaulted_params(overrides))
 
 
 def make_candidate(overrides: dict[str, Any], *, source: str, parents: Iterable[str] = ()) -> Candidate:
@@ -208,280 +349,18 @@ def make_candidate(overrides: dict[str, Any], *, source: str, parents: Iterable[
     return Candidate(params=params, source=source, parent_hashes=tuple(parents))
 
 
-def known_seed_candidates() -> list[Candidate]:
-    """Initial deterministic seeds. These are deliberately conservative."""
-    seeds: list[dict[str, Any]] = [
-        # 8192^3-center-like rocBLAS baseline family.
-        {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 4, 4, 2, 2],
-            "WorkGroup": [16, 16, 1],
-            "DepthU": 16,
-            "GlobalSplitU": 1,
-            "PrefetchGlobalRead": 1,
-            "PrefetchLocalRead": 1,
-            "ScheduleIterAlg": 2,
-            "WorkGroupMapping": 8,
-            "StaggerU": 32,
-            "StaggerUMapping": 0,
-            "SourceSwap": 1,
-            "1LDSBuffer": 1,
-            "ClusterLocalRead": 0,
-            "VectorWidthB": 2,
-            "GlobalReadVectorWidthA": 8,
-            "GlobalReadVectorWidthB": 8,
-            "StorePriorityOpt": True,
-            "NumElementsPerBatchStore": 10,
-        },
-        # Slightly smaller K/pipeline variant.
-        {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 4, 4, 2, 2],
-            "WorkGroup": [16, 16, 1],
-            "DepthU": 32,
-            "GlobalSplitU": 1,
-            "PrefetchGlobalRead": 1,
-            "PrefetchLocalRead": 1,
-            "ScheduleIterAlg": 3,
-            "WorkGroupMapping": 8,
-            "StaggerU": 8,
-            "StaggerUMapping": 0,
-            "SourceSwap": 1,
-            "1LDSBuffer": 1,
-            "ClusterLocalRead": 0,
-            "VectorWidthB": 2,
-            "GlobalReadVectorWidthA": 8,
-            "GlobalReadVectorWidthB": 8,
-        },
-        # M-wide.
-        {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 4, 2, 2, 2],
-            "WorkGroup": [16, 16, 1],
-            "DepthU": 32,
-            "GlobalSplitU": 1,
-            "PrefetchGlobalRead": 1,
-            "PrefetchLocalRead": 1,
-            "ScheduleIterAlg": 2,
-            "WorkGroupMapping": 8,
-            "StaggerU": 32,
-            "StaggerUMapping": 0,
-            "SourceSwap": 1,
-            "1LDSBuffer": 1,
-            "ClusterLocalRead": 0,
-            "VectorWidthB": 2,
-            "GlobalReadVectorWidthA": 8,
-            "GlobalReadVectorWidthB": 8,
-        },
-        # N-wide / N-heavy.
-        {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 2, 4, 2, 2],
-            "WorkGroup": [16, 16, 1],
-            "DepthU": 32,
-            "GlobalSplitU": 1,
-            "PrefetchGlobalRead": 1,
-            "PrefetchLocalRead": 1,
-            "ScheduleIterAlg": 2,
-            "WorkGroupMapping": 8,
-            "StaggerU": 32,
-            "StaggerUMapping": 0,
-            "SourceSwap": 1,
-            "1LDSBuffer": 1,
-            "ClusterLocalRead": 0,
-            "VectorWidthB": 2,
-            "GlobalReadVectorWidthA": 8,
-            "GlobalReadVectorWidthB": 8,
-        },
-        # TLDS2/padded LDS family seen in prior NT artifacts.
-        {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 4, 4, 2, 2],
-            "WorkGroup": [16, 16, 1],
-            "DepthU": 16,
-            "GlobalSplitU": 1,
-            "PrefetchGlobalRead": 2,
-            "PrefetchLocalRead": 0,
-            "ScheduleIterAlg": 3,
-            "WorkGroupMapping": 16,
-            "StaggerU": 32,
-            "StaggerUMapping": 0,
-            "SourceSwap": 1,
-            "1LDSBuffer": 0,
-            "ClusterLocalRead": 0,
-            "TransposeLDS": 2,
-            "VectorWidthB": 1,
-            "GlobalReadVectorWidthA": 8,
-            "GlobalReadVectorWidthB": 8,
-            "StoreVectorWidth": -1,
-            "StorePriorityOpt": True,
-            "NumElementsPerBatchStore": 16,
-            "LdsBlockSizePerPadA": 128,
-            "LdsBlockSizePerPadB": 128,
-            "LdsPadA": 8,
-            "LdsPadB": 8,
-        },
-        # Small square checked-in-style seed for the low-M/N pilot shapes.
-        {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 1, 1, 2, 2],
-            "WorkGroup": [16, 16, 1],
-            "DepthU": 32,
-            "GlobalSplitU": 1,
-            "PrefetchGlobalRead": 2,
-            "PrefetchLocalRead": 1,
-            "ScheduleIterAlg": 3,
-            "WorkGroupMapping": 8,
-            "StaggerU": 32,
-            "StaggerUMapping": 1,
-            "SourceSwap": 0,
-            "1LDSBuffer": 0,
-            "ClusterLocalRead": 1,
-            "TransposeLDS": 0,
-            "VectorWidthB": 1,
-            "GlobalReadVectorWidthA": 2,
-            "GlobalReadVectorWidthB": 1,
-            "StoreVectorWidth": 1,
-            "StorePriorityOpt": False,
-            "NumElementsPerBatchStore": 0,
-            "LdsBlockSizePerPadA": 1024,
-            "LdsBlockSizePerPadB": 1024,
-            "LdsPadA": 16,
-            "LdsPadB": 16,
-        },
-        # N-skinny / M-skinny checked-in-style seeds.
-        {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 1, 1, 1, 4],
-            "WorkGroup": [16, 16, 1],
-            "DepthU": 32,
-            "GlobalSplitU": 1,
-            "PrefetchGlobalRead": 2,
-            "PrefetchLocalRead": 1,
-            "ScheduleIterAlg": 3,
-            "WorkGroupMapping": 8,
-            "StaggerU": 32,
-            "StaggerUMapping": 1,
-            "SourceSwap": 0,
-            "1LDSBuffer": 0,
-            "ClusterLocalRead": 1,
-            "TransposeLDS": 0,
-            "VectorWidthB": 1,
-            "GlobalReadVectorWidthA": 2,
-            "GlobalReadVectorWidthB": 8,
-            "StoreVectorWidth": 1,
-            "StorePriorityOpt": False,
-            "NumElementsPerBatchStore": 0,
-            "LdsBlockSizePerPadA": 512,
-            "LdsBlockSizePerPadB": 2048,
-            "LdsPadA": 16,
-            "LdsPadB": 16,
-        },
-        {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 1, 1, 4, 1],
-            "WorkGroup": [16, 16, 1],
-            "DepthU": 32,
-            "GlobalSplitU": 1,
-            "PrefetchGlobalRead": 2,
-            "PrefetchLocalRead": 1,
-            "ScheduleIterAlg": 3,
-            "WorkGroupMapping": 8,
-            "StaggerU": 32,
-            "StaggerUMapping": 1,
-            "SourceSwap": 1,
-            "1LDSBuffer": 0,
-            "ClusterLocalRead": 1,
-            "TransposeLDS": 0,
-            "VectorWidthB": 1,
-            "GlobalReadVectorWidthA": 8,
-            "GlobalReadVectorWidthB": 2,
-            "StoreVectorWidth": 1,
-            "StorePriorityOpt": False,
-            "NumElementsPerBatchStore": 0,
-            "LdsBlockSizePerPadA": 2048,
-            "LdsBlockSizePerPadB": 512,
-            "LdsPadA": 16,
-            "LdsPadB": 16,
-        },
-        # GSU probe.
-        {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 3, 3, 2, 2],
-            "WorkGroup": [16, 16, 1],
-            "DepthU": 32,
-            "GlobalSplitU": 2,
-            "PrefetchGlobalRead": 1,
-            "PrefetchLocalRead": 1,
-            "ScheduleIterAlg": 2,
-            "WorkGroupMapping": 5,
-            "StaggerU": 8,
-            "StaggerUMapping": 0,
-            "SourceSwap": 1,
-            "1LDSBuffer": 1,
-            "ClusterLocalRead": 0,
-            "VectorWidthB": 2,
-            "GlobalReadVectorWidthA": 8,
-            "GlobalReadVectorWidthB": 8,
-        },
-    ]
-    return [make_candidate(seed, source="seed") for seed in seeds]
+def _random_domain_overrides(rng: random.Random) -> dict[str, Any]:
+    return {name: rng.choice(values) for name, values in DOMAINS.items()}
 
 
-def documented_winner_candidate() -> Candidate:
-    """Current documented 8192^3 FP16 NT HHS winner, for ground-truth checks only. May change in future."""
-    return make_candidate(
-        {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 4, 4, 2, 2],
-            "WorkGroup": [16, 16, 1],
-            "DepthU": 16,
-            "GlobalSplitU": 1,
-            "PrefetchGlobalRead": 1,
-            "PrefetchLocalRead": 1,
-            "ScheduleIterAlg": 3,
-            "WorkGroupMapping": 8,
-            "StaggerU": 32,
-            "StaggerUMapping": 0,
-            "SourceSwap": 1,
-            "1LDSBuffer": 1,
-            "ClusterLocalRead": 0,
-            "VectorWidthB": 2,
-            "GlobalReadVectorWidthA": 8,
-            "GlobalReadVectorWidthB": 8,
-            "StorePriorityOpt": False,
-            "NumElementsPerBatchStore": 10,
-        },
-        source="documented_winner",
-    )
-
-
-def _random_linked_overrides(rng: random.Random) -> dict[str, Any]:
-    overrides = {name: rng.choice(values) for name, values in DOMAINS.items()}
-    transpose_lds, block_a, block_b, pad_a, pad_b = rng.choice(tuple(LDS_PAD_PROFILES))
-    overrides.update(
-        {
-            "TransposeLDS": transpose_lds,
-            "LdsBlockSizePerPadA": block_a,
-            "LdsBlockSizePerPadB": block_b,
-            "LdsPadA": pad_a,
-            "LdsPadB": pad_b,
-        }
-    )
-    if transpose_lds == 2:
-        overrides["PrefetchGlobalRead"] = 2
-        overrides["PrefetchLocalRead"] = 0
-        overrides["VectorWidthB"] = 1
-    if overrides["PrefetchGlobalRead"] == 0 and overrides["1LDSBuffer"] == 0:
-        overrides["1LDSBuffer"] = 1
-    if (
-        overrides["DepthU"] == 64
-        and overrides["GlobalReadVectorWidthA"] == 1
-        and overrides["GlobalReadVectorWidthB"] == 1
-    ):
-        overrides[rng.choice(("GlobalReadVectorWidthA", "GlobalReadVectorWidthB"))] = 2
-    if overrides["StoreSyncOpt"] and overrides["NumElementsPerBatchStore"] == 0:
-        overrides["NumElementsPerBatchStore"] = rng.choice([8, 10, 12, 16])
-    if overrides["GroupLoadStore"]:
-        overrides["StorePriorityOpt"] = True
-        overrides["NumElementsPerBatchStore"] = rng.choice([8, 10, 12])
-    return overrides
+def _random_mechanical_overrides(rng: random.Random) -> dict[str, Any]:
+    return _repair_linked_params(defaulted_params(_random_domain_overrides(rng)), rng=rng)
 
 
 def random_candidate(rng: random.Random, *, source: str = "random") -> Candidate:
     for _ in range(1000):
         try:
-            return make_candidate(_random_linked_overrides(rng), source=source)
+            return make_candidate(_random_mechanical_overrides(rng), source=source)
         except ValueError:
             continue
     raise RuntimeError("failed to generate a valid random candidate")
@@ -492,12 +371,5 @@ def random_candidates(count: int, *, seed: int = 1) -> list[Candidate]:
     out: dict[str, Candidate] = {}
     while len(out) < count:
         cand = random_candidate(rng)
-        out[cand.hash] = cand
-    return list(out.values())
-
-
-def seed_and_random_candidates(num_random: int, *, seed: int = 1) -> list[Candidate]:
-    out: dict[str, Candidate] = {}
-    for cand in known_seed_candidates() + random_candidates(num_random, seed=seed):
         out[cand.hash] = cand
     return list(out.values())

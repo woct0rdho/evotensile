@@ -4,7 +4,6 @@ import yaml
 
 from evotensile.candidate import Candidate
 from evotensile.manifest import write_manifest
-from evotensile.search_space import documented_winner_candidate
 from evotensile.shapes import Shape
 from evotensile.solution_mapping import build_solution_candidate_mapper, solution_matches_candidate
 from evotensile.tensilelite_keys import (
@@ -18,6 +17,7 @@ from evotensile.tensilelite_keys import (
     STORE_VECTOR_WIDTH_KEY,
     WORK_GROUP_KEY,
 )
+from tests.helpers import DOCUMENTED_WINNER_CANDIDATE
 
 
 def _final_solution_from_candidate(candidate: Candidate, *, solution_index: int = 0) -> dict:
@@ -56,7 +56,7 @@ def _write_solution_yaml(path: Path, shape: Shape, solution: dict) -> None:
 
 
 def test_solution_mapping_uses_final_yaml_not_group_order(tmp_path: Path):
-    base = documented_winner_candidate()
+    base = DOCUMENTED_WINNER_CANDIDATE
     deduped = Candidate({**base.canonical_params(), STORE_VECTOR_WIDTH_KEY: 1}, source="dedup_equivalent")
     rejected = Candidate({**base.canonical_params(), "DepthU": 32}, source="rejected_or_different")
     shape = Shape(512, 128, 1, 256)
@@ -78,7 +78,7 @@ def test_solution_mapping_uses_final_yaml_not_group_order(tmp_path: Path):
 
 
 def test_solution_mapping_ignores_derived_expand_pointer_swap():
-    candidate = documented_winner_candidate()
+    candidate = DOCUMENTED_WINNER_CANDIDATE
     solution = _final_solution_from_candidate(candidate)
     solution["ExpandPointerSwap"] = True
 
@@ -89,7 +89,7 @@ def test_solution_mapping_ignores_derived_expand_pointer_swap():
 def test_solution_mapping_ignores_tlds2_derived_buffer_and_local_read_fields():
     candidate = Candidate(
         {
-            **documented_winner_candidate().canonical_params(),
+            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
             "1LDSBuffer": 0,
             "PrefetchGlobalRead": 2,
             "PrefetchLocalRead": 0,
@@ -114,7 +114,7 @@ def test_solution_mapping_ignores_tlds2_derived_buffer_and_local_read_fields():
 def test_solution_mapping_ignores_inactive_stagger_derived_fields():
     candidate = Candidate(
         {
-            **documented_winner_candidate().canonical_params(),
+            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
             "StaggerU": 0,
             "StaggerUMapping": 1,
             "StaggerUStride": 256,
@@ -131,7 +131,7 @@ def test_solution_mapping_ignores_inactive_stagger_derived_fields():
 def test_solution_mapping_keeps_active_stagger_fields_strict():
     candidate = Candidate(
         {
-            **documented_winner_candidate().canonical_params(),
+            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
             "StaggerU": 8,
             "StaggerUMapping": 1,
             "StaggerUStride": 256,

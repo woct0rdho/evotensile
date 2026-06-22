@@ -105,7 +105,7 @@ def benchmark_problem(
 
     ptype = dict(FP16_NT_HHS_PROBLEM_TYPE if problem_type is None else problem_type)
 
-    group_entries = [c.group_entry() for c in candidates]
+    group_entries = [c.canonical_params() for c in candidates]
     problem_sizes = [{"Exact": FlowList(shape.exact_list())} for shape in shapes]
 
     size_group = {

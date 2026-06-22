@@ -1,3 +1,4 @@
+import itertools
 import math
 import random
 from collections import Counter
@@ -12,7 +13,7 @@ from evotensile.search.encoding import (
     hamming_distance,
     ordered_domain_values,
 )
-from evotensile.search_space import make_candidate
+from evotensile.search_space import explain_invalid_nt_hhs, make_candidate, repair_linked_overrides
 
 
 def _ranked_genomes(parents: list[Candidate]) -> list[tuple[Candidate, tuple[int, ...]]]:
@@ -79,26 +80,29 @@ def _nearest_elite(genome: tuple[int, ...], elites: Sequence[tuple[int, ...]]) -
     return min(elites, key=lambda elite: hamming_distance(genome, elite))
 
 
+NT_HHS_LINKAGE_GROUPS = (
+    ("MatrixInstruction", "WorkGroup", "DepthU", "GlobalSplitU"),
+    ("TransposeLDS", "LdsBlockSizePerPadA", "LdsBlockSizePerPadB", "LdsPadA", "LdsPadB"),
+    ("PrefetchGlobalRead", "PrefetchLocalRead", "1LDSBuffer", "ClusterLocalRead", "VectorWidthB"),
+    ("GlobalReadVectorWidthA", "GlobalReadVectorWidthB", "VectorWidthB"),
+    ("ScheduleIterAlg", "WorkGroupMapping", "StaggerU", "StaggerUMapping", "SourceSwap"),
+    ("StorePriorityOpt", "NumElementsPerBatchStore", "StoreSyncOpt", "GroupLoadStore", "StoreVectorWidth"),
+)
 _PRIORITY_GROUPS = (
     ("ScheduleIterAlg", "StorePriorityOpt"),
     ("ScheduleIterAlg", "StorePriorityOpt", "NumElementsPerBatchStore"),
     ("StorePriorityOpt", "NumElementsPerBatchStore", "StoreSyncOpt", "GroupLoadStore"),
     ("PrefetchGlobalRead", "PrefetchLocalRead", "1LDSBuffer", "TransposeLDS"),
     ("SourceSwap", "ClusterLocalRead", "TransposeLDS"),
-    ("GlobalReadVectorWidthA", "GlobalReadVectorWidthB", "VectorWidthB"),
-    ("LdsBlockSizePerPadA", "LdsBlockSizePerPadB", "LdsPadA", "LdsPadB"),
-    ("WorkGroupMapping", "StaggerU", "StaggerUMapping"),
     ("MatrixInstruction", "DepthU"),
     ("GlobalSplitU", "DepthU"),
+    *NT_HHS_LINKAGE_GROUPS,
 )
 
 
 def _group_value_products(names: tuple[str, ...], current: dict[str, object]):
-    products: list[list[object]] = [[]]
-    for name in names:
-        values = ordered_domain_values(name, current.get(name))
-        products = [prefix + [value] for prefix in products for value in values]
-    return products
+    value_lists = [ordered_domain_values(name, current.get(name)) for name in names]
+    return itertools.product(*value_lists)
 
 
 def gomea_neighborhood_candidates(
@@ -113,6 +117,7 @@ def gomea_neighborhood_candidates(
     if count <= 0:
         return []
     out: list[Candidate] = []
+    seen_hashes = set(exclude or ())
     groups = [*_PRIORITY_GROUPS, *tuple((name,) for group in _PRIORITY_GROUPS for name in group)]
     seen_groups: list[tuple[str, ...]] = []
     for group in groups:
@@ -133,13 +138,35 @@ def gomea_neighborhood_candidates(
                         candidate = make_candidate(trial, source="gomea", parents=[parent.hash])
                     except ValueError:
                         continue
+                    if candidate.hash in seen_hashes:
+                        continue
+                    seen_hashes.add(candidate.hash)
                     out.append(candidate)
                     next_frontier.append(candidate.canonical_params())
-                    deduped = dedupe_candidates(out, exclude=exclude)
-                    if len(deduped) >= count:
-                        return deduped[:count]
+                    if len(out) >= count:
+                        return out
             frontier = [*frontier[:1], *next_frontier[:beam_width]]
-    return dedupe_candidates(out, exclude=exclude)[:count]
+    return out[:count]
+
+
+def _genome_with_group(base: tuple[int, ...], donor: tuple[int, ...], group: tuple[int, ...]) -> tuple[int, ...]:
+    genes = list(base)
+    for idx in group:
+        genes[idx] = donor[idx]
+    return tuple(genes)
+
+
+def _is_rule_valid_genome(genome: tuple[int, ...]) -> bool:
+    candidate = genome_to_candidate(genome, source="gomea", repair=True)
+    return not explain_invalid_nt_hhs(candidate.canonical_params())
+
+
+def _rule_valid_candidate(genome: tuple[int, ...], *, source: str, parents: tuple[str, ...]) -> Candidate:
+    params = genome_to_candidate(genome, source=source, parents=parents, repair=True).canonical_params()
+    params = repair_linked_overrides(params)
+    if explain_invalid_nt_hhs(params):
+        raise ValueError("candidate failed NT HHS invalidity rules")
+    return make_candidate(params, source=source, parents=parents)
 
 
 def gomea_candidates(
@@ -163,7 +190,8 @@ def gomea_candidates(
     ranked = _ranked_genomes(parents)
     elites = ranked[: max(1, min(elite_count, len(ranked)))]
     elite_genomes = [genome for _, genome in elites]
-    fos = linkage_tree(elite_genomes)
+    rule_groups = [tuple(PARAM_NAMES.index(name) for name in group) for group in NT_HHS_LINKAGE_GROUPS]
+    fos = [*rule_groups, *linkage_tree(elite_genomes)]
     out: list[Candidate] = []
     attempts = 0
     max_attempts = max(200, count * 100)
@@ -171,23 +199,31 @@ def gomea_candidates(
         attempts += 1
         base_candidate, base_genome = rng.choice(ranked)
         donor_candidate, donor_genome = rng.choice(ranked)
-        genes = list(base_genome)
+        genes = base_genome
         groups = list(fos)
         rng.shuffle(groups)
         changed = False
         for group in groups[: rng.randint(1, max(1, min(4, len(groups))))]:
-            for idx in group:
-                genes[idx] = donor_genome[idx]
-            changed = True
-        if include_forced_improvement and (not changed or tuple(genes) == base_genome):
+            trial = _genome_with_group(genes, donor_genome, group)
+            try:
+                if _is_rule_valid_genome(trial):
+                    genes = trial
+                    changed = True
+            except ValueError:
+                continue
+        if include_forced_improvement and (not changed or genes == base_genome):
             elite = _nearest_elite(base_genome, elite_genomes)
             group = rng.choice(fos)
-            for idx in group:
-                genes[idx] = elite[idx]
+            trial = _genome_with_group(genes, elite, group)
+            try:
+                if _is_rule_valid_genome(trial):
+                    genes = trial
+            except ValueError:
+                pass
         try:
             out.append(
-                genome_to_candidate(
-                    tuple(genes),
+                _rule_valid_candidate(
+                    genes,
                     source="gomea",
                     parents=(base_candidate.hash, donor_candidate.hash),
                 )

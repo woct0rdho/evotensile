@@ -7,11 +7,7 @@ from evotensile.search.encoding import (
     dedupe_candidates,
     genome_to_candidate,
 )
-from evotensile.search_space import DOMAINS, random_candidate
-
-
-def _random_valid_genome(rng: random.Random) -> tuple[int, ...]:
-    return candidate_to_genome(random_candidate(rng, source="de_probe"))
+from evotensile.search_space import DOMAINS
 
 
 def _mutate_gene(
@@ -41,7 +37,6 @@ def differential_evolution_candidates(
     seed: int = 1,
     crossover_rate: float = 0.8,
     random_gene_rate: float = 0.1,
-    random_parent_count: int = 32,
     exclude: set[str] | None = None,
 ) -> list[Candidate]:
     """Generate categorical-DE candidates from parent configs.
@@ -51,17 +46,11 @@ def differential_evolution_candidates(
     from a third donor or randomly re-sampled. This keeps candidates in the
     discrete TensileLite domains while still mixing multi-gene parent structure.
     """
-    if count <= 0:
+    if count <= 0 or len(parents) < 4:
         return []
     rng = random.Random(seed)
     pool = list(parents)
-    if len(pool) < 4:
-        from evotensile.search.random_search import initial_random_batch
-
-        pool.extend(initial_random_batch(random_parent_count, seed=seed + 17))
     genomes = [candidate_to_genome(candidate) for candidate in pool]
-    while len(genomes) < 4:
-        genomes.append(_random_valid_genome(rng))
 
     out: list[Candidate] = []
     attempts = 0

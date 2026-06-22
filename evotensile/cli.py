@@ -9,6 +9,7 @@ from .candidate import Candidate, Shape
 from .database import EvoTensileDB
 from .profile import DEFAULT_PROFILE, PROFILES, TargetProfile, get_profile
 from .protocol import BenchmarkProtocol
+from .rejection_mining import classification_counts, summarize_rejection_logs
 from .runner import DEFAULT_TENSILELITE_BIN
 from .scheduler import (
     DEFAULT_CROSSOVER_RATE,
@@ -29,8 +30,9 @@ from .scheduler import (
     propose_candidates,
     repair_seed_candidates,
 )
+from .search.coverage import candidate_coverage
 from .search.random_search import initial_random_batch
-from .search_space import DOMAINS, MATRIX_INSTRUCTIONS, known_seed_candidates, macro_tile
+from .search_space import DOMAINS, MATRIX_INSTRUCTIONS, macro_tile
 from .shapes import parse_shape
 
 
@@ -363,10 +365,37 @@ def _add_schedule_args(parser: argparse.ArgumentParser, *, repair: bool = False)
     _add_adaptive_args(parser)
 
 
+def cmd_proposal_coverage(args: argparse.Namespace) -> int:
+    profile = _profile(args)
+    db = EvoTensileDB.connect(args.db)
+    db.init()
+    shapes = _parse_shapes(args, profile)
+    protocol = _protocol(args, profile)
+    candidates = _propose_candidates_for_shapes(
+        db,
+        args,
+        problem_hash=profile.problem_type_hash,
+        protocol_hash=profile.benchmark_protocol_hash(protocol),
+        shapes=shapes,
+        proposal_shape_id=args.proposal_shape_id,
+    )
+    coverage = candidate_coverage(candidates)
+    payload = {
+        **coverage,
+        "profile": profile.name,
+        "proposal": args.proposal,
+        "num_random": args.num_random,
+        "gomea_count": args.gomea_count,
+        "de_count": args.de_count,
+        "local_count": args.local_count,
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
 def cmd_summarize_space(args: argparse.Namespace) -> int:
     profile = _profile(args)
     candidates = _candidates(args)
-    seeds = known_seed_candidates()
     print("EvoTensile search-space summary")
     print(f"  profile: {profile.name}")
     print(f"  problem_type_hash: {profile.problem_type_hash}")
@@ -381,8 +410,7 @@ def cmd_summarize_space(args: argparse.Namespace) -> int:
         product *= len(values)
         print(f"    {name}: {len(values)}")
     print(f"  Raw listed product before cheap constraints: {product:,}")
-    print(f"  Deterministic seeds: {len(seeds)}")
-    print(f"  Generated candidates: {len(candidates)} ({args.num_random} requested random + seeds, deduped)")
+    print(f"  Generated candidates: {len(candidates)} ({args.num_random} requested random, deduped)")
     print(f"  Profile shapes: {len(profile.shapes())}")
     return 0
 
@@ -429,6 +457,37 @@ def cmd_rank_evals(args: argparse.Namespace) -> int:
             f"{summary.median_time_us if summary.median_time_us is not None else ''},"
             f"{summary.best_time_us if summary.best_time_us is not None else ''}"
         )
+    return 0
+
+
+def cmd_summarize_rejections(args: argparse.Namespace) -> int:
+    summaries = summarize_rejection_logs(args.paths)
+    counts = classification_counts(summaries)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "counts": counts,
+                    "logs": [summary.to_dict() for summary in summaries],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    print("classification,count")
+    for classification, count in sorted(counts.items()):
+        print(f"{classification},{count}")
+    if args.verbose:
+        print("path,classification,actual_solutions,total_solutions,solution_stage,messages")
+        for summary in summaries:
+            print(
+                f"{summary.path},{summary.classification},"
+                f"{summary.actual_solutions if summary.actual_solutions is not None else ''},"
+                f"{summary.total_solutions if summary.total_solutions is not None else ''},"
+                f"{summary.solution_stage or ''},"
+                f"{' | '.join(summary.messages)}"
+            )
     return 0
 
 
@@ -670,6 +729,20 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument("--num-random", type=int, default=DEFAULT_NUM_RANDOM)
     cmd.add_argument("--seed", type=int, default=1)
     cmd.set_defaults(func=cmd_summarize_space)
+
+    cmd = sub.add_parser("proposal-coverage", help="Summarize generated proposal coverage without executing")
+    cmd.add_argument("--db", required=True)
+    _add_candidate_shape_args(cmd)
+    _add_cache_identity_args(cmd)
+    _add_protocol_args(cmd)
+    _add_proposal_args(cmd)
+    cmd.set_defaults(func=cmd_proposal_coverage)
+
+    cmd = sub.add_parser("summarize-rejections", help="Classify TensileLite rejection logs")
+    cmd.add_argument("paths", nargs="+", help="Log files or run directories to scan")
+    cmd.add_argument("--json", action="store_true", help="Emit structured JSON")
+    cmd.add_argument("--verbose", action="store_true", help="Print per-log classifications")
+    cmd.set_defaults(func=cmd_summarize_rejections)
 
     cmd = sub.add_parser("schedule-batches", help="Cache-aware batch scheduling, build, runner, and ingestion")
     cmd.add_argument("--db", required=True)

@@ -6,7 +6,7 @@ EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It
 
 The repository currently includes one concrete target configuration, but the core code is intended to stay reusable: candidate hashing, shape handling, search-space encoding, YAML emission, runner orchestration, benchmark-protocol hashing, validation-aware ingestion, ranking, adaptive finalist top-ups, hipBLASLt baseline import, and logic-file update helpers.
 
-Target-specific notes, exact artifacts, measured results, and remaining kernel-specific work are in `PLAN.md`.
+Target-specific notes, exact artifacts, measured results, and remaining kernel-specific work are in `docs/plan.md`.
 
 ## Workflow
 
@@ -81,7 +81,7 @@ python3 -m evotensile.cli schedule-batches \
 
 The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each SQLite DB file is one evidence namespace for a target hardware/environment/campaign. Use separate DB paths when comparing incompatible campaigns. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout. The bundled profile defaults to all CPU threads for TensileLite compile work, a `1800s` TensileLite build timeout, a `600s` structured-runner timeout, and continuing across batch failures; pass `0` to a timeout flag to disable it or `--stop-on-error` to fail fast.
 
-Useful proposal modes include `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can seed first-pass proposals through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
+Useful proposal modes include `random`, `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`; `seed-random*` names are compatibility aliases for random-plus-evidence proposals, not fixed known-seed injection. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can initialize non-random proposal operators through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
 
 Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, and `--num-elements-to-validate`. `NumBenchmarks` and `NumElementsToValidate` are execution budgets rather than cache identity fields, so adaptive top-ups pool with the fully validated timing evidence. The default uses full validation with `NumElementsToValidate=-1`; unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
 

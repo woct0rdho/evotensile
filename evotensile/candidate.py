@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -49,10 +50,6 @@ class Candidate:
         }
         return json.dumps(payload, sort_keys=True, indent=2)
 
-    def group_entry(self) -> dict[str, Any]:
-        """Return params suitable for one TensileLite Groups entry."""
-        return self.canonical_params()
-
 
 @dataclass(frozen=True)
 class Shape:
@@ -70,17 +67,13 @@ class Shape:
         return [self.m, self.n, self.batch, self.k]
 
     def features(self) -> dict[str, float]:
-        import math
-
         m = float(self.m)
         n = float(self.n)
         k = float(self.k)
-        b = float(self.batch)
         return {
             "log2_m": math.log2(m),
             "log2_n": math.log2(n),
             "log2_k": math.log2(k),
-            "log2_batch": math.log2(max(b, 1.0)),
             "log2_m_over_n": math.log2(m / n),
             "log2_k_over_m": math.log2(k / m),
             "log2_k_over_n": math.log2(k / n),
