@@ -10,15 +10,13 @@ Target-specific notes, exact artifacts, measured results, and remaining kernel-s
 
 ## Workflow
 
-A normal EvoTensile tuning loop is:
-
-1. Define problem, shapes, and search space.
-2. Search configs with validation-gated TensileLite measurements, including current hipBLASLt baseline import.
-3. Inspect and rank cached results.
-4. Adaptively top up uncertain finalists until timing confidence is sufficient.
-5. Update checked-in hipBLASLt GridBased logic YAMLs directly from the DB.
-6. Rebuild hipBLASLt and validate installed performance.
-7. Verify installed hipBLASLt correctness with repeatable CPU-reference checks.
+1. Define problem type, input shapes, and config search space.
+2. Search configs with imported hipBLASLt baseline and evolutionary algorithms.
+3. Repair local outliers by rerunning search with neighbor-seeded configs.
+4. Inspect and rank results.
+5. Update hipBLASLt configs.
+6. Rebuild and reinstall hipBLASLt.
+7. Verify correctness and performance of reinstalled hipBLASLt.
 
 ### 1. Define Problem, Shapes, And Search Space
 
@@ -34,7 +32,7 @@ The current bundled profile is `gfx1151-nt-hhs`. Profile code derives `problem_t
 Inspect a target search space with:
 
 ```bash
-python3 -m evotensile.cli summarize-space --num-random 128
+python3 -m evotensile.cli summarize-space
 ```
 
 ### 2. Search Configs
@@ -48,9 +46,6 @@ python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/search \
   --profile gfx1151-nt-hhs \
-  --limit-shapes 100 \
-  --candidate-batch-size 32 \
-  --shape-batch-size 100 \
   --dry-run
 ```
 
@@ -72,12 +67,7 @@ python3 scripts/import_hipblaslt_baselines.py \
   --db out/evotensile.sqlite \
   --output-dir out/hipblaslt_baselines \
   --profile gfx1151-nt-hhs \
-  --bench ~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench \
-  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/gfx1151" \
-  --runner-bin ./build/evotensile-structured-runner \
-  --build-timeout 1800 \
-  --runner-timeout 600 \
-  --keep-going
+  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/gfx1151"
 ```
 
 Run planned batches with adaptive sampling:
@@ -86,34 +76,37 @@ Run planned batches with adaptive sampling:
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/search \
-  --profile gfx1151-nt-hhs \
-  --proposal seed-random-gomea \
-  --num-random 64 \
-  --gomea-count 64 \
-  --transfer-shapes 4 \
-  --transfer-per-shape 2 \
-  --candidate-batch-size 32 \
-  --shape-batch-size 100 \
-  --compile-threads 4 \
-  --runner-bin ./build/evotensile-structured-runner \
-  --build-timeout 1800 \
-  --runner-timeout 600 \
-  --adaptive-sampling \
-  --adaptive-initial-samples 3 \
-  --adaptive-min-samples 20 \
-  --adaptive-max-samples 80 \
-  --keep-going
+  --profile gfx1151-nt-hhs
 ```
 
-The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each SQLite DB file is one evidence namespace for a target hardware/environment/campaign. Use separate DB paths when comparing incompatible campaigns. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout.
+The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each SQLite DB file is one evidence namespace for a target hardware/environment/campaign. Use separate DB paths when comparing incompatible campaigns. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout. The bundled profile defaults to all CPU threads for TensileLite compile work, a `1800s` TensileLite build timeout, a `600s` structured-runner timeout, and continuing across batch failures; pass `0` to a timeout flag to disable it or `--stop-on-error` to fail fast.
 
-Useful proposal modes include `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can seed first-pass proposals through `--transfer-shapes` / `--transfer-per-shape`.
+Useful proposal modes include `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can seed first-pass proposals through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
 
 Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, and `--num-elements-to-validate`. `NumBenchmarks` and `NumElementsToValidate` are execution budgets rather than cache identity fields, so adaptive top-ups pool with the fully validated timing evidence. The default uses full validation with `NumElementsToValidate=-1`; unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
 
 Validation is a hard gate: only `status=ok` rows with passing validation, or GPU-only top-up rows backed by prior passing validation for the same pair, should be ranked or used as positive cache entries. Unknown validation is never ranked as positive.
 
-### 3. Inspect And Rank Cached Results
+Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches` uses adaptive sampling by default: it starts with a small timing budget, then appends only the missing samples for statistically plausible contenders. The first validated run for each `(shape, candidate)` pair performs CPU/OpenBLAS validation; later GPU-only top-ups use `NumElementsToValidate=0` and are accepted only when prior validation evidence exists. Use `--fixed-sampling` only for debugging or fixed-budget utility runs.
+
+Structured scheduler runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
+
+### 3. Repair Local Outliers
+
+Before manual inspection or GridBased updates, `repair-outliers` can identify shapes whose current best config sits below a robust local neighbor envelope in log GFLOP/s space. It then reruns only those shapes, seeding candidates from the outlier's current winner, nearest-shape winners/top candidates, and the selected proposal mode.
+
+```bash
+python3 -m evotensile.cli repair-outliers \
+  --db out/evotensile.sqlite \
+  --output-dir out/repair_outliers \
+  --profile gfx1151-nt-hhs \
+  --num-random 32 \
+  --gomea-count 32
+```
+
+This is a search-budget heuristic, not a correctness rule: real performance cliffs from divisibility, edge handling, LDS pressure, or occupancy can legitimately sit below nearby shapes. The command writes `repair_metadata.json` with detected residuals, neighbors, candidate hashes, and planned/executed batch summaries.
+
+### 4. Inspect And Rank Cached Results
 
 Summarize cache status:
 
@@ -132,28 +125,14 @@ python3 -m evotensile.cli rank-evals \
   --min-samples 2
 ```
 
-Structured scheduler runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
-
-### 4. Adaptive Finalist Top-Ups
-
-Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches --adaptive-sampling` starts with a small timing budget, then appends only the missing samples for statistically plausible contenders. The first validated run for each `(shape, candidate)` pair performs CPU/OpenBLAS validation; later GPU-only top-ups use `NumElementsToValidate=0` and are accepted only when prior validation evidence exists.
-
-After adaptive sampling, `scripts/update_hipblaslt_gridbased_logic.py` queries validation-passed DB winners directly; no intermediate artifact is required.
-
 ### 5. Update hipBLASLt GridBased Logic
 
-Update checked-in hipBLASLt logic YAMLs directly from the SQLite DB. The updater is target-aware today; it defaults to the bundled gfx1151 HHS/HHS+AuxH/BBS/BBS+AuxB files.
+Update checked-in hipBLASLt logic YAMLs directly from the SQLite DB. The updater is target-aware today; it defaults to the bundled gfx1151 HHS/HHS+AuxH/BBS/BBS+AuxB files. No intermediate winner export is required.
 
 ```bash
 python3 scripts/update_hipblaslt_gridbased_logic.py \
   --db out/evotensile.sqlite \
-  --profile gfx1151-nt-hhs \
-  --min-samples 10 \
-  --dry-run
-python3 scripts/update_hipblaslt_gridbased_logic.py \
-  --db out/evotensile.sqlite \
-  --profile gfx1151-nt-hhs \
-  --min-samples 10
+  --profile gfx1151-nt-hhs
 ```
 
 The updater writes TensileLite-style YAML formatting, retargets solution names, trims generated solution dictionaries to the key schema/order used by existing checked-in GridBased YAMLs, strips benchmark-only embedded `ProblemType`, and applies target-specific build-valid normalizations.
@@ -192,8 +171,7 @@ After performance validation, run repeatable installed-library correctness check
 cd ~/evotensile
 python3 scripts/verify_installed_hipblaslt.py \
   --bench ~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench \
-  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/gfx1151" \
-  --output-dir out/hipblaslt_correctness
+  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/gfx1151"
 ```
 
 For broader upstream regression coverage, run `hipblaslt-test` with GTest XML output:
@@ -236,14 +214,18 @@ $$
 The score $s_c$ is the median log time, so lower is better. The robust log-noise estimate is:
 
 $$
-\sigma_c = \max\left(\mathrm{stdev}(y_c), 1.483 \mathrm{MAD}(y_c), \frac{\mathrm{IQR}(y_c)}{1.349}\right).
+\sigma_c = \max\left(\mathrm{stdev}(y_c), 1.4826 \mathrm{MAD}(y_c), \frac{\mathrm{IQR}(y_c)}{1.349}\right).
 $$
+
+The constants are normal-consistency factors for robust scale estimates. `1.4826` converts median absolute deviation to a standard-deviation estimate under normal noise because $1 / \Phi^{-1}(0.75) \approx 1.4826$. `1.349` converts IQR to a standard-deviation estimate because $\Phi^{-1}(0.75) - \Phi^{-1}(0.25) \approx 1.349$.
 
 The approximate standard error of the median log time is:
 
 $$
 \mathrm{SE}_c = 1.253 \frac{\sigma_c}{\sqrt{n}}.
 $$
+
+Here `1.253` is $\sqrt{\pi / 2}$, the asymptotic ratio between the standard error of a sample median and a sample mean for normally distributed noise.
 
 Let $b$ be the current best candidate by lowest $s_c$. For another candidate $c$, define the log-time gap and confidence interval:
 
@@ -275,31 +257,93 @@ $$
 
 The scheduled target is the maximum requested $n_c$, rounded up to `--adaptive-sample-step` and clamped to `--adaptive-min-samples` / `--adaptive-max-samples`. `--adaptive-max-k` limits how many plausible candidates are topped up for one shape.
 
-Pseudocode:
-
-```text
-for each shape:
-  samples = validation-passed timing rows for this DB/profile/protocol
-  stats = robust log-time stats per candidate
-  best = candidate with lowest median log time
-  plausible = [best]
-
-  for contender in candidates sorted by median log time:
-    gap = contender.score - best.score
-    ci = gap ± z * sqrt(best.se^2 + contender.se^2)
-    if ci.low <= epsilon_log:
-      plausible.append(contender)
-
-  if plausible == [best]:
-    accept best
-  elif plausible candidates are pairwise equivalent within epsilon_log:
-    accept the fastest as representative of an equivalent set
-  else:
-    target_samples = estimate_needed_samples(plausible)
-    schedule only missing samples for plausible[:adaptive_max_k]
-```
-
 Correctness is handled separately from repetition count. The first accepted run for a `(shape, candidate)` pair performs CPU/OpenBLAS validation. Later adaptive top-ups set `NumElementsToValidate=0` and are accepted only if the DB already contains passing validation evidence for that pair.
+
+### Repair Outlier Selection
+
+After search, `repair-outliers` looks for shapes whose current best measured config is substantially below what nearby shapes imply. It uses performance, not time, because neighboring shapes can have different FLOP counts.
+
+For shape $s$, let $P_s$ be the median GFLOP/s of its current DB-ranked winner, using only shapes with at least `--outlier-min-samples` samples. The default is `10` samples so repair uses confirmed/adaptive evidence rather than early screening noise. Define log performance:
+
+$$
+p_s = \log(P_s).
+$$
+
+Each shape is embedded in log/ratio feature space:
+
+$$
+x_s = \left[\log_2 M,\ \log_2 N,\ \log_2 K,\ \log_2(M/N),\ \log_2(K/M),\ \log_2(K/N)\right].
+$$
+
+Distance to another tuned shape $u$ is Euclidean distance:
+
+$$
+d(s,u) = \|x_s - x_u\|_2.
+$$
+
+For each target shape, EvoTensile takes the nearest $K$ other shapes with winners, where $K =$ `--neighbor-count` and defaults to `8`. The neighbor weight is:
+
+$$
+w_u = \frac{1}{\max(d(s,u), 0.125)}.
+$$
+
+The `0.125` floor prevents nearly duplicate shapes from getting infinite weight. In log2 feature units, `0.125` is one eighth of an octave, so it is small enough to still favor very close shapes while keeping the local fit numerically stable.
+
+The primary prediction is a weighted local linear fit around the target shape:
+
+$$
+p_u \approx \beta_0 + \beta^T(x_u - x_s).
+$$
+
+The fitted coefficients minimize:
+
+$$
+\sum_{u \in N_K(s)} w_u \left(p_u - \beta_0 - \beta^T(x_u - x_s)\right)^2 + \lambda\|\beta\|_2^2,
+$$
+
+with:
+
+$$
+\lambda = 10^{-3} \sum_{u \in N_K(s)} w_u.
+$$
+
+The `10^{-3}` ridge is a small numerical stabilizer for the slope terms only; the intercept $\beta_0$ is not penalized. The local-linear prediction at the target is the intercept, clipped to the neighbor log-performance range:
+
+$$
+\hat{p}_{s,\mathrm{lin}} = \mathrm{clip}\left(\beta_0,\ \min_{u \in N_K(s)} p_u,\ \max_{u \in N_K(s)} p_u\right).
+$$
+
+EvoTensile also computes a weighted upper-neighborhood envelope:
+
+$$
+\hat{p}_{s,\mathrm{env}} = Q_q\left(\{p_u\}_{u \in N_K(s)},\ \{w_u\}_{u \in N_K(s)}\right),
+$$
+
+where $q =$ `--envelope-quantile` and defaults to `0.75`. The `0.75` quantile is an upper-quartile envelope: more optimistic than the median, but less sensitive than the maximum to one unusually fast or noisy neighbor.
+
+The final predicted local envelope is conservative:
+
+$$
+\hat{p}_s = \min\left(\hat{p}_{s,\mathrm{lin}},\ \hat{p}_{s,\mathrm{env}}\right),
+$$
+
+falling back to $\hat{p}_{s,\mathrm{env}}$ if fewer than three neighbors are available for the linear fit.
+
+The repair residual is:
+
+$$
+r_s = \hat{p}_s - p_s.
+$$
+
+A shape is selected for repair when:
+
+$$
+r_s > \log(1 + \tau),
+$$
+
+where $\tau =$ `--outlier-threshold-pct` and defaults to `10%`. In other words, the current winner must be more than about `10%` below the local neighbor prediction in multiplicative performance terms. Selected shapes are sorted by residual, largest first, and `--max-outliers` can cap the repair set for staged runs.
+
+This test is intentionally heuristic. It identifies shapes worth more search budget; it does not prove the current winner is wrong, because real GEMM performance can have cliffs from tile divisibility, tails, LDS pressure, occupancy, or solution-selection discontinuities.
 
 ## Current Limitations
 

@@ -14,7 +14,6 @@ from evotensile.profile import PROFILES, TargetProfile, get_profile
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.solution_mapping import find_solution_yamls, solution_matches_candidate
 
-DEFAULT_DB = Path("out/grid100_full_20260618_repaired.sqlite")
 DEFAULT_LOGIC_DIR = (
     Path.home()
     / "rocm-libraries/projects/hipblaslt/library/src/amd_detail/rocblaslt/src/Tensile/Logic/asm_full/gfx1151/GridBased"
@@ -363,7 +362,6 @@ def update_logic_files(
     extra_solution_dirs: list[Path],
     logic_dir: Path,
     variant_names: list[str],
-    dry_run: bool,
 ) -> dict[str, Any]:
     db = EvoTensileDB.connect(db_path)
     logic_dir = logic_dir.resolve()
@@ -401,13 +399,12 @@ def update_logic_files(
             base_solutions=base_solutions,
             solution_key_order=solution_key_order,
         )
-        if not dry_run:
-            _write_yaml(path, updated)
+        _write_yaml(path, updated)
         files[variant_name] = {
             "path": str(path),
             "solution_count": solution_count,
             "exact_mapping_count": exact_count,
-            "written": not dry_run,
+            "written": True,
         }
 
     return {
@@ -425,14 +422,13 @@ def update_logic_files(
         "artifact_solution_pool_count": len(artifact_solutions),
         "reference_solution_key_count": len(solution_key_order),
         "files": files,
-        "dry_run": dry_run,
         "note": "No TensileLite run or hipBLASLt rebuild was performed.",
     }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", type=Path, default=DEFAULT_DB)
+    parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--profile", choices=sorted(PROFILES), default=None)
     parser.add_argument("--min-samples", type=int, default=10)
     parser.add_argument("--num-warmups", type=int, default=None)
@@ -443,7 +439,6 @@ def main() -> int:
     parser.add_argument("--solution-dir", type=Path, action="append", default=[])
     parser.add_argument("--logic-dir", type=Path, default=DEFAULT_LOGIC_DIR)
     parser.add_argument("--variant", action="append", choices=sorted(VARIANTS), default=[])
-    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     if not args.db.exists():
@@ -459,7 +454,6 @@ def main() -> int:
         extra_solution_dirs=args.solution_dir,
         logic_dir=args.logic_dir,
         variant_names=variant_names,
-        dry_run=args.dry_run,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

@@ -1,20 +1,23 @@
 import json
 from pathlib import Path
 
-from evotensile.cli import build_parser
+from evotensile.candidate import Shape
 from evotensile.cli import main as cli_main
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.scheduler import (
-    DEFAULT_GOMEA_COUNT,
-    DEFAULT_NUM_RANDOM,
-    DEFAULT_PROPOSAL,
+    detect_underperforming_shapes,
     execute_schedule,
     plan_batches,
     propose_candidates,
+    repair_seed_candidates,
 )
 from evotensile.search_space import documented_winner_candidate, known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
+
+
+def _time_us_for_gflops(shape: Shape, gflops: float) -> float:
+    return 2.0 * shape.m * shape.n * shape.batch * shape.k / (gflops * 1e9) * 1e6
 
 
 def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
@@ -268,6 +271,177 @@ def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
     assert transfer[0].parent_hashes == (candidates[1].hash,)
 
 
+def test_detect_underperforming_shapes_flags_local_envelope_gap(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = known_seed_candidates()[:4]
+    shapes = [
+        Shape(m=512, n=512, batch=1, k=512),
+        Shape(m=640, n=512, batch=1, k=512),
+        Shape(m=768, n=512, batch=1, k=512),
+        Shape(m=896, n=512, batch=1, k=512),
+        Shape(m=1024, n=512, batch=1, k=512),
+    ]
+    target = shapes[2]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes(shapes)
+    for shape in shapes:
+        candidate = candidates[0] if shape == target else candidates[1]
+        gflops = 800.0 if shape == target else 1000.0
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=_time_us_for_gflops(shape, gflops),
+            validation="PASSED",
+        )
+
+    outliers = detect_underperforming_shapes(
+        db,
+        shapes=shapes,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        min_samples=1,
+        neighbor_count=4,
+        envelope_quantile=0.75,
+        threshold_pct=10.0,
+    )
+
+    assert [outlier.shape.id for outlier in outliers] == [target.id]
+    assert outliers[0].candidate_hash == candidates[0].hash
+    assert outliers[0].predicted_neighbor_gflops > 990.0
+    assert outliers[0].residual_pct > 20.0
+
+
+def test_repair_seed_candidates_include_neighbor_top_candidates(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = known_seed_candidates()[:4]
+    target = Shape(m=768, n=512, batch=1, k=512)
+    neighbor = Shape(m=896, n=512, batch=1, k=512)
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes([target, neighbor])
+    db.insert_evaluation(
+        shape_id=target.id,
+        candidate_hash=candidates[0].hash,
+        run_id="cached",
+        status="ok",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        time_us=_time_us_for_gflops(target, 800.0),
+        validation="PASSED",
+    )
+    for candidate, gflops in ((candidates[1], 1000.0), (candidates[2], 950.0), (candidates[3], 900.0)):
+        db.insert_evaluation(
+            shape_id=neighbor.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=_time_us_for_gflops(neighbor, gflops),
+            validation="PASSED",
+        )
+    outlier = detect_underperforming_shapes(
+        db,
+        shapes=[target],
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        min_samples=1,
+        neighbor_count=1,
+        envelope_quantile=0.75,
+        threshold_pct=10.0,
+    )[0]
+
+    seeds = repair_seed_candidates(
+        db,
+        outliers=[outlier],
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        min_samples=1,
+        neighbor_per_shape=2,
+    )
+
+    assert [seed.source for seed in seeds] == ["repair-transfer", "repair-transfer", "repair-transfer"]
+    assert [seed.parent_hashes[0] for seed in seeds] == [
+        candidates[0].hash,
+        candidates[1].hash,
+        candidates[2].hash,
+    ]
+
+
+def test_repair_outliers_cli_writes_metadata(tmp_path: Path):
+    db_path = tmp_path / "sched.sqlite"
+    output_dir = tmp_path / "repair"
+    db = EvoTensileDB.connect(db_path)
+    db.init()
+    candidates = known_seed_candidates()[:3]
+    shapes = [
+        Shape(m=512, n=512, batch=1, k=512),
+        Shape(m=768, n=512, batch=1, k=512),
+        Shape(m=1024, n=512, batch=1, k=512),
+    ]
+    target = shapes[1]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes(shapes)
+    for shape in shapes:
+        candidate = candidates[0] if shape == target else candidates[1]
+        gflops = 700.0 if shape == target else 1000.0
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=_time_us_for_gflops(shape, gflops),
+            validation="PASSED",
+        )
+
+    rc = cli_main(
+        [
+            "repair-outliers",
+            "--db",
+            str(db_path),
+            "--output-dir",
+            str(output_dir),
+            "--shapes",
+            target.id.replace("m", "", 1).replace("_n", ",").replace("_b", ",").replace("_k", ","),
+            "--outlier-min-samples",
+            "1",
+            "--neighbor-count",
+            "2",
+            "--neighbor-per-shape",
+            "1",
+            "--num-random",
+            "0",
+            "--gomea-count",
+            "0",
+            "--local-count",
+            "0",
+            "--de-count",
+            "0",
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 0
+    metadata = json.loads((output_dir / "repair_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["outliers"][0]["shape_id"] == target.id
+    assert metadata["repair_seed_candidates"] == 2
+    assert metadata["planned_missing_pairs"] >= 1
+    assert metadata["executed_batches"] == []
+
+
 def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -356,14 +530,6 @@ def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
         "de",
         "gomea",
     }
-
-
-def test_schedule_cli_uses_evolutionary_defaults():
-    args = build_parser().parse_args(["schedule-batches", "--db", "db.sqlite", "--output-dir", "out"])
-
-    assert args.proposal == DEFAULT_PROPOSAL == "seed-random-gomea"
-    assert args.num_random == DEFAULT_NUM_RANDOM == 64
-    assert args.gomea_count == DEFAULT_GOMEA_COUNT == 64
 
 
 def test_seed_random_gomea_reproduces_documented_winner_without_hindsight(tmp_path: Path):
@@ -465,35 +631,42 @@ def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path)
     )
 
 
-def test_schedule_cli_writes_machine_readable_metadata(tmp_path: Path):
-    db_path = tmp_path / "sched.sqlite"
-    output_dir = tmp_path / "out"
+def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
+    def run_cli(output_dir: Path, *extra_args: str) -> dict:
+        rc = cli_main(
+            [
+                "schedule-batches",
+                "--db",
+                str(tmp_path / "sched.sqlite"),
+                "--output-dir",
+                str(output_dir),
+                "--num-random",
+                "1",
+                "--limit-shapes",
+                "1",
+                "--candidate-batch-size",
+                "1",
+                "--shape-batch-size",
+                "1",
+                "--dry-run",
+                *extra_args,
+            ]
+        )
+        assert rc == 0
+        return json.loads((output_dir / "schedule_metadata.json").read_text(encoding="utf-8"))
 
-    rc = cli_main(
-        [
-            "schedule-batches",
-            "--db",
-            str(db_path),
-            "--output-dir",
-            str(output_dir),
-            "--num-random",
-            "1",
-            "--limit-shapes",
-            "1",
-            "--candidate-batch-size",
-            "1",
-            "--shape-batch-size",
-            "1",
-            "--dry-run",
-        ]
-    )
+    default_metadata = run_cli(tmp_path / "default")
+    assert default_metadata["profile"] == DEFAULT_PROFILE.name
+    assert default_metadata["planned_batches"] >= 1
+    assert default_metadata["executed_batches"] == []
+    assert default_metadata["runner_bin"] == DEFAULT_PROFILE.default_runner_bin
+    assert default_metadata["adaptive_sampling"] is True
+    assert default_metadata["stop_on_error"] is False
 
-    assert rc == 0
-    metadata = json.loads((output_dir / "schedule_metadata.json").read_text(encoding="utf-8"))
-    assert metadata["profile"] == DEFAULT_PROFILE.name
-    assert metadata["planned_batches"] >= 1
-    assert metadata["executed_batches"] == []
-    assert metadata["runner_bin"] == DEFAULT_PROFILE.default_runner_bin
+    fail_fast_metadata = run_cli(tmp_path / "fail_fast", "--stop-on-error")
+    fixed_sampling_metadata = run_cli(tmp_path / "fixed", "--fixed-sampling")
+    assert fail_fast_metadata["stop_on_error"] is True
+    assert fixed_sampling_metadata["adaptive_sampling"] is False
 
 
 def test_execute_schedule_generate_only_writes_batch_inputs(tmp_path: Path):

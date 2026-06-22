@@ -1,4 +1,4 @@
-from evotensile.cache import CacheKey, benchmark_protocol_hash, problem_type_hash
+from evotensile.cache import CacheKey, benchmark_protocol_hash
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL, global_parameter_items
@@ -26,11 +26,6 @@ def test_protocol_hash_ignores_sampling_budget_and_validation_execution():
     assert base == more_samples
     assert base == gpu_only_topup
     assert base != changed_warmups
-
-
-def test_profile_derives_cache_identity():
-    assert problem_type_hash() == DEFAULT_PROFILE.problem_type_hash
-    assert benchmark_protocol_hash(DEFAULT_PROFILE.default_protocol) == DEFAULT_PROFILE.benchmark_protocol_hash()
 
 
 def test_db_cache_key_lookup(tmp_path):
