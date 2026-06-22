@@ -2,7 +2,6 @@
 
 import argparse
 import copy
-import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,11 +9,12 @@ from typing import Any
 
 import yaml
 
-from evotensile.candidate import Candidate
-from evotensile.solution_mapping import solution_matches_candidate
+from evotensile.database import EvaluationSummary, EvoTensileDB
+from evotensile.profile import PROFILES, TargetProfile, get_profile
+from evotensile.protocol import BenchmarkProtocol
+from evotensile.solution_mapping import find_solution_yamls, solution_matches_candidate
 
-DEFAULT_EXPORT_DIR = Path("out/grid100_full_20260618_hybrid_best_export")
-DEFAULT_RETIME_DIR = Path("out/grid100_full_20260618_top4_retime")
+DEFAULT_DB = Path("out/grid100_full_20260618_repaired.sqlite")
 DEFAULT_LOGIC_DIR = (
     Path.home()
     / "rocm-libraries/projects/hipblaslt/library/src/amd_detail/rocblaslt/src/Tensile/Logic/asm_full/gfx1151/GridBased"
@@ -65,15 +65,7 @@ NAME_KEYS = ("BaseName", "CustomKernelName", "KernelName", "KernelNameMin", "Sol
 class Winner:
     shape_id: str
     candidate_hash: str
-    candidate_json_path: Path
-    selected_gflops: float
-    logic_solution_index: int | None
-    logic_solution_name: str | None
-
-
-def _read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open("r", encoding="utf-8", newline="") as handle:
-        return list(csv.DictReader(handle))
+    median_gflops: float
 
 
 def _load_yaml(path: Path) -> Any:
@@ -95,64 +87,62 @@ def _write_yaml(path: Path, data: Any) -> None:
     path.write_text(_with_problem_header_bool_style(text), encoding="utf-8")
 
 
-def _resolve_export_path(value: str, *, export_dir: Path) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    candidate = export_dir / path.name
-    if candidate.exists():
-        return candidate
-    return path
+def _protocol_from_args(args: argparse.Namespace, profile: TargetProfile) -> BenchmarkProtocol:
+    return profile.default_protocol.with_overrides(
+        num_warmups=args.num_warmups,
+        num_benchmarks=args.num_benchmarks,
+        enqueues_per_sync=args.enqueues_per_sync,
+        syncs_per_benchmark=args.syncs_per_benchmark,
+        num_elements_to_validate=args.num_elements_to_validate,
+    )
 
 
-def _parse_float(value: str) -> float:
-    if value == "":
-        return 0.0
-    return float(value)
+def _winner_summaries(
+    db: EvoTensileDB,
+    *,
+    profile: TargetProfile,
+    protocol: BenchmarkProtocol,
+    min_samples: int,
+) -> list[EvaluationSummary]:
+    summaries = db.rank_evaluations(
+        problem_type_hash=profile.problem_type_hash,
+        benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
+        min_samples=min_samples,
+    )
+    winners_by_shape: dict[str, EvaluationSummary] = {}
+    for summary in summaries:
+        winners_by_shape.setdefault(summary.shape_id, summary)
+    return [winners_by_shape[shape_id] for shape_id in sorted(winners_by_shape)]
 
 
-def _parse_int(value: str) -> int | None:
-    if value == "":
-        return None
-    return int(value)
-
-
-def _load_winners(export_dir: Path) -> list[Winner]:
-    rows = _read_csv(export_dir / "winners.csv")
-    winners: list[Winner] = []
-    for row in rows:
-        candidate_hash = row.get("selected_candidate_hash") or row.get("candidate_hash")
-        if not candidate_hash:
-            raise ValueError(f"winner row has no candidate hash: {row}")
-        selected_gflops = row.get("selected_gflops") or row.get("median_gflops") or row.get("evotensile_median_gflops")
-        if selected_gflops is None:
-            raise ValueError(f"winner row has no selected throughput: {row}")
+def _load_winners_from_db(
+    db: EvoTensileDB,
+    *,
+    profile: TargetProfile,
+    protocol: BenchmarkProtocol,
+    min_samples: int,
+) -> list[Winner]:
+    winners = []
+    for summary in _winner_summaries(db, profile=profile, protocol=protocol, min_samples=min_samples):
+        if summary.median_gflops is None:
+            raise ValueError(f"winner row has no median throughput: {summary}")
         winners.append(
             Winner(
-                shape_id=row["shape_id"],
-                candidate_hash=candidate_hash,
-                candidate_json_path=_resolve_export_path(row["candidate_json_path"], export_dir=export_dir),
-                selected_gflops=_parse_float(selected_gflops),
-                logic_solution_index=_parse_int(row.get("logic_solution_index", "")),
-                logic_solution_name=row.get("logic_solution_name") or None,
+                shape_id=summary.shape_id,
+                candidate_hash=summary.candidate_hash,
+                median_gflops=summary.median_gflops,
             )
         )
     return winners
 
 
-def _load_candidate(path: Path) -> Candidate:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    return Candidate(
-        params=payload["params"],
-        source=payload.get("source", "hybrid_export"),
-        parent_hashes=tuple(payload.get("parent_hashes", ())),
-    )
-
-
-def _candidate_params_by_hash(winners: list[Winner]) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    for winner in winners:
-        out.setdefault(winner.candidate_hash, _load_candidate(winner.candidate_json_path).canonical_params())
+def _candidate_params_by_hash(db: EvoTensileDB, winners: list[Winner]) -> dict[str, dict[str, Any]]:
+    candidate_hashes = list(dict.fromkeys(winner.candidate_hash for winner in winners))
+    candidates = db.get_candidates(candidate_hashes)
+    out: dict[str, dict[str, Any]] = {candidate.hash: candidate.canonical_params() for candidate in candidates}
+    missing = sorted(set(candidate_hashes) - set(out))
+    if missing:
+        raise ValueError(f"DB is missing candidate JSON for winner hashes: {', '.join(missing)}")
     return out
 
 
@@ -167,7 +157,7 @@ def _solution_key(solution: dict[str, Any]) -> str:
 def _solution_records_from_logic(path: Path) -> list[dict[str, Any]]:
     data = _load_yaml(path)
     if not isinstance(data, list) or len(data) < 6 or not isinstance(data[5], list):
-        raise ValueError(f"unsupported logic YAML layout: {path}")
+        return []
     return [solution for solution in data[5] if isinstance(solution, dict)]
 
 
@@ -178,12 +168,43 @@ def _solution_records_from_final_yaml(path: Path) -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict) and "SolutionIndex" in item]
 
 
-def _collect_retime_solutions(retime_dir: Path) -> list[dict[str, Any]]:
+def _run_solution_dirs(
+    db: EvoTensileDB,
+    *,
+    profile: TargetProfile,
+    protocol: BenchmarkProtocol,
+    candidate_hashes: list[str],
+) -> list[Path]:
+    if not candidate_hashes:
+        return []
+    placeholders = ",".join("?" for _ in candidate_hashes)
+    with db.connection() as con:
+        rows = con.execute(
+            f"""
+            SELECT DISTINCT r.output_dir
+            FROM evaluations AS e
+            JOIN runs AS r ON r.run_id = e.run_id
+            WHERE e.problem_type_hash = ?
+              AND e.benchmark_protocol_hash = ?
+              AND e.status = 'ok'
+              AND e.candidate_hash IN ({placeholders})
+              AND r.output_dir IS NOT NULL
+            """,
+            (
+                profile.problem_type_hash,
+                profile.benchmark_protocol_hash(protocol),
+                *candidate_hashes,
+            ),
+        ).fetchall()
+    return sorted({path for row in rows if row["output_dir"] and (path := Path(row["output_dir"])).exists()})
+
+
+def _collect_solution_pool(paths: list[Path]) -> list[dict[str, Any]]:
     solutions: dict[str, dict[str, Any]] = {}
-    for path in sorted(retime_dir.glob("group_*/batch_*/run_*/3_LibraryLogic/gfx1151_*.yaml")):
+    solution_roots: list[str | Path] = [path for path in paths if path.exists()]
+    for path in sorted(find_solution_yamls(solution_roots)):
         for solution in _solution_records_from_logic(path):
             solutions.setdefault(_solution_key(solution), solution)
-    for path in sorted(retime_dir.glob("group_*/batch_*/run_*/1_BenchmarkProblems/**/Data/00_Final.yaml")):
         for solution in _solution_records_from_final_yaml(path):
             # Data/00_Final.yaml is often the only place that keeps all accepted
             # per-candidate final solutions from a group; 3_LibraryLogic may only
@@ -197,6 +218,8 @@ def _source_solutions_by_index(path: Path) -> dict[int, dict[str, Any]]:
     for solution in _solution_records_from_logic(path):
         if "SolutionIndex" in solution:
             out[int(solution["SolutionIndex"])] = solution
+    if not out:
+        raise ValueError(f"unsupported source logic YAML layout: {path}")
     return out
 
 
@@ -211,26 +234,21 @@ def _build_base_solutions(
     *,
     winners: list[Winner],
     candidate_params: dict[str, dict[str, Any]],
-    retime_solutions: list[dict[str, Any]],
+    artifact_solutions: list[dict[str, Any]],
     source_hhs_solutions: dict[int, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
+    source_solutions = list(source_hhs_solutions.values())
     by_candidate: dict[str, dict[str, Any]] = {}
     for candidate_hash, params in candidate_params.items():
-        solution = _find_matching_solution(params, retime_solutions)
+        solution = _find_matching_solution(params, artifact_solutions)
+        if solution is None:
+            solution = _find_matching_solution(params, source_solutions)
         if solution is not None:
             by_candidate[candidate_hash] = solution
 
-    for winner in winners:
-        if winner.candidate_hash in by_candidate:
-            continue
-        if winner.logic_solution_index is not None and winner.logic_solution_index in source_hhs_solutions:
-            by_candidate[winner.candidate_hash] = source_hhs_solutions[winner.logic_solution_index]
-            continue
-        solution = _find_matching_solution(candidate_params[winner.candidate_hash], list(source_hhs_solutions.values()))
-        if solution is not None:
-            by_candidate[winner.candidate_hash] = solution
-            continue
-        raise ValueError(f"could not find a full solution dictionary for {winner.shape_id} {winner.candidate_hash}")
+    missing = sorted({winner.candidate_hash for winner in winners} - set(by_candidate))
+    if missing:
+        raise ValueError(f"could not find full solution dictionaries for winner hashes: {', '.join(missing)}")
     return by_candidate
 
 
@@ -313,7 +331,7 @@ def _update_logic_data(
         exact_rows.append(
             [
                 _exact_list_from_shape_id(winner.shape_id),
-                [solution_index_by_hash[winner.candidate_hash], winner.selected_gflops],
+                [solution_index_by_hash[winner.candidate_hash], winner.median_gflops],
             ]
         )
 
@@ -338,29 +356,34 @@ def _reference_solution_key_order(logic_dir: Path) -> list[str]:
 
 def update_logic_files(
     *,
-    export_dir: Path,
-    retime_dir: Path,
+    db_path: Path,
+    profile: TargetProfile,
+    protocol: BenchmarkProtocol,
+    min_samples: int,
+    extra_solution_dirs: list[Path],
     logic_dir: Path,
     variant_names: list[str],
     dry_run: bool,
 ) -> dict[str, Any]:
-    export_dir = export_dir.resolve()
-    retime_dir = retime_dir.resolve()
+    db = EvoTensileDB.connect(db_path)
     logic_dir = logic_dir.resolve()
     unknown = sorted(set(variant_names) - set(VARIANTS))
     if unknown:
         raise ValueError(f"unknown variants: {', '.join(unknown)}")
 
-    winners = _load_winners(export_dir)
-    candidate_params = _candidate_params_by_hash(winners)
-    retime_solutions = _collect_retime_solutions(retime_dir)
+    winners = _load_winners_from_db(db, profile=profile, protocol=protocol, min_samples=min_samples)
+    candidate_params = _candidate_params_by_hash(db, winners)
+    candidate_hashes = list(candidate_params)
+    db_solution_dirs = _run_solution_dirs(db, profile=profile, protocol=protocol, candidate_hashes=candidate_hashes)
+    solution_roots = [*db_solution_dirs, *extra_solution_dirs]
+    artifact_solutions = _collect_solution_pool(solution_roots)
     solution_key_order = _reference_solution_key_order(logic_dir)
     source_hhs_path = logic_dir / VARIANTS["hhs"].filename
     source_hhs_solutions = _source_solutions_by_index(source_hhs_path)
     base_solutions = _build_base_solutions(
         winners=winners,
         candidate_params=candidate_params,
-        retime_solutions=retime_solutions,
+        artifact_solutions=artifact_solutions,
         source_hhs_solutions=source_hhs_solutions,
     )
 
@@ -388,12 +411,18 @@ def update_logic_files(
         }
 
     return {
-        "export_dir": str(export_dir),
-        "retime_dir": str(retime_dir),
+        "db": str(db_path),
+        "profile": profile.name,
+        "problem_type_hash": profile.problem_type_hash,
+        "benchmark_protocol_hash": profile.benchmark_protocol_hash(protocol),
+        "protocol": protocol.global_parameters(),
+        "min_samples": min_samples,
         "logic_dir": str(logic_dir),
         "shape_count": len(winners),
         "candidate_count": len(candidate_params),
-        "retime_solution_pool_count": len(retime_solutions),
+        "db_solution_dir_count": len(db_solution_dirs),
+        "extra_solution_dirs": [str(path) for path in extra_solution_dirs],
+        "artifact_solution_pool_count": len(artifact_solutions),
         "reference_solution_key_count": len(solution_key_order),
         "files": files,
         "dry_run": dry_run,
@@ -403,17 +432,31 @@ def update_logic_files(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--export-dir", type=Path, default=DEFAULT_EXPORT_DIR)
-    parser.add_argument("--retime-dir", type=Path, default=DEFAULT_RETIME_DIR)
+    parser.add_argument("--db", type=Path, default=DEFAULT_DB)
+    parser.add_argument("--profile", choices=sorted(PROFILES), default=None)
+    parser.add_argument("--min-samples", type=int, default=10)
+    parser.add_argument("--num-warmups", type=int, default=None)
+    parser.add_argument("--num-benchmarks", type=int, default=None)
+    parser.add_argument("--enqueues-per-sync", type=int, default=None)
+    parser.add_argument("--syncs-per-benchmark", type=int, default=None)
+    parser.add_argument("--num-elements-to-validate", type=int, default=None)
+    parser.add_argument("--solution-dir", type=Path, action="append", default=[])
     parser.add_argument("--logic-dir", type=Path, default=DEFAULT_LOGIC_DIR)
     parser.add_argument("--variant", action="append", choices=sorted(VARIANTS), default=[])
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    if not args.db.exists():
+        raise FileNotFoundError(args.db)
+    profile = get_profile(args.profile)
+    protocol = _protocol_from_args(args, profile)
     variant_names = args.variant or ["hhs", "hhs_auxh", "bbs", "bbs_auxb"]
     result = update_logic_files(
-        export_dir=args.export_dir,
-        retime_dir=args.retime_dir,
+        db_path=args.db,
+        profile=profile,
+        protocol=protocol,
+        min_samples=args.min_samples,
+        extra_solution_dirs=args.solution_dir,
         logic_dir=args.logic_dir,
         variant_names=variant_names,
         dry_run=args.dry_run,
