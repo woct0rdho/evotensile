@@ -12,8 +12,8 @@ from evotensile.scheduler import (
     propose_candidates,
     repair_seed_candidates,
 )
-from evotensile.search_space import documented_winner_candidate, known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
+from tests.helpers import DOCUMENTED_WINNER_CANDIDATE, sample_candidates
 
 
 def _time_us_for_gflops(shape: Shape, gflops: float) -> float:
@@ -23,7 +23,7 @@ def _time_us_for_gflops(shape: Shape, gflops: float) -> float:
 def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:2]
+    candidates = sample_candidates(2)
     shapes = pilot_100_shapes()[:2]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -59,7 +59,7 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
 def test_plan_batches_requests_only_missing_sample_count(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:1]
+    candidates = sample_candidates(1)
     shapes = pilot_100_shapes()[:1]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -95,7 +95,7 @@ def test_plan_batches_requests_only_missing_sample_count(tmp_path: Path):
 def test_plan_batches_requires_validation_without_prior_validation_evidence(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:1]
+    candidates = sample_candidates(1)
     shapes = pilot_100_shapes()[:1]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -128,7 +128,7 @@ def test_plan_batches_requires_validation_without_prior_validation_evidence(tmp_
 def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:2]
+    candidates = sample_candidates(2)
     shapes = pilot_100_shapes()[:1]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -165,7 +165,7 @@ def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):
 def test_local_proposal_mutates_cached_elites(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:2]
+    candidates = sample_candidates(2)
     shapes = pilot_100_shapes()[:1]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -191,15 +191,16 @@ def test_local_proposal_mutates_cached_elites(tmp_path: Path):
         seed=7,
     )
 
-    assert len(proposed) == 1
-    assert proposed[0].source == "mutation"
-    assert proposed[0].parent_hashes == (candidates[0].hash,)
+    mutations = [candidate for candidate in proposed if candidate.source == "mutation"]
+    assert len(mutations) == 1
+    assert mutations[0].parent_hashes == (candidates[0].hash,)
+    assert {candidate.source for candidate in proposed} == {"mutation"}
 
 
 def test_exact_shape_transfer_seeds_cached_winner(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:2]
+    candidates = sample_candidates(2)
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -235,7 +236,7 @@ def test_exact_shape_transfer_seeds_cached_winner(tmp_path: Path):
 def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:3]
+    candidates = sample_candidates(3)
     target = pilot_100_shapes()[0]
     near_shape = pilot_100_shapes()[1]
     far_shape = pilot_100_shapes()[-1]
@@ -274,7 +275,7 @@ def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
 def test_detect_underperforming_shapes_flags_local_envelope_gap(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:4]
+    candidates = sample_candidates(4)
     shapes = [
         Shape(m=512, n=512, batch=1, k=512),
         Shape(m=640, n=512, batch=1, k=512),
@@ -321,7 +322,7 @@ def test_detect_underperforming_shapes_flags_local_envelope_gap(tmp_path: Path):
 def test_repair_seed_candidates_include_neighbor_top_candidates(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:4]
+    candidates = sample_candidates(4)
     target = Shape(m=768, n=512, batch=1, k=512)
     neighbor = Shape(m=896, n=512, batch=1, k=512)
     p_hash = DEFAULT_PROFILE.problem_type_hash
@@ -382,7 +383,7 @@ def test_repair_outliers_cli_writes_metadata(tmp_path: Path):
     output_dir = tmp_path / "repair"
     db = EvoTensileDB.connect(db_path)
     db.init()
-    candidates = known_seed_candidates()[:3]
+    candidates = sample_candidates(3)
     shapes = [
         Shape(m=512, n=512, batch=1, k=512),
         Shape(m=768, n=512, batch=1, k=512),
@@ -445,7 +446,7 @@ def test_repair_outliers_cli_writes_metadata(tmp_path: Path):
 def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:2]
+    candidates = sample_candidates(2)
     target = pilot_100_shapes()[0]
     exact_shape = pilot_100_shapes()[1]
     transfer_shape = pilot_100_shapes()[2]
@@ -492,7 +493,7 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
 def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = known_seed_candidates()[:3]
+    candidates = sample_candidates(4)
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -516,38 +517,60 @@ def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
         local_count=2,
         de_count=2,
         gomea_count=2,
-        elite_count=3,
+        elite_count=4,
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         seed=7,
     )
 
     sources = {candidate.source for candidate in proposed}
-    assert {"seed", "random", "mutation", "de", "gomea"} & sources == {
-        "seed",
-        "random",
-        "mutation",
-        "de",
-        "gomea",
-    }
+    assert {"random", "mutation", "de", "gomea"} & sources == {"random", "mutation", "de", "gomea"}
+    assert "seed" not in sources
 
 
-def test_seed_random_gomea_reproduces_documented_winner_without_hindsight(tmp_path: Path):
+def test_random_proposal_does_not_include_fixed_controls(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
 
-    proposed = propose_candidates(
-        db,
-        proposal="seed-random-gomea",
-        num_random=12,
-        gomea_count=64,
-        seed=1151,
-    )
+    proposed = propose_candidates(db, proposal="seed-random", num_random=12, seed=1151)
 
-    hashes = [candidate.hash for candidate in proposed]
-    winner_index = hashes.index(documented_winner_candidate().hash)
-    assert winner_index + 1 <= 32
-    assert proposed[winner_index].source == "gomea"
+    assert {candidate.source for candidate in proposed} == {"random"}
+    assert DOCUMENTED_WINNER_CANDIDATE.hash not in {candidate.hash for candidate in proposed}
+
+
+def test_non_random_proposals_return_empty_without_evidence(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+
+    for proposal in ("local", "de", "gomea"):
+        proposed = propose_candidates(
+            db,
+            proposal=proposal,
+            local_count=64,
+            de_count=64,
+            gomea_count=64,
+            seed=1151,
+        )
+
+        assert proposed == []
+
+
+def test_mixed_random_proposals_do_not_use_random_as_evolution_parents(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+
+    for proposal in ("seed-random-local", "seed-random-de", "seed-random-gomea", "evolutionary"):
+        proposed = propose_candidates(
+            db,
+            proposal=proposal,
+            num_random=4,
+            local_count=64,
+            de_count=64,
+            gomea_count=64,
+            seed=1151,
+        )
+
+        assert {candidate.source for candidate in proposed} == {"random"}
 
 
 def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path):
@@ -558,7 +581,7 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
     )
     fake_tensile.chmod(0o755)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
-    candidate = known_seed_candidates()[0]
+    candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -599,7 +622,7 @@ def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path)
     fake_tensile.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n", encoding="utf-8")
     fake_tensile.chmod(0o755)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
-    candidate = known_seed_candidates()[0]
+    candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -671,7 +694,7 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
 
 def test_execute_schedule_generate_only_writes_batch_inputs(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
-    candidates = known_seed_candidates()[:2]
+    candidates = sample_candidates(2)
     shapes = pilot_100_shapes()[:1]
 
     result = execute_schedule(

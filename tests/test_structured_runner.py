@@ -5,7 +5,6 @@ from textwrap import dedent
 from evotensile.database import EvoTensileDB
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.scheduler import execute_schedule
-from evotensile.search_space import known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
 from evotensile.structured_runner import (
     RunnablePair,
@@ -14,6 +13,7 @@ from evotensile.structured_runner import (
     read_structured_results,
     validate_structured_samples,
 )
+from tests.helpers import sample_candidates
 
 
 def _fake_structured_runner(path: Path) -> Path:
@@ -182,7 +182,7 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
     fake_tensile = _fake_build_tensile(tmp_path)
     fake_runner = _fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
-    candidates = known_seed_candidates()[:2]
+    candidates = sample_candidates(2)
     shapes = pilot_100_shapes()[:2]
     protocol = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=3)
 
@@ -227,7 +227,7 @@ def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path
     fake_tensile = _fake_build_tensile(tmp_path)
     fake_runner = _fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
-    candidate = known_seed_candidates()[0]
+    candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]
 
     first = execute_schedule(
@@ -304,7 +304,7 @@ def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
     result = execute_schedule(
         db,
         shapes=pilot_100_shapes()[:1],
-        candidates=known_seed_candidates()[:1],
+        candidates=sample_candidates(1),
         output_root=tmp_path / "batches",
         tensilelite_bin=fake_tensile,
         runner_bin=runner,
@@ -360,7 +360,7 @@ def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path
     result = execute_schedule(
         db,
         shapes=pilot_100_shapes()[:1],
-        candidates=known_seed_candidates()[:1],
+        candidates=sample_candidates(1),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         tensilelite_bin=fake_tensile,
@@ -417,7 +417,7 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
     result = execute_schedule(
         db,
         shapes=pilot_100_shapes()[:1],
-        candidates=known_seed_candidates()[:1],
+        candidates=sample_candidates(1),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         tensilelite_bin=fake_tensile,
@@ -475,7 +475,7 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
     result = execute_schedule(
         db,
         shapes=pilot_100_shapes()[:1],
-        candidates=known_seed_candidates()[:1],
+        candidates=sample_candidates(1),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         tensilelite_bin=fake_tensile,
@@ -534,7 +534,7 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
     result = execute_schedule(
         db,
         shapes=pilot_100_shapes()[:1],
-        candidates=known_seed_candidates()[:1],
+        candidates=sample_candidates(1),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         tensilelite_bin=fake_tensile,
@@ -570,7 +570,7 @@ def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
     result = execute_schedule(
         db,
         shapes=pilot_100_shapes()[:1],
-        candidates=known_seed_candidates()[:1],
+        candidates=sample_candidates(1),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         tensilelite_bin=fake_tensile,
@@ -624,7 +624,7 @@ def test_structured_records_rejected_candidate_from_final_yaml(tmp_path: Path):
     )
     script.chmod(0o755)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
-    candidates = known_seed_candidates()[:2]
+    candidates = sample_candidates(2)
 
     result = execute_schedule(
         db,

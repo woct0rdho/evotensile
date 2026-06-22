@@ -2,8 +2,8 @@ from evotensile.cache import CacheKey, benchmark_protocol_hash
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL, global_parameter_items
-from evotensile.search_space import known_seed_candidates
 from evotensile.shapes import pilot_100_shapes
+from tests.helpers import sample_candidates
 
 
 def test_default_protocol_uses_full_validation():
@@ -31,7 +31,7 @@ def test_protocol_hash_ignores_sampling_budget_and_validation_execution():
 def test_db_cache_key_lookup(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
     db.init()
-    candidate = known_seed_candidates()[0]
+    candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -60,7 +60,7 @@ def test_db_cache_key_lookup(tmp_path):
 def test_negative_cache_statuses_are_reusable_but_not_rankable(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
     db.init()
-    candidate = known_seed_candidates()[0]
+    candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()

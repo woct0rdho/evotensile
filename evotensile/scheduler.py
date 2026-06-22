@@ -98,6 +98,7 @@ class ShapeOutlier:
 T = TypeVar("T")
 
 PROPOSAL_MODES = (
+    "random",
     "seed-random",
     "local",
     "seed-random-local",
@@ -455,12 +456,19 @@ def propose_candidates(
     crossover_rate: float = DEFAULT_CROSSOVER_RATE,
     random_gene_rate: float = DEFAULT_RANDOM_GENE_RATE,
 ) -> list[Candidate]:
-    """Build the candidate set for a scheduled run from random seeds and/or cached elites."""
+    """Build candidates from random proposals and/or cached/imported elites."""
     if proposal not in PROPOSAL_MODES:
         raise ValueError(f"unknown proposal mode: {proposal}")
 
     candidates: list[Candidate] = []
-    include_random = proposal.startswith("seed-random") or proposal == "evolutionary"
+    uses_random = proposal in {
+        "random",
+        "seed-random",
+        "seed-random-local",
+        "seed-random-de",
+        "seed-random-gomea",
+        "evolutionary",
+    }
     needs_elites = proposal in {
         "local",
         "seed-random-local",
@@ -498,14 +506,14 @@ def propose_candidates(
         candidates.extend(transfer_elites)
         elites = _dedupe_candidates([*elites, *transfer_elites])
 
-    if include_random:
+    if uses_random:
         candidates.extend(initial_random_batch(num_random, seed=seed))
 
     if proposal in {"local", "seed-random-local", "evolutionary"} and local_count > 0:
         candidates.extend(mutate_elites(elites, count=local_count, seed=seed + 1009, mutation_rate=mutation_rate))
 
     if proposal in {"de", "seed-random-de", "evolutionary"} and de_count > 0:
-        parents = _dedupe_candidates([*elites, *candidates])
+        parents = _dedupe_candidates(elites)
         candidates.extend(
             differential_evolution_candidates(
                 parents,
@@ -518,8 +526,8 @@ def propose_candidates(
         )
 
     if proposal in {"gomea", "seed-random-gomea", "evolutionary"} and gomea_count > 0:
-        parents = _dedupe_candidates([*elites, *candidates])
-        neighborhood_parents = _dedupe_candidates([*candidates, *elites])
+        parents = _dedupe_candidates(elites)
+        neighborhood_parents = parents
         gomea_budget = max(0, gomea_count)
         neighborhood_budget = gomea_budget // 2
         candidates.extend(
