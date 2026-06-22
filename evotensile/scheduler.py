@@ -144,10 +144,7 @@ def _nearest_shape_ids(targets: list[Shape], source_shape_ids: set[str], *, limi
     if limit <= 0 or not targets or not source_shape_ids:
         return []
     source_shapes: list[Shape] = []
-    target_ids = {shape.id for shape in targets}
     for shape_id in source_shape_ids:
-        if shape_id in target_ids:
-            continue
         try:
             source_shapes.append(shape_from_id(shape_id))
         except ValueError:
@@ -155,7 +152,7 @@ def _nearest_shape_ids(targets: list[Shape], source_shape_ids: set[str], *, limi
 
     best_by_shape: dict[str, float] = {}
     for source in source_shapes:
-        # Use nearest target distance so a 100-shape run imports winners from neighborhoods that cover the grid.
+        # Use nearest target distance so exact target-shape winners and nearby-shape winners seed new work.
         best_by_shape[source.id] = min(_shape_distance(source, target) for target in targets)
     return [shape_id for shape_id, _ in sorted(best_by_shape.items(), key=lambda item: (item[1], item[0]))[:limit]]
 

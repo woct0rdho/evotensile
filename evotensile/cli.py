@@ -105,7 +105,7 @@ def cmd_summarize_space(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_cache_summary(args: argparse.Namespace) -> int:
+def cmd_summarize_cache(args: argparse.Namespace) -> int:
     profile = _profile(args)
     protocol = _protocol(args, profile)
     db = EvoTensileDB.connect(args.db)
@@ -390,11 +390,11 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument("--adaptive-min-effect-pct", type=float, default=0.5)
     cmd.set_defaults(func=cmd_schedule_batches)
 
-    cmd = sub.add_parser("cache-summary", help="Summarize cached evaluation statuses")
+    cmd = sub.add_parser("summarize-cache", help="Summarize cached evaluation statuses")
     cmd.add_argument("--db", required=True)
     _add_cache_identity_args(cmd)
     _add_protocol_args(cmd)
-    cmd.set_defaults(func=cmd_cache_summary)
+    cmd.set_defaults(func=cmd_summarize_cache)
 
     cmd = sub.add_parser("rank-evals", help="Rank only validation-passed cached evaluations")
     cmd.add_argument("--db", required=True)

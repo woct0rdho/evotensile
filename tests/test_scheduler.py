@@ -193,6 +193,42 @@ def test_local_proposal_mutates_cached_elites(tmp_path: Path):
     assert proposed[0].parent_hashes == (candidates[0].hash,)
 
 
+def test_exact_shape_transfer_seeds_cached_winner(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = known_seed_candidates()[:2]
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes([shape])
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash=candidates[1].hash,
+        run_id="cached",
+        status="ok",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        time_us=1.0,
+        validation="PASSED",
+    )
+
+    proposed = propose_candidates(
+        db,
+        proposal="seed-random-gomea",
+        num_random=0,
+        gomea_count=0,
+        target_shapes=[shape],
+        transfer_shape_count=1,
+        transfer_per_shape=1,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+
+    transfer = [candidate for candidate in proposed if candidate.source == "transfer"]
+    assert [candidate.hash for candidate in transfer] == [candidates[1].hash]
+
+
 def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -322,7 +358,7 @@ def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
     }
 
 
-def test_schedule_cli_uses_grid100_evolutionary_defaults():
+def test_schedule_cli_uses_evolutionary_defaults():
     args = build_parser().parse_args(["schedule-batches", "--db", "db.sqlite", "--output-dir", "out"])
 
     assert args.proposal == DEFAULT_PROPOSAL == "seed-random-gomea"
