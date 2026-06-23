@@ -119,8 +119,9 @@ class EvoTensileDB:
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(self.path)
+        con = sqlite3.connect(self.path, timeout=60.0)
         con.row_factory = sqlite3.Row
+        con.execute("PRAGMA busy_timeout=60000")
         try:
             yield con
             con.commit()

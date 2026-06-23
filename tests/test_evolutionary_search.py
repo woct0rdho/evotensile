@@ -39,10 +39,14 @@ def test_explain_invalid_nt_hhs_reports_rule_ids():
         {
             "DepthU": 16,
             "GlobalSplitU": 2,
-            "TransposeLDS": 2,
-            "PrefetchGlobalRead": 1,
             "PrefetchLocalRead": 1,
+            "VectorWidthA": 8,
             "VectorWidthB": 8,
+            "StoreVectorWidth": 4,
+            "TransposeLDS": 1,
+            "1LDSBuffer": 1,
+            "ScheduleIterAlg": 1,
+            "PrefetchGlobalRead": 0,
             "StoreSyncOpt": 1,
             "GroupLoadStore": True,
             "StorePriorityOpt": False,
@@ -52,9 +56,13 @@ def test_explain_invalid_nt_hhs_reports_rule_ids():
 
     rule_ids = {reason.rule_id for reason in explain_invalid_nt_hhs(defaulted_params(params))}
 
+    assert "nt_hhs.mi_wave_tile0.requires_vector_width_a_divisor" in rule_ids
+    assert "nt_hhs.mi_wave_tile1.requires_vector_width_b_divisor" in rule_ids
+    assert "nt_hhs.source_swap.requires_store_vector_width_divides_vector_width_a" not in rule_ids
+    assert "nt_hhs.tlds1.rejects_nt_tlua_tlub" in rule_ids
+    assert "nt_hhs.one_lds_buffer.rejects_pgr0" in rule_ids
+    assert "nt_hhs.one_lds_buffer.requires_sia2_or_sia3_with_slw" in rule_ids
     assert "nt_hhs.gsu.requires_depthu_ge_32" in rule_ids
-    assert "nt_hhs.tlds2.requires_pgr2_plr0" in rule_ids
-    assert "nt_hhs.tlds2.requires_vector_width_b_1" in rule_ids
     assert "nt_hhs.store_sync.unsupported_opt" in rule_ids
     assert "nt_hhs.group_load_store.requires_store_sync_4" in rule_ids
     assert "nt_hhs.group_load_store.requires_store_priority" in rule_ids
@@ -79,6 +87,12 @@ def test_explain_invalid_nt_hhs_reports_tensilelite_lds_block_rule():
 
     assert "nt_hhs.lds.tlds2_block_size_a_must_divide_depthu_bytes" in rule_ids
     assert "nt_hhs.lds.tlds2_block_size_b_must_divide_depthu_bytes" in rule_ids
+
+    params.update({"PrefetchGlobalRead": 1, "PrefetchLocalRead": 1, "VectorWidthB": 8})
+    rule_ids = {reason.rule_id for reason in explain_invalid_nt_hhs(defaulted_params(params))}
+
+    assert "nt_hhs.tlds2.requires_pgr2_plr0" in rule_ids
+    assert "nt_hhs.tlds2.requires_vector_width_b_1" in rule_ids
 
 
 def test_broad_lds_tuple_is_not_rejected_by_profile_allowlist():
@@ -130,6 +144,37 @@ def test_repair_linked_overrides_matches_cheap_constraints():
 
 def test_repair_linked_overrides_clears_each_repairable_rule():
     cases = [
+        (
+            {"MatrixInstruction": [16, 16, 16, 1, 1, 3, 5, 2, 1], "VectorWidthA": 8, "VectorWidthB": 4},
+            {
+                "nt_hhs.mi_wave_tile0.requires_vector_width_a_divisor",
+                "nt_hhs.mi_wave_tile1.requires_vector_width_b_divisor",
+            },
+        ),
+        (
+            {"SourceSwap": True, "VectorWidthA": 1, "StoreVectorWidth": 4},
+            {"nt_hhs.source_swap.requires_store_vector_width_divides_vector_width_a"},
+        ),
+        (
+            {
+                "MatrixInstruction": [16, 16, 16, 1, 1, 3, 5, 1, 1],
+                "SourceSwap": False,
+                "VectorWidthA": 1,
+                "StoreVectorWidth": 4,
+            },
+            {"nt_hhs.non_source_swap.requires_store_vector_width_divides_miovw"},
+        ),
+        (
+            {"TransposeLDS": 1},
+            {"nt_hhs.tlds1.rejects_nt_tlua_tlub"},
+        ),
+        (
+            {"1LDSBuffer": 1, "PrefetchGlobalRead": 0, "ScheduleIterAlg": 1},
+            {
+                "nt_hhs.one_lds_buffer.rejects_pgr0",
+                "nt_hhs.one_lds_buffer.requires_sia2_or_sia3_with_slw",
+            },
+        ),
         (
             {"DepthU": 16, "GlobalSplitU": 2},
             {"nt_hhs.gsu.requires_depthu_ge_32"},
@@ -215,7 +260,7 @@ def test_encoding_accepts_imported_baseline_domain_values():
     params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
     params.update(
         {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 2, 3, 4, 1],
+            "MatrixInstruction": [16, 16, 16, 1, 1, 2, 4, 4, 1],
             "WorkGroup": [64, 4, 1],
             "SourceSwap": True,
             "LdsBlockSizePerPadA": 4096,
@@ -232,7 +277,7 @@ def test_encoding_accepts_nt_hhs_values():
     params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
     params.update(
         {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 4, 1, 4, 1],
+            "MatrixInstruction": [16, 16, 16, 1, 1, 4, 2, 4, 1],
             "WorkGroup": [16, 8, 1],
             "AssertFree0ElementMultiple": 1,
             "AssertFree1ElementMultiple": 1,
@@ -254,9 +299,9 @@ def test_encoding_accepts_tt_hhs_tlds1_values():
     params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
     params.update(
         {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 7, 1, 2, 2],
+            "MatrixInstruction": [16, 16, 16, 1, 1, 8, 2, 2, 2],
             "WorkGroup": [32, 4, 1],
-            "TransposeLDS": 1,
+            "TransposeLDS": 0,
             "LdsBlockSizePerPadA": 128,
             "LdsBlockSizePerPadB": 6144,
             "LdsPadA": 16,
@@ -273,10 +318,10 @@ def test_encoding_accepts_nn_hhs_values():
     params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
     params.update(
         {
-            "MatrixInstruction": [16, 16, 16, 1, 1, 2, 7, 4, 1],
+            "MatrixInstruction": [16, 16, 16, 1, 1, 2, 8, 4, 1],
             "WorkGroup": [32, 2, 1],
             "DepthU": 128,
-            "TransposeLDS": 1,
+            "TransposeLDS": 0,
             "PrefetchGlobalRead": 0,
             "PrefetchLocalRead": 0,
             "1LDSBuffer": 0,
@@ -300,11 +345,11 @@ def test_encoding_accepts_tn_hhs_values():
             "MatrixInstruction": [16, 16, 16, 1, 1, 8, 2, 1, 4],
             "WorkGroup": [16, 4, 1],
             "VectorWidthA": 8,
-            "VectorWidthB": 8,
+            "VectorWidthB": 2,
             "StoreVectorWidth": 8,
             "StaggerUStride": 64,
             "ExpandPointerSwap": True,
-            "TransposeLDS": 1,
+            "TransposeLDS": 0,
             "LdsBlockSizePerPadA": 256,
             "LdsBlockSizePerPadB": 128,
             "LdsPadA": 8,

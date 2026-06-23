@@ -1,5 +1,6 @@
 import math
 import uuid
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
@@ -836,6 +837,113 @@ def _adaptive_topup_groups(
     return groups
 
 
+def _execute_current_batch(
+    db: EvoTensileDB,
+    current: PlannedBatch,
+    *,
+    output_root: str | Path,
+    target_profile: TargetProfile,
+    protocol: BenchmarkProtocol,
+    problem_type_hash: str,
+    benchmark_protocol_hash: str,
+    tensilelite_bin: str | Path,
+    compile_threads: int | None,
+    runner_bin: str | Path | None,
+    build_timeout_s: float | None,
+    runner_timeout_s: float | None,
+    generate_only: bool = False,
+) -> tuple[ExecutedBatch, bool, bool, list[Candidate]]:
+    current_protocol = protocol.with_overrides(
+        num_benchmarks=current.samples_per_pair,
+        num_elements_to_validate=protocol.num_elements_to_validate if current.requires_validation else 0,
+    )
+    yaml_path, manifest_path, run_dir = write_batch_inputs(
+        current,
+        output_root,
+        target_profile=target_profile,
+        protocol=current_protocol,
+        unique_run_dir=not generate_only,
+    )
+    if generate_only:
+        return ExecutedBatch(current, yaml_path, manifest_path, run_dir), False, False, []
+
+    build_result, structured_result, inserts, structured_errors = build_then_structured_benchmark(
+        yaml_path,
+        manifest_path,
+        run_dir,
+        shapes=current.shapes,
+        candidates=current.candidates,
+        db=db,
+        tensilelite_bin=tensilelite_bin,
+        compile_threads=compile_threads,
+        target_profile=target_profile,
+        protocol=current_protocol,
+        runner_bin=runner_bin,
+        trust_prior_validation=not current.requires_validation,
+        build_timeout_s=build_timeout_s,
+        runner_timeout_s=runner_timeout_s,
+    )
+    if build_result.timed_out and len(current.candidates) == 1:
+        recorded = _record_batch_status(
+            db,
+            current,
+            status="build_timeout",
+            run_id=build_result.run_id,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+        )
+        ingest = BatchIngestResult(inserted=0, unmapped=0, status_counts={"build_timeout": recorded})
+    elif not build_result.ok and len(current.candidates) == 1:
+        recorded = _record_batch_status(
+            db,
+            current,
+            status="build_failed",
+            run_id=build_result.run_id,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+        )
+        ingest = BatchIngestResult(inserted=0, unmapped=0, status_counts={"build_failed": recorded})
+    elif structured_errors:
+        status_counts = {}
+        if structured_result is not None and structured_result.timed_out:
+            recorded = _record_batch_status(
+                db,
+                current,
+                status="runner_timeout",
+                run_id=None,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+            )
+            status_counts["runner_timeout"] = recorded
+        ingest = BatchIngestResult(inserted=0, unmapped=0, status_counts=status_counts, errors=structured_errors)
+    else:
+        db.insert_evaluations(inserts)
+        ingest = _ingest_result_from_inserts(inserts)
+    runner_returncode = structured_result.returncode if structured_result is not None else None
+    failed = not build_result.ok or (structured_result is not None and not structured_result.ok) or not ingest.ok
+    accepted_candidate_hashes = {item.candidate_hash for item in inserts if item.status == "ok"}
+    failed_candidates = [
+        candidate for candidate in current.candidates if candidate.hash not in accepted_candidate_hashes
+    ]
+    build_only_failure = (
+        not build_result.ok
+        and not structured_errors
+        and (structured_result is None or structured_result.ok)
+        and len(current.candidates) > 1
+        and bool(failed_candidates)
+    )
+    executed = ExecutedBatch(
+        planned=current,
+        yaml_path=yaml_path,
+        manifest_path=manifest_path,
+        output_dir=run_dir,
+        build_returncode=build_result.returncode,
+        runner_returncode=runner_returncode,
+        ingest=ingest,
+    )
+    return executed, failed, build_only_failure, failed_candidates
+
+
 def execute_schedule(
     db: EvoTensileDB,
     *,
@@ -860,6 +968,7 @@ def execute_schedule(
     adaptive_policy: AdaptivePolicy | None = None,
     adaptive_initial_samples: int = 3,
     adaptive_max_rounds: int = 4,
+    batch_workers: int = 1,
 ) -> ScheduleResult:
     if not dry_run and not generate_only and runner_bin is None:
         raise ValueError("--runner-bin is required")
@@ -896,6 +1005,7 @@ def execute_schedule(
             runner_bin=runner_bin,
             build_timeout_s=build_timeout_s,
             runner_timeout_s=runner_timeout_s,
+            batch_workers=batch_workers,
         )
         planned = list(initial.planned_batches)
         executed = list(initial.executed_batches)
@@ -936,6 +1046,7 @@ def execute_schedule(
                     runner_bin=runner_bin,
                     build_timeout_s=build_timeout_s,
                     runner_timeout_s=runner_timeout_s,
+                    batch_workers=batch_workers,
                 )
                 planned.extend(topup.planned_batches)
                 executed.extend(topup.executed_batches)
@@ -951,6 +1062,9 @@ def execute_schedule(
                 break
             completed_rounds += 1
         return ScheduleResult(planned_batches=planned, executed_batches=executed, adaptive_rounds=completed_rounds)
+
+    if batch_workers <= 0:
+        raise ValueError("batch_workers must be positive")
 
     target_samples = max(min_samples, protocol.num_benchmarks)
 
@@ -973,7 +1087,12 @@ def execute_schedule(
         return ScheduleResult(planned_batches=planned)
 
     executed: list[ExecutedBatch] = []
-    for batch in planned:
+    planned_batches = list(planned)
+    batch_cursor = 0
+    pending_current_batches: list[PlannedBatch] = []
+    stop_requested = False
+
+    def current_batches_for_planned(batch: PlannedBatch) -> list[PlannedBatch]:
         # Recheck just before execution so a resumed run skips observations ingested by earlier batches.
         missing_by_shape = _missing_candidate_indices_by_shape(
             db,
@@ -985,101 +1104,97 @@ def execute_schedule(
             ignore_cache=ignore_cache,
         )
         if not missing_by_shape:
-            continue
-        current_batches = _pair_exact_batches(
+            return []
+        return _pair_exact_batches(
             batch_index_start=batch.batch_index,
             shapes=batch.shapes,
             candidates=batch.candidates,
             missing_by_shape=missing_by_shape,
         )
-        for current in current_batches:
-            current_protocol = protocol.with_overrides(
-                num_benchmarks=current.samples_per_pair,
-                num_elements_to_validate=protocol.num_elements_to_validate if current.requires_validation else 0,
-            )
-            yaml_path, manifest_path, run_dir = write_batch_inputs(
-                current,
-                output_root,
-                target_profile=target_profile,
-                protocol=current_protocol,
-                unique_run_dir=not generate_only,
-            )
-            if generate_only:
-                executed.append(ExecutedBatch(current, yaml_path, manifest_path, run_dir))
-                continue
 
-            # Keep codegen/build and benchmarking sequential on Strix Halo. TensileLite
-            # produces the final solutions/code objects, then the structured runner
-            # benchmarks exact accepted pairs with machine-readable IO.
-            build_result, structured_result, inserts, structured_errors = build_then_structured_benchmark(
-                yaml_path,
-                manifest_path,
-                run_dir,
+    def execute_current(current: PlannedBatch) -> tuple[ExecutedBatch, bool, bool, list[Candidate]]:
+        return _execute_current_batch(
+            db,
+            current,
+            output_root=output_root,
+            target_profile=target_profile,
+            protocol=protocol,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            tensilelite_bin=tensilelite_bin,
+            compile_threads=compile_threads,
+            runner_bin=runner_bin,
+            build_timeout_s=build_timeout_s,
+            runner_timeout_s=runner_timeout_s,
+            generate_only=generate_only,
+        )
+
+    def handle_result(
+        current: PlannedBatch,
+        result: tuple[ExecutedBatch, bool, bool, list[Candidate]],
+    ) -> None:
+        nonlocal stop_requested
+        executed_batch, failed, build_only_failure, failed_candidates = result
+        executed.append(executed_batch)
+        if build_only_failure:
+            isolate = execute_schedule(
+                db,
                 shapes=current.shapes,
-                candidates=current.candidates,
-                db=db,
+                candidates=failed_candidates,
+                output_root=Path(output_root) / f"batch_{current.batch_index:04d}_isolate",
+                target_profile=target_profile,
+                protocol=protocol,
+                min_samples=target_samples,
+                candidate_batch_size=max(1, len(current.candidates) // 2),
+                shape_batch_size=shape_batch_size,
+                ignore_cache=True,
+                max_batches=None,
+                dry_run=False,
+                generate_only=False,
                 tensilelite_bin=tensilelite_bin,
                 compile_threads=compile_threads,
-                target_profile=target_profile,
-                protocol=current_protocol,
+                keep_going=True,
                 runner_bin=runner_bin,
-                trust_prior_validation=not current.requires_validation,
                 build_timeout_s=build_timeout_s,
                 runner_timeout_s=runner_timeout_s,
+                batch_workers=1,
             )
-            if build_result.timed_out and len(current.candidates) == 1:
-                recorded = _record_batch_status(
-                    db,
-                    current,
-                    status="build_timeout",
-                    run_id=build_result.run_id,
-                    problem_type_hash=problem_type_hash,
-                    benchmark_protocol_hash=benchmark_protocol_hash,
-                )
-                ingest = BatchIngestResult(inserted=0, unmapped=0, status_counts={"build_timeout": recorded})
-            elif not build_result.ok and len(current.candidates) == 1:
-                recorded = _record_batch_status(
-                    db,
-                    current,
-                    status="build_failed",
-                    run_id=build_result.run_id,
-                    problem_type_hash=problem_type_hash,
-                    benchmark_protocol_hash=benchmark_protocol_hash,
-                )
-                ingest = BatchIngestResult(inserted=0, unmapped=0, status_counts={"build_failed": recorded})
-            elif structured_errors:
-                status_counts = {}
-                if structured_result is not None and structured_result.timed_out:
-                    recorded = _record_batch_status(
-                        db,
-                        current,
-                        status="runner_timeout",
-                        run_id=None,
-                        problem_type_hash=problem_type_hash,
-                        benchmark_protocol_hash=benchmark_protocol_hash,
-                    )
-                    status_counts["runner_timeout"] = recorded
-                ingest = BatchIngestResult(
-                    inserted=0, unmapped=0, status_counts=status_counts, errors=structured_errors
-                )
-            else:
-                db.insert_evaluations(inserts)
-                ingest = _ingest_result_from_inserts(inserts)
-            runner_returncode = structured_result.returncode if structured_result is not None else None
-            failed = (
-                not build_result.ok or (structured_result is not None and not structured_result.ok) or not ingest.ok
-            )
-            executed.append(
-                ExecutedBatch(
-                    planned=current,
-                    yaml_path=yaml_path,
-                    manifest_path=manifest_path,
-                    output_dir=run_dir,
-                    build_returncode=build_result.returncode,
-                    runner_returncode=runner_returncode,
-                    ingest=ingest,
-                )
-            )
-            if failed and not keep_going:
-                return ScheduleResult(planned_batches=planned, executed_batches=executed)
-    return ScheduleResult(planned_batches=planned, executed_batches=executed)
+            planned_batches.extend(isolate.planned_batches)
+            executed.extend(isolate.executed_batches)
+        if failed and not keep_going:
+            stop_requested = True
+
+    effective_workers = batch_workers if keep_going and not generate_only else 1
+    if effective_workers == 1:
+        while batch_cursor < len(planned_batches) and not stop_requested:
+            batch = planned_batches[batch_cursor]
+            batch_cursor += 1
+            for current in current_batches_for_planned(batch):
+                handle_result(current, execute_current(current))
+                if stop_requested:
+                    break
+        return ScheduleResult(planned_batches=planned_batches, executed_batches=executed)
+
+    futures: dict[Future[tuple[ExecutedBatch, bool, bool, list[Candidate]]], PlannedBatch] = {}
+    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+        while (batch_cursor < len(planned_batches) or pending_current_batches or futures) and not stop_requested:
+            while len(futures) < effective_workers and not stop_requested:
+                if pending_current_batches:
+                    current = pending_current_batches.pop(0)
+                elif batch_cursor < len(planned_batches):
+                    batch = planned_batches[batch_cursor]
+                    batch_cursor += 1
+                    pending_current_batches.extend(current_batches_for_planned(batch))
+                    continue
+                else:
+                    break
+                futures[executor.submit(execute_current, current)] = current
+            if not futures:
+                continue
+            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                current = futures.pop(future)
+                handle_result(current, future.result())
+                if stop_requested:
+                    break
+    return ScheduleResult(planned_batches=planned_batches, executed_batches=executed)

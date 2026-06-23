@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from textwrap import dedent
 
 from evotensile.candidate import Shape
 from evotensile.cli import main as cli_main
@@ -617,6 +618,97 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
     )
 
 
+def test_execute_schedule_salvages_final_yaml_from_nonzero_build(tmp_path: Path):
+    fake_tensile = tmp_path / "fake_tensile.py"
+    fake_tensile.write_text(
+        dedent(
+            """\
+            #!/usr/bin/env python3
+            import sys
+            from pathlib import Path
+            import yaml
+
+            config_path, out = Path(sys.argv[1]), Path(sys.argv[2])
+            out.mkdir(parents=True, exist_ok=True)
+            config = yaml.safe_load(config_path.read_text())
+            problem = config["BenchmarkProblems"][0][1]
+            problem_sizes = problem["BenchmarkFinalParameters"][0]["ProblemSizes"]
+            item = problem["ForkParameters"][0]["Groups"][0][1]
+            sol = dict(item)
+            mi = sol["MatrixInstruction"]
+            sol["MatrixInstruction"] = mi[:4]
+            sol["MIWaveTile"] = [mi[5], mi[6]]
+            sol["MIWaveGroup"] = [mi[7], mi[8]]
+            sol["SolutionIndex"] = 0
+            sol["KernelNameMin"] = "Kernel0"
+            (out / "1_BenchmarkProblems" / "Cijk_Ailk_Bjlk_HHS_BH_Bias_H_HA_S_SAV_UserArgs_00" / "Data").mkdir(parents=True, exist_ok=True)
+            (out / "1_BenchmarkProblems" / "Cijk_Ailk_Bjlk_HHS_BH_Bias_H_HA_S_SAV_UserArgs_00" / "Data" / "00_Final.yaml").write_text(
+                yaml.safe_dump(
+                    [{"MinimumRequiredVersion": "5.0.0"}, {"ProblemSizes": problem_sizes}, sol],
+                    sort_keys=False,
+                )
+            )
+            sys.exit(2)
+            """
+        ),
+        encoding="utf-8",
+    )
+    fake_tensile.chmod(0o755)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = [sample_candidates(1)[0], DOCUMENTED_WINNER_CANDIDATE]
+    shape = pilot_100_shapes()[0]
+
+    fake_runner = tmp_path / "fake_runner.py"
+    fake_runner.write_text(
+        dedent(
+            """\
+            #!/usr/bin/env python3
+            import argparse
+            import json
+
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--pairs")
+            parser.add_argument("--output")
+            args = parser.parse_args()
+            with open(args.pairs) as src, open(args.output, "w") as out:
+                for line in src:
+                    pair = json.loads(line)
+                    for sample_index in range(pair.get("num_benchmarks", 1)):
+                        out.write(json.dumps({
+                            "shape_id": pair["shape_id"],
+                            "candidate_hash": pair["candidate_hash"],
+                            "status": "ok",
+                            "sample_index": sample_index,
+                            "time_us": 1.0 + sample_index * 0.001,
+                            "validation": "NO_CHECK" if pair.get("num_elements_to_validate") == 0 else "PASSED",
+                            "solution_index": pair["library_solution_index"],
+                        }) + "\\n")
+            """
+        ),
+        encoding="utf-8",
+    )
+    fake_runner.chmod(0o755)
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "batches",
+        candidate_batch_size=2,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+    )
+
+    assert len(result.executed_batches) == 2
+    assert result.executed_batches[0].ingest is not None
+    assert result.executed_batches[0].ingest.status_counts == {"ok": 10, "rejected": 1}
+    assert result.executed_batches[1].ingest is not None
+    assert result.executed_batches[1].ingest.status_counts == {"build_failed": 1}
+    assert db.cache_summary() == {"ok": 10, "rejected": 1, "build_failed": 1}
+
+
 def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path):
     fake_tensile = tmp_path / "fake_tensile.py"
     fake_tensile.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n", encoding="utf-8")
@@ -667,8 +759,6 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
                 "1",
                 "--limit-shapes",
                 "1",
-                "--candidate-batch-size",
-                "1",
                 "--shape-batch-size",
                 "1",
                 "--dry-run",
@@ -683,6 +773,8 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
     assert default_metadata["planned_batches"] >= 1
     assert default_metadata["executed_batches"] == []
     assert default_metadata["runner_bin"] == DEFAULT_PROFILE.default_runner_bin
+    assert default_metadata["candidate_batch_size"] == 1
+    assert default_metadata["batch_workers"] == 1
     assert default_metadata["adaptive_sampling"] is True
     assert default_metadata["stop_on_error"] is False
 

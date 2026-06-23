@@ -131,6 +131,35 @@ def test_validate_structured_samples_requires_prior_validation_for_no_check_rows
     assert inserts[0].status == "validation_unknown"
 
 
+def test_validate_structured_samples_accepts_negative_rows_without_sample_index():
+    pair = RunnablePair(
+        shape_id="m1_n1_b1_k1",
+        candidate_hash="cand_1",
+        problem_index=0,
+        requested_solution_index=0,
+        library_solution_index=0,
+        manifest_solution_index=0,
+    )
+    sample = StructuredSample(
+        shape_id=pair.shape_id,
+        candidate_hash=pair.candidate_hash,
+        status="rejected",
+        sample_index=None,
+        time_us=None,
+        validation="DID_NOT_SATISFY_ASSERTS",
+        solution_index=0,
+    )
+
+    inserts = validate_structured_samples(
+        [sample],
+        runnable_pairs=[pair],
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+    )
+
+    assert inserts[0].status == "rejected"
+    assert inserts[0].validation == "DID_NOT_SATISFY_ASSERTS"
+
+
 def test_validate_structured_samples_accepts_trusted_no_check_rows():
     pair = RunnablePair(
         shape_id="m1_n1_b1_k1",
@@ -585,6 +614,71 @@ def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
     assert executed.ingest.ok is False
     assert "incomplete sample set" in executed.ingest.errors[0]
     assert db.cache_summary() == {"runner_timeout": 1}
+
+
+def test_structured_maps_renumbered_normalized_final_yaml_solution(tmp_path: Path):
+    script = tmp_path / "fake_normalizing_tensile.py"
+    script.write_text(
+        dedent(
+            """\
+            #!/usr/bin/env python3
+            import sys
+            from pathlib import Path
+
+            import yaml
+
+            config_path, out = Path(sys.argv[1]), Path(sys.argv[2])
+            out.mkdir(parents=True, exist_ok=True)
+            config = yaml.safe_load(config_path.read_text())
+            problem = config["BenchmarkProblems"][0][1]
+            problem_sizes = problem["BenchmarkFinalParameters"][0]["ProblemSizes"]
+            item = problem["ForkParameters"][0]["Groups"][0][1]
+            sol = dict(item)
+            mi = sol["MatrixInstruction"]
+            sol["MatrixInstruction"] = mi[:4]
+            sol["MIWaveTile"] = [mi[5], mi[6]]
+            sol["MIWaveGroup"] = [mi[7], mi[8]]
+            sol["SolutionIndex"] = 0
+            sol["KernelNameMin"] = "Kernel0"
+            sol["GlobalReadVectorWidthA"] = 1
+            sol["GlobalReadVectorWidthB"] = 1
+            sol["StaggerUStride"] = 256.0
+            sol["StoreVectorWidth"] = 1
+            (out / "00_Final.yaml").write_text(
+                yaml.safe_dump(
+                    [{"MinimumRequiredVersion": "5.0.0"}, {"ProblemSizes": problem_sizes}, sol],
+                    sort_keys=False,
+                )
+            )
+            sys.exit(0)
+            """
+        ),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = sample_candidates(2)
+
+    result = execute_schedule(
+        db,
+        shapes=pilot_100_shapes()[:1],
+        candidates=candidates,
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        tensilelite_bin=script,
+        runner_bin=_fake_structured_runner(tmp_path),
+        keep_going=True,
+    )
+
+    assert len(result.executed_batches) == 1
+    assert result.executed_batches[0].ingest is not None
+    assert result.executed_batches[0].ingest.status_counts == {"ok": 1, "rejected": 1}
+    with sqlite3.connect(tmp_path / "sched.sqlite") as con:
+        rows = con.execute(
+            "SELECT candidate_hash, status, solution_index FROM evaluations ORDER BY status, candidate_hash"
+        ).fetchall()
+    assert (candidates[1].hash, "ok", 0) in rows
+    assert (candidates[0].hash, "rejected", None) in rows
 
 
 def test_structured_records_rejected_candidate_from_final_yaml(tmp_path: Path):

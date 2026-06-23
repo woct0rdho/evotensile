@@ -227,6 +227,10 @@ def validate_structured_samples(
                 "structured runner emitted wrong solution_index for "
                 f"{key}: expected {pair.library_solution_index}, got {sample.solution_index}"
             )
+        status = _normalized_sample_status(sample, allow_no_check=allow_no_check)
+        if status != "ok" and sample.sample_index is None:
+            grouped[key].append(sample)
+            continue
         if sample.sample_index is None:
             raise ValueError(f"structured runner emitted missing sample_index for {key}")
         if sample.sample_index not in expected_indices:
@@ -239,14 +243,23 @@ def validate_structured_samples(
     inserts: list[EvaluationInsert] = []
     positive_status_seen = False
     for key, pair_samples in grouped.items():
-        actual_indices = [sample.sample_index for sample in pair_samples]
-        if len(actual_indices) != len(set(actual_indices)):
-            raise ValueError(f"structured runner emitted duplicate sample_index for {key}: {actual_indices}")
-        if set(actual_indices) != expected_indices:
-            raise ValueError(
-                f"structured runner emitted incomplete sample set for {key}: "
-                f"expected {sorted(expected_indices)}, got {sorted(actual_indices)}"
-            )
+        negative_samples = [
+            sample
+            for sample in pair_samples
+            if _normalized_sample_status(sample, allow_no_check=allow_no_check) != "ok"
+        ]
+        if negative_samples:
+            if len(pair_samples) != len(negative_samples):
+                raise ValueError(f"structured runner emitted mixed positive and negative samples for {key}")
+        else:
+            actual_indices = [sample.sample_index for sample in pair_samples]
+            if len(actual_indices) != len(set(actual_indices)):
+                raise ValueError(f"structured runner emitted duplicate sample_index for {key}: {actual_indices}")
+            if set(actual_indices) != expected_indices:
+                raise ValueError(
+                    f"structured runner emitted incomplete sample set for {key}: "
+                    f"expected {sorted(expected_indices)}, got {sorted(actual_indices)}"
+                )
         for sample in sorted(pair_samples, key=lambda item: item.sample_index if item.sample_index is not None else -1):
             status = _normalized_sample_status(sample, allow_no_check=allow_no_check)
             if status == "ok":
@@ -359,16 +372,29 @@ def build_then_structured_benchmark(
         env=env,
         timeout_s=build_timeout_s,
     )
-    if not build_result.ok:
+    planned_pairs = {(shape.id, candidate.hash) for shape in shapes for candidate in candidates}
+    if not build_result.ok and not build_result.output_dir.exists():
         return build_result, None, [], []
 
-    planned_pairs = {(shape.id, candidate.hash) for shape in shapes for candidate in candidates}
     solution_yamls = [str(path) for path in find_solution_yamls([run_dir])]
     runnable, negative = build_runnable_pairs(
         manifest_path=manifest_path,
         solution_yaml_paths=solution_yamls,
         planned_pairs=planned_pairs,
     )
+    if not runnable:
+        if not build_result.ok:
+            return build_result, None, [], []
+        for idx, item in enumerate(negative):
+            negative[idx] = EvaluationInsert(
+                shape_id=item.shape_id,
+                candidate_hash=item.candidate_hash,
+                run_id=build_result.run_id,
+                status=item.status,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+            )
+        return build_result, None, negative, []
     for idx, item in enumerate(negative):
         negative[idx] = EvaluationInsert(
             shape_id=item.shape_id,
@@ -378,8 +404,6 @@ def build_then_structured_benchmark(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
         )
-    if not runnable:
-        return build_result, None, negative, []
 
     structured = run_structured_backend(
         run_dir=run_dir,

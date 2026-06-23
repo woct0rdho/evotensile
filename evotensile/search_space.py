@@ -138,6 +138,7 @@ macro_tile = _matrix_instruction_macro_tile
 STORE_SYNC_OPT_CHOICES = (0, 2, 4)
 STORE_SYNC_BATCH_CHOICES = (10, 12)
 GROUP_LOAD_STORE_BATCH_CHOICES = (12,)
+NT_HHS_WMMA_V1_OUTPUT_VECTOR_WIDTH = 1
 
 
 @dataclass(frozen=True)
@@ -149,8 +150,34 @@ class InvalidReason:
     shape_dependent: bool = False
 
 
+def _largest_divisor_choice(value: int, choices: Sequence[int]) -> int:
+    valid = [choice for choice in choices if choice > 0 and value % choice == 0]
+    return max(valid) if valid else 1
+
+
 def _repair_linked_params(params: dict[str, Any], *, rng: random.Random | None = None) -> dict[str, Any]:
     params = dict(params)
+    mi_wave_tile0 = params["MatrixInstruction"][5]
+    mi_wave_tile1 = params["MatrixInstruction"][6]
+    if mi_wave_tile0 % params["VectorWidthA"] != 0:
+        params["VectorWidthA"] = _largest_divisor_choice(mi_wave_tile0, DOMAINS["VectorWidthA"])
+    if mi_wave_tile1 % params["VectorWidthB"] != 0:
+        params["VectorWidthB"] = _largest_divisor_choice(mi_wave_tile1, DOMAINS["VectorWidthB"])
+    if params["StoreVectorWidth"] != -1:
+        if params["SourceSwap"] and params["VectorWidthA"] % params["StoreVectorWidth"] != 0:
+            params["StoreVectorWidth"] = -1
+        elif (
+            not params["SourceSwap"]
+            and params["VectorWidthA"] * NT_HHS_WMMA_V1_OUTPUT_VECTOR_WIDTH % params["StoreVectorWidth"] != 0
+        ):
+            params["StoreVectorWidth"] = -1
+    if params["TransposeLDS"] == 1:
+        params["TransposeLDS"] = 0
+    if params["1LDSBuffer"]:
+        if params["PrefetchGlobalRead"] == 0:
+            params["PrefetchGlobalRead"] = 1
+        if params["ScheduleIterAlg"] == 1 and params["ScheduleLocalWrite"]:
+            params["ScheduleIterAlg"] = 2
     if params["GlobalSplitU"] > 1 and params["DepthU"] < 32:
         params["DepthU"] = 32
     if params["TransposeLDS"] == 2:
@@ -198,6 +225,76 @@ def explain_invalid_nt_hhs(params: dict[str, Any], *, shape: Shape | None = None
                 "Macro tile dimensions above 256 are currently rejected before TensileLite build.",
                 ("MatrixInstruction",),
                 source="heuristic",
+            )
+        )
+
+    mi_wave_tile0 = params["MatrixInstruction"][5]
+    mi_wave_tile1 = params["MatrixInstruction"][6]
+    if mi_wave_tile0 % params["VectorWidthA"] != 0:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.mi_wave_tile0.requires_vector_width_a_divisor",
+                "TensileLite rejects MatrixInstruction MIWaveTile0 values that are not multiples of VectorWidthA.",
+                ("MatrixInstruction", "VectorWidthA"),
+                source="solutionstructs",
+            )
+        )
+    if mi_wave_tile1 % params["VectorWidthB"] != 0:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.mi_wave_tile1.requires_vector_width_b_divisor",
+                "TensileLite rejects MatrixInstruction MIWaveTile1 values that are not multiples of VectorWidthB.",
+                ("MatrixInstruction", "VectorWidthB"),
+                source="solutionstructs",
+            )
+        )
+    if params["StoreVectorWidth"] != -1:
+        if params["SourceSwap"] and params["VectorWidthA"] % params["StoreVectorWidth"] != 0:
+            reasons.append(
+                InvalidReason(
+                    "nt_hhs.source_swap.requires_store_vector_width_divides_vector_width_a",
+                    "TensileLite rejects SourceSwap store vector widths that do not divide VectorWidthA.",
+                    ("SourceSwap", "VectorWidthA", "StoreVectorWidth"),
+                    source="solutionstructs",
+                )
+            )
+        if (
+            not params["SourceSwap"]
+            and params["VectorWidthA"] * NT_HHS_WMMA_V1_OUTPUT_VECTOR_WIDTH % params["StoreVectorWidth"] != 0
+        ):
+            reasons.append(
+                InvalidReason(
+                    "nt_hhs.non_source_swap.requires_store_vector_width_divides_miovw",
+                    "TensileLite rejects non-SourceSwap store vector widths that do not divide VectorWidthA * MIOutputVectorWidth.",
+                    ("SourceSwap", "VectorWidthA", "StoreVectorWidth"),
+                    source="solutionstructs",
+                )
+            )
+    if params["TransposeLDS"] == 1:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.tlds1.rejects_nt_tlua_tlub",
+                "TensileLite rejects TransposeLDS=1 when both NT operands use TLU layout.",
+                ("TransposeLDS",),
+                source="solutionstructs",
+            )
+        )
+    if params["1LDSBuffer"] and params["PrefetchGlobalRead"] == 0:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.one_lds_buffer.rejects_pgr0",
+                "TensileLite rejects 1LDSBuffer with PrefetchGlobalRead=0 because PGR=0 already uses one LDS buffer.",
+                ("1LDSBuffer", "PrefetchGlobalRead"),
+                source="solutionstructs",
+            )
+        )
+    if params["1LDSBuffer"] and params["ScheduleLocalWrite"] and params["ScheduleIterAlg"] not in {2, 3}:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.one_lds_buffer.requires_sia2_or_sia3_with_slw",
+                "TensileLite rejects 1LDSBuffer with scheduled local writes unless ScheduleIterAlg is 2 or 3.",
+                ("1LDSBuffer", "ScheduleIterAlg", "ScheduleLocalWrite"),
+                source="solutionstructs",
             )
         )
 
