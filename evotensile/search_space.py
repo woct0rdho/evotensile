@@ -97,7 +97,7 @@ DOMAINS: dict[str, list[Any]] = {
     "WorkGroupMapping": [8, 4, 5, 16],
     "StaggerU": [32, 0, 8, 16, 64],
     "StaggerUMapping": [0, 1],
-    "SourceSwap": [1, 0],
+    "SourceSwap": [True, False],
     "1LDSBuffer": [1, 0],
     "ClusterLocalRead": [0, 1],
     "TransposeLDS": [0, 1, 2],
@@ -107,7 +107,7 @@ DOMAINS: dict[str, list[Any]] = {
     "GlobalReadVectorWidthB": [8, 1, 2, 4],
     "StoreVectorWidth": [-1, 1, 2, 4, 8],
     "StaggerUStride": [256, 0, 64, 128],
-    "ExpandPointerSwap": [0, 1],
+    "ExpandPointerSwap": [False, True],
     "AssertFree0ElementMultiple": [8, 1],
     "AssertFree1ElementMultiple": [8, 1],
     "AssertSummationElementMultiple": [16, 1],
@@ -130,7 +130,7 @@ FIXED_PARAMS: dict[str, Any] = {
     "ScheduleLocalWrite": 1,
     "LocalReadVectorWidth": 16,
     "StoreRemapVectorWidth": 0,
-    "MIArchVgpr": 1,
+    "MIArchVgpr": True,
 }
 
 macro_tile = _matrix_instruction_macro_tile

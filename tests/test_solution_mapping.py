@@ -82,7 +82,7 @@ def test_solution_mapping_ignores_derived_expand_pointer_swap():
     solution = _final_solution_from_candidate(candidate)
     solution["ExpandPointerSwap"] = True
 
-    assert candidate.canonical_params()["ExpandPointerSwap"] == 0
+    assert candidate.canonical_params()["ExpandPointerSwap"] is False
     assert solution_matches_candidate(solution, candidate.canonical_params())
 
 
