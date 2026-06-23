@@ -145,8 +145,22 @@ class ScheduleCliContext:
     adaptive_policy: AdaptivePolicy | None
 
 
+def _resolve_candidate_batch_size(args: argparse.Namespace, profile: TargetProfile) -> int:
+    if args.candidate_batch_size is not None:
+        return args.candidate_batch_size
+    return 1 if args.proposal in PROPOSAL_MODES else profile.default_candidate_batch_size
+
+
 def _validate_schedule_args(args: argparse.Namespace) -> None:
-    positive_ints = ("candidate_batch_size", "shape_batch_size", "min_samples", "adaptive_initial_samples")
+    profile = _profile(args)
+    args.candidate_batch_size = _resolve_candidate_batch_size(args, profile)
+    positive_ints = (
+        "candidate_batch_size",
+        "shape_batch_size",
+        "min_samples",
+        "adaptive_initial_samples",
+        "batch_workers",
+    )
     for name in positive_ints:
         if getattr(args, name) <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
@@ -252,6 +266,7 @@ def _execute_schedule_from_args(
         adaptive_policy=context.adaptive_policy,
         adaptive_initial_samples=args.adaptive_initial_samples,
         adaptive_max_rounds=args.adaptive_max_rounds,
+        batch_workers=args.batch_workers,
     )
 
 
@@ -275,6 +290,7 @@ def _schedule_metadata_common(
         "shapes": len(shapes),
         "candidate_batch_size": args.candidate_batch_size,
         "shape_batch_size": args.shape_batch_size,
+        "batch_workers": args.batch_workers,
         "min_samples": args.min_samples,
         "ignore_cache": args.ignore_cache,
         "dry_run": args.dry_run,
@@ -322,8 +338,14 @@ def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False)
 
 
 def _add_execution_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--candidate-batch-size", type=int, default=DEFAULT_PROFILE.default_candidate_batch_size)
+    parser.add_argument(
+        "--candidate-batch-size",
+        type=int,
+        default=None,
+        help="Candidates per TensileLite config; defaults to 1 for proposal-driven exploration",
+    )
     parser.add_argument("--shape-batch-size", type=int, default=DEFAULT_PROFILE.default_shape_batch_size)
+    parser.add_argument("--batch-workers", type=int, default=1, help="Parallel TensileLite batches to run")
     parser.add_argument("--min-samples", type=int, default=1)
     parser.add_argument("--ignore-cache", action="store_true")
     parser.add_argument("--max-batches", type=int, default=None)
@@ -511,6 +533,7 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
     print(f"candidates: {len(candidates)}")
     print(f"candidate_batch_size: {args.candidate_batch_size}")
     print(f"shape_batch_size: {args.shape_batch_size}")
+    print(f"batch_workers: {args.batch_workers}")
     if context.runner_bin:
         print(f"runner_bin: {context.runner_bin}")
     print(f"planned batches: {len(result.planned_batches)}")

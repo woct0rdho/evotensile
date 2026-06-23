@@ -19,7 +19,6 @@ from .tensilelite_keys import (
     SOLUTION_INDEX_KEY,
     SOLUTION_NAME_MIN_KEY,
     SOLUTION_YAML_GLOBS,
-    STORE_VECTOR_WIDTH_KEY,
 )
 
 
@@ -105,10 +104,6 @@ def solution_matches_candidate(solution: dict[str, Any], candidate_params: dict[
     if MATRIX_INSTRUCTION_KEY in candidate_params:
         if not _matrix_instruction_matches(candidate_params[MATRIX_INSTRUCTION_KEY], solution):
             return False
-    if candidate_params.get(STORE_VECTOR_WIDTH_KEY, -1) != -1:
-        if not _value_equal(candidate_params[STORE_VECTOR_WIDTH_KEY], solution.get(STORE_VECTOR_WIDTH_KEY)):
-            return False
-
     for key in sorted(DIRECT_SOLUTION_MATCH_KEYS):
         if key not in candidate_params:
             continue
