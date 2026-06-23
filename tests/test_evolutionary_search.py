@@ -303,7 +303,7 @@ def test_encoding_accepts_tn_hhs_values():
             "VectorWidthB": 8,
             "StoreVectorWidth": 8,
             "StaggerUStride": 64,
-            "ExpandPointerSwap": 1,
+            "ExpandPointerSwap": True,
             "TransposeLDS": 1,
             "LdsBlockSizePerPadA": 256,
             "LdsBlockSizePerPadB": 128,

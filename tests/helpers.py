@@ -22,7 +22,7 @@ DOCUMENTED_WINNER_CANDIDATE = make_candidate(
         "WorkGroupMapping": 8,
         "StaggerU": 32,
         "StaggerUMapping": 0,
-        "SourceSwap": 1,
+        "SourceSwap": True,
         "1LDSBuffer": 1,
         "ClusterLocalRead": 0,
         "VectorWidthB": 2,
