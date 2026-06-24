@@ -13,6 +13,7 @@ from evotensile.scheduler import (
     propose_candidates,
     repair_seed_candidates,
 )
+from evotensile.search_space import cheap_constraints, make_candidate
 from evotensile.shapes import pilot_100_shapes
 from tests.helpers import DOCUMENTED_WINNER_CANDIDATE, sample_candidates
 
@@ -539,6 +540,17 @@ def test_random_proposal_does_not_include_fixed_controls(tmp_path: Path):
     assert DOCUMENTED_WINNER_CANDIDATE.hash not in {candidate.hash for candidate in proposed}
 
 
+def test_random_proposals_respect_target_shape_rules(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    shape = Shape(m=8192, n=8192, batch=1, k=8192)
+
+    proposed = propose_candidates(db, proposal="random", num_random=16, seed=20260701, target_shapes=[shape])
+
+    assert len(proposed) == 16
+    assert all(cheap_constraints(candidate.canonical_params(), shape=shape) for candidate in proposed)
+
+
 def test_non_random_proposals_return_empty_without_evidence(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -572,6 +584,32 @@ def test_mixed_random_proposals_do_not_use_random_as_evolution_parents(tmp_path:
         )
 
         assert {candidate.source for candidate in proposed} == {"random"}
+
+
+def test_execute_schedule_records_shape_rule_rejection_without_build(tmp_path: Path):
+    fake_tensile = tmp_path / "fail_if_called.py"
+    fake_tensile.write_text("#!/usr/bin/env python3\nraise SystemExit(99)\n", encoding="utf-8")
+    fake_tensile.chmod(0o755)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidate = make_candidate(
+        {**DOCUMENTED_WINNER_CANDIDATE.canonical_params(), "GlobalSplitU": 2, "DepthU": 32},
+        source="shape_rule",
+    )
+    shape = Shape(m=8192, n=8192, batch=1, k=8192)
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=[candidate],
+        output_root=tmp_path / "batches",
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=tmp_path / "unused_runner",
+    )
+
+    assert result.executed_batches == []
+    assert db.cache_summary() == {"rejected": 1}
 
 
 def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path):

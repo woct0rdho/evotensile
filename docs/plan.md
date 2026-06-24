@@ -58,7 +58,7 @@ The pilot may benchmark more than 10 configs per shape. Initial budget target: r
 - External orchestration first. EvoTensile generates candidate batches, emits TensileLite YAML with `Groups`, runs TensileLite, parses outputs, and records results.
 - Canonical candidate hashes. Every candidate config gets a stable canonical representation and hash. This enables deduplication, caching, and reproducibility.
 - Persistent result database. Every attempted `(shape, candidate, environment)` should be stored, including invalid builds, correctness failures, timeouts, and benchmark results.
-- Batch evaluation. Avoid per-candidate/per-shape process launches. Emit batches of candidates into `Groups` and evaluate shape buckets in one TensileLite run when possible.
+- Batch evaluation. Avoid per-candidate/per-shape process launches. Emit batches of candidates into `Groups` and evaluate shape groups in one TensileLite run when possible.
 - Search data is valuable. The pilot should produce a reusable dataset for later nearest-shape seeding and surrogate training.
 - Hot-loop throughput is the tuning objective. Search-time and final timings should both use a hot-loop protocol that represents steady-state long-running inference/training throughput. Cold-loop behavior is not tracked during tuning because it increases wall time; analyze it later only if first-request or bursty-idle latency becomes important.
 
@@ -80,70 +80,7 @@ Generic implemented capabilities are summarized in `README.md`. Target-specific 
 
 ## 6. Candidate Model
 
-A candidate is a complete TensileLite solution parameter bundle, not a single independent knob. EvoTensile will emit each candidate as one `Groups` entry.
-
-Initial candidate fields:
-
-```python
-Candidate = {
-    # required / fixed-ish
-    "KernelLanguage": "Assembly",
-    "WavefrontSize": 32,
-
-    # tile / MI family
-    "MatrixInstruction": [...],
-    "WorkGroup": [...],
-    "DepthU": 16 | 32 | 64,
-    "GlobalSplitU": 1 | 2 | 4,
-    "GlobalSplitUAlgorithm": "MultipleBuffer",
-
-    # pipeline / schedule
-    "PrefetchGlobalRead": 0 | 1 | 2,
-    "PrefetchLocalRead": 0 | 1,
-    "ScheduleGlobalRead": 1,
-    "ScheduleLocalWrite": 1,
-    "ScheduleIterAlg": 1 | 2 | 3,
-
-    # spatial ordering / cache behavior
-    "WorkGroupMapping": 4 | 5 | 8 | 16,
-    "StaggerU": 0 | 8 | 16 | 32 | 64,
-    "StaggerUStride": 256,
-    "StaggerUMapping": 0 | 1,
-
-    # LDS / source layout
-    "SourceSwap": 0 | 1,
-    "1LDSBuffer": 0 | 1,
-    "ClusterLocalRead": 0 | 1,
-    "TransposeLDS": 0 | 2,
-
-    # vectorization
-    "VectorWidthA": 1,
-    "VectorWidthB": 1 | 2,
-    "GlobalReadVectorWidthA": 1 | 2 | 4 | 8,
-    "GlobalReadVectorWidthB": 1 | 2 | 4 | 8,
-    "LocalReadVectorWidth": 16,
-
-    # stores / assertions
-    "StoreVectorWidth": -1 | 1,
-    "StoreRemapVectorWidth": 0,
-    "StorePriorityOpt": True | False,
-    "NumElementsPerBatchStore": 0 | 1 | 2 | 4 | 6 | 8 | 10 | 12 | 14 | 16 | 20 | 24 | 32,
-    "StoreSyncOpt": 0 | 1 | 2 | 4,
-    "GroupLoadStore": False | True,
-    "LdsBlockSizePerPadA/B": 0 | 128 | 256 | 512 | 1024 | 2048,
-    "LdsPadA/B": 0 | 4 | 8 | 16,
-    "AssertFree0ElementMultiple": 8,
-    "AssertFree1ElementMultiple": 8,
-    "AssertSummationElementMultiple": 16,
-}
-```
-
-The search space should support conditional constraints and linked mutations. Examples:
-- mutate `MatrixInstruction`, `WorkGroup`, and macro-tile-related choices together;
-- mutate `DepthU` with vector-width / prefetch choices;
-- mutate `WorkGroupMapping`, `StaggerU`, and `StaggerUMapping` together;
-- keep LDS padding as linked artifact-backed profiles instead of independent random padding choices;
-- keep known-invalid or repeatedly failing combinations out of later batches.
+A candidate is a complete TensileLite solution parameter bundle, not a single independent knob. EvoTensile emits each candidate as one `Groups` entry. Current NT HHS domain values, invalidity rules, linked repairs, random proposal bias, and GOMEA linkage groups are maintained in `docs/nt_hhs_search_space_plan.md`; this document keeps the target workflow and run history.
 
 ## 7. TensileLite Evaluation Strategy
 
@@ -237,49 +174,9 @@ Index `(problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash)` h
 
 ## 9. Search Algorithms
 
-### Phase A: baseline generators
+Search-space, random proposal, GOMEA, and rejection-mining details are maintained in `docs/nt_hhs_search_space_plan.md`. This plan keeps only the target workflow context: the current production search loop combines validation-passed baseline/transfer candidates, random restarts, local/DE/GOMEA proposals, structured execution, adaptive sampling, and optional `repair-outliers` before GridBased update.
 
-Implemented now:
-- deterministic conservative seeds, including large-square, TLDS2/LDS-pad, and small/skinny checked-in-style NT seed families;
-- exact-shape and nearest-shape winner transfer from validation-passed cached observations, defaulting to `4` nearby shapes and `2` top candidates per shape;
-- random valid generator;
-- local mutation around cached DB elites;
-- scheduler proposal modes for seed/random, local-only, seed/random plus local refinement, categorical DE, GOMEA, and combined evolutionary batches;
-- a ground-truth documented-winner helper for checks, not as a default random-init seed.
-
-Still planned:
-- stratified generator over macro-tile / depth / GSU / schedule families;
-- shape-aware MI/GSU generator inspired by TensileLite's beta `tensile_config_generator.py`;
-- configurable seed packs for known winners and transferred TN/NN candidates.
-
-### Phase B: local/evolutionary search
-
-Implemented now:
-- categorical DE-style mutation/crossover over encoded TensileLite domain values;
-- GOMEA-style linkage neighborhoods and linkage-tree mixing inspired by `~/rocm_wmma_gemm/rocm_wmma_gemm/config/tune.py`;
-- generic seed/random plus GOMEA reproduction of the documented `8192^3` winner within the first 32 proposals, without inserting the documented winner or using the hindsight-directed operator;
-- `schedule-batches` now defaults to the recommended 100-shape first-pass settings: nearest-shape transfer, `--proposal seed-random-gomea`, `--num-random 64`, and `--gomea-count 64`.
-
-Still needed:
-- richer shape-aware candidate proposal beyond nearest-shape winner transfer and optional `--proposal-shape-id` filtering;
-- richer crossover between near-winners;
-- generic refinement operators that do not bake in known-winner hindsight;
-- richer failure-aware candidate filtering beyond the current reusable negative-cache statuses.
-
-For the pilot, a simple version is enough:
-
-```text
-per shape:
-  evaluate seed + random/stratified batch
-  keep top K elites
-  repeat R rounds:
-    generate mutations/crossovers from elites
-    add random restarts
-    evaluate batch
-    update elites
-```
-
-### Phase C: surrogate assistance
+### Surrogate Assistance
 
 After enough observations exist:
 - train random-forest / extra-trees models;
@@ -290,6 +187,8 @@ After enough observations exist:
 Classic Gaussian-process Bayesian optimization is not the first choice because the space is high-dimensional, discrete/categorical, constrained, and noisy.
 
 ### Previous 8192^3 Reproduction Run Context
+
+Historical one-shape reproduction details are retained here as target evidence. Current search-space and proposal mechanics live in `docs/nt_hhs_search_space_plan.md`.
 
 Source artifacts:
 - `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/run_one_shape_random_repro.py`
@@ -319,11 +218,7 @@ Prior hindsight-directed-refinement run, retained only as context:
 - cool-loop screening ranked the `NEPBS16` sibling first and the documented `NEPBS10` winner third;
 - hot-loop retime reversed that order: documented `NEPBS10` median `46698.1 GFLOP/s`, sibling `NEPBS16` median `45205.2 GFLOP/s`.
 
-Current non-hindsight evolutionary reproduction check:
-- `propose_candidates(... proposal="seed-random-gomea", num_random=12, gomea_count=64, seed=1151)` generates the documented winner at candidate position `32` from an empty DB;
-- when seeded with the prior plain random/local observations excluding the documented control, `seed-random-gomea` still generates the winner at proposal position `32`, requiring `20` new uncached candidates before the winner if the previous `20` non-control evaluations are treated as cached;
-- pure categorical DE did not generate the exact winner in the checked budgets, so GOMEA-style linked schedule/store neighborhood expansion is currently the useful generic evolutionary operator for this reproduction case;
-- this is generic in the sense that it sweeps linked categorical groups around seeds/parents and uses the documented winner only as an external success predicate.
+Current non-hindsight GOMEA/search-space reproduction checks are tracked in `docs/nt_hhs_search_space_plan.md`.
 
 ## 10. Shape Transfer Strategy
 
@@ -448,7 +343,7 @@ Done for the 100-shape pilot:
 
 Post-100-shape status and remaining risks:
 - The `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md` plan is still applicable: start with the 100-shape NT HHS non-AuxH grid, use hot-loop retiming from `tensile_fp16_nt_hhs.md`, and treat the `8192^3` winner as a center-point seed/evidence rather than a shape-generic conclusion.
-- Search-space review expanded the first-pass domain from the grid vocabulary plus observed NT artifacts: TLDS2/LDS-pad profiles, `NumElementsPerBatchStore=0/14/20/24/32`, `StoreSyncOpt=1/2/4`, `GroupLoadStore=True`, WGM `4/16`, stagger `16/64`, and checked-in-style small/skinny seed families.
+- Search-space review details and current proposal policy are maintained in `docs/nt_hhs_search_space_plan.md`.
 - Exact-shape and nearest-shape transfer now seed each proposal from validation-passed winners of cached shapes before random restarts. Imported hipBLASLt baseline configs participate in this path only if they remain the best cached candidates for those shapes.
 - Pair-level cache inefficiency has a first fix: scheduler now groups shapes by exact missing candidate subset within each candidate/shape chunk, so planned batches do not deliberately re-run cached pairs. Future dense-merge heuristics may allow a small number of `ok` extras if compile overhead dominates.
 - APU thermal coupling: compile and benchmark are sequential, but a highly threaded compile can heat Strix Halo immediately before GPU timing. Default policy is still no deliberate compile/benchmark overlap and no deliberate cool-down sleep; reduce `--compile-threads` if pilot timings look thermally biased.

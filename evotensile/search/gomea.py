@@ -13,7 +13,15 @@ from evotensile.search.encoding import (
     hamming_distance,
     ordered_domain_values,
 )
-from evotensile.search_space import explain_invalid_nt_hhs, make_candidate, repair_linked_overrides
+from evotensile.search_space import (
+    NT_HHS_RANDOM_VALU_VGPR_HEADROOM,
+    _valu_vgpr_lower_bound,
+    cheap_constraints,
+    explain_invalid_nt_hhs,
+    make_candidate,
+    repair_linked_overrides,
+)
+from evotensile.shapes import Shape
 
 
 def _ranked_genomes(parents: list[Candidate]) -> list[tuple[Candidate, tuple[int, ...]]]:
@@ -84,9 +92,11 @@ NT_HHS_LINKAGE_GROUPS = (
     ("MatrixInstruction", "WorkGroup", "DepthU", "GlobalSplitU"),
     ("TransposeLDS", "LdsBlockSizePerPadA", "LdsBlockSizePerPadB", "LdsPadA", "LdsPadB"),
     ("PrefetchGlobalRead", "PrefetchLocalRead", "1LDSBuffer", "ClusterLocalRead", "VectorWidthB"),
-    ("GlobalReadVectorWidthA", "GlobalReadVectorWidthB", "VectorWidthB"),
-    ("ScheduleIterAlg", "WorkGroupMapping", "StaggerU", "StaggerUMapping", "SourceSwap"),
+    ("GlobalReadVectorWidthA", "GlobalReadVectorWidthB", "VectorWidthA", "VectorWidthB"),
+    ("ScheduleIterAlg", "WorkGroupMapping", "StaggerU", "StaggerUStride", "StaggerUMapping", "SourceSwap"),
     ("StorePriorityOpt", "NumElementsPerBatchStore", "StoreSyncOpt", "GroupLoadStore", "StoreVectorWidth"),
+    ("ExpandPointerSwap",),
+    ("AssertFree0ElementMultiple", "AssertFree1ElementMultiple", "AssertSummationElementMultiple"),
 )
 _PRIORITY_GROUPS = (
     ("ScheduleIterAlg", "StorePriorityOpt"),
@@ -98,6 +108,15 @@ _PRIORITY_GROUPS = (
     ("GlobalSplitU", "DepthU"),
     *NT_HHS_LINKAGE_GROUPS,
 )
+
+
+def neighborhood_group_names() -> tuple[tuple[str, ...], ...]:
+    groups = [*_PRIORITY_GROUPS, *tuple((name,) for group in _PRIORITY_GROUPS for name in group)]
+    seen_groups: list[tuple[str, ...]] = []
+    for group in groups:
+        if group not in seen_groups:
+            seen_groups.append(group)
+    return tuple(seen_groups)
 
 
 def _group_value_products(names: tuple[str, ...], current: dict[str, object]):
@@ -118,11 +137,7 @@ def gomea_neighborhood_candidates(
         return []
     out: list[Candidate] = []
     seen_hashes = set(exclude or ())
-    groups = [*_PRIORITY_GROUPS, *tuple((name,) for group in _PRIORITY_GROUPS for name in group)]
-    seen_groups: list[tuple[str, ...]] = []
-    for group in groups:
-        if group not in seen_groups:
-            seen_groups.append(group)
+    seen_groups = neighborhood_group_names()
     parent_pool = parents if max_elites is None else parents[:max_elites]
     for parent in parent_pool:
         frontier = [dict(parent.canonical_params())]
@@ -156,16 +171,26 @@ def _genome_with_group(base: tuple[int, ...], donor: tuple[int, ...], group: tup
     return tuple(genes)
 
 
-def _is_rule_valid_genome(genome: tuple[int, ...]) -> bool:
+def _gomea_candidate_ok(params: dict[str, object], *, target_shapes: Sequence[Shape] | None = None) -> bool:
+    if explain_invalid_nt_hhs(params):
+        return False
+    if target_shapes and not all(cheap_constraints(params, shape=shape) for shape in target_shapes):
+        return False
+    return _valu_vgpr_lower_bound(params) <= NT_HHS_RANDOM_VALU_VGPR_HEADROOM
+
+
+def _is_rule_valid_genome(genome: tuple[int, ...], *, target_shapes: Sequence[Shape] | None = None) -> bool:
     candidate = genome_to_candidate(genome, source="gomea", repair=True)
-    return not explain_invalid_nt_hhs(candidate.canonical_params())
+    return _gomea_candidate_ok(candidate.canonical_params(), target_shapes=target_shapes)
 
 
-def _rule_valid_candidate(genome: tuple[int, ...], *, source: str, parents: tuple[str, ...]) -> Candidate:
+def _rule_valid_candidate(
+    genome: tuple[int, ...], *, source: str, parents: tuple[str, ...], target_shapes: Sequence[Shape] | None = None
+) -> Candidate:
     params = genome_to_candidate(genome, source=source, parents=parents, repair=True).canonical_params()
     params = repair_linked_overrides(params)
-    if explain_invalid_nt_hhs(params):
-        raise ValueError("candidate failed NT HHS invalidity rules")
+    if not _gomea_candidate_ok(params, target_shapes=target_shapes):
+        raise ValueError("candidate failed NT HHS GOMEA proposal checks")
     return make_candidate(params, source=source, parents=parents)
 
 
@@ -177,6 +202,7 @@ def gomea_candidates(
     elite_count: int = 8,
     include_forced_improvement: bool = True,
     exclude: set[str] | None = None,
+    target_shapes: Sequence[Shape] | None = None,
 ) -> list[Candidate]:
     """Generate linkage-aware categorical candidates from ranked parents.
 
@@ -206,7 +232,7 @@ def gomea_candidates(
         for group in groups[: rng.randint(1, max(1, min(4, len(groups))))]:
             trial = _genome_with_group(genes, donor_genome, group)
             try:
-                if _is_rule_valid_genome(trial):
+                if _is_rule_valid_genome(trial, target_shapes=target_shapes):
                     genes = trial
                     changed = True
             except ValueError:
@@ -216,7 +242,7 @@ def gomea_candidates(
             group = rng.choice(fos)
             trial = _genome_with_group(genes, elite, group)
             try:
-                if _is_rule_valid_genome(trial):
+                if _is_rule_valid_genome(trial, target_shapes=target_shapes):
                     genes = trial
             except ValueError:
                 pass
@@ -226,6 +252,7 @@ def gomea_candidates(
                     genes,
                     source="gomea",
                     parents=(base_candidate.hash, donor_candidate.hash),
+                    target_shapes=target_shapes,
                 )
             )
         except ValueError:

@@ -128,6 +128,85 @@ def test_solution_mapping_ignores_inactive_stagger_derived_fields():
     assert solution_matches_candidate(solution, candidate.canonical_params())
 
 
+def test_solution_mapping_ignores_inactive_lds_pad_block_size_fields():
+    candidate = Candidate(
+        {
+            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            "LdsPadA": 0,
+            "LdsBlockSizePerPadA": 4096,
+            "LdsPadB": 4,
+            "LdsBlockSizePerPadB": 256,
+        },
+        source="inactive_lds_pad_block_size",
+    )
+    solution = _final_solution_from_candidate(candidate)
+    solution["LdsBlockSizePerPadA"] = 0
+
+    assert solution_matches_candidate(solution, candidate.canonical_params())
+
+
+def test_solution_mapping_keeps_active_lds_pad_block_size_strict():
+    candidate = Candidate(
+        {
+            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            "LdsPadA": 4,
+            "LdsBlockSizePerPadA": 4096,
+        },
+        source="active_lds_pad_block_size",
+    )
+    solution = _final_solution_from_candidate(candidate)
+    solution["LdsBlockSizePerPadA"] = 0
+
+    assert not solution_matches_candidate(solution, candidate.canonical_params())
+
+
+def test_solution_mapping_ignores_normalized_cluster_local_read_when_plr_covers_loop():
+    candidate = Candidate(
+        {
+            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            "MatrixInstruction": [16, 16, 16, 1, 1, 7, 2, 1, 1],
+            "WorkGroup": [32, 4, 1],
+            "DepthU": 16,
+            "ScheduleIterAlg": 3,
+            "PrefetchLocalRead": 1,
+            "ClusterLocalRead": 1,
+            "VectorWidthA": 1,
+            "VectorWidthB": 2,
+            "LdsPadB": 0,
+            "LdsBlockSizePerPadB": 4096,
+        },
+        source="normalized_cluster_local_read",
+    )
+    solution = _final_solution_from_candidate(candidate)
+    solution["PrefetchLocalRead"] = 0
+    solution["ClusterLocalRead"] = 0
+    solution["LdsBlockSizePerPadB"] = 0
+
+    assert solution_matches_candidate(solution, candidate.canonical_params())
+
+
+def test_solution_mapping_keeps_cluster_local_read_strict_without_normalization_condition():
+    candidate = Candidate(
+        {
+            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            "MatrixInstruction": [16, 16, 16, 1, 1, 7, 2, 1, 1],
+            "WorkGroup": [32, 4, 1],
+            "DepthU": 64,
+            "ScheduleIterAlg": 3,
+            "PrefetchLocalRead": 1,
+            "ClusterLocalRead": 1,
+            "VectorWidthA": 1,
+            "VectorWidthB": 2,
+        },
+        source="strict_cluster_local_read",
+    )
+    solution = _final_solution_from_candidate(candidate)
+    solution["PrefetchLocalRead"] = 0
+    solution["ClusterLocalRead"] = 0
+
+    assert not solution_matches_candidate(solution, candidate.canonical_params())
+
+
 def test_solution_mapping_keeps_active_stagger_fields_strict():
     candidate = Candidate(
         {

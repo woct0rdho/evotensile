@@ -1,5 +1,4 @@
 import re
-from collections.abc import Iterable
 
 from .candidate import Shape
 
@@ -36,30 +35,3 @@ def shape_from_id(shape_id: str) -> Shape:
         batch=int(match.group("batch")),
         k=int(match.group("k")),
     )
-
-
-def shape_bucket(shape: Shape) -> str:
-    """Simple initial bucket label for batching/search policy."""
-    aspect = shape.m / shape.n
-    if aspect >= 4:
-        aspect_label = "m_wide"
-    elif aspect <= 0.25:
-        aspect_label = "n_wide"
-    else:
-        aspect_label = "squareish"
-
-    if shape.k <= 512:
-        k_label = "k_small"
-    elif shape.k >= 2048:
-        k_label = "k_large"
-    else:
-        k_label = "k_mid"
-
-    return f"{aspect_label}_{k_label}"
-
-
-def group_by_bucket(shapes: Iterable[Shape]) -> dict[str, list[Shape]]:
-    buckets: dict[str, list[Shape]] = {}
-    for shape in shapes:
-        buckets.setdefault(shape_bucket(shape), []).append(shape)
-    return buckets
