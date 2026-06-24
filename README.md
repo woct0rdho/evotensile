@@ -6,7 +6,7 @@ EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It
 
 The repository currently includes one concrete target configuration, but the core code is intended to stay reusable: candidate hashing, shape handling, search-space encoding, YAML emission, runner orchestration, benchmark-protocol hashing, validation-aware ingestion, ranking, adaptive finalist top-ups, hipBLASLt baseline import, and logic-file update helpers.
 
-Target-specific notes, exact artifacts, measured results, and remaining kernel-specific work are in `docs/plan.md`.
+Target-specific notes, exact artifacts, measured results, and remaining kernel-specific work are under `docs/`.
 
 ## Workflow
 
@@ -21,19 +21,24 @@ Target-specific notes, exact artifacts, measured results, and remaining kernel-s
 ### 1. Define Problem, Shapes, And Search Space
 
 A target profile defines:
-
 - a TensileLite problem type, including data types, layout, batching, epilogue flags, and validation settings;
 - exact input shapes, usually represented as `shape_id = m{M}_n{N}_b{batch}_k{K}`;
 - a typed benchmark protocol used consistently for YAML generation, runner JSONL, and cache hashing;
 - a candidate search space made of complete TensileLite solution dictionaries, not independent Cartesian products.
 
-The current bundled profile is `gfx1151-nt-hhs`. Profile code derives `problem_type_hash` and `benchmark_protocol_hash`; the search CLI no longer accepts raw hash overrides or arbitrary TensileLite global parameters.
+Each target profile derives `problem_type_hash` and `benchmark_protocol_hash`. Pass the selected profile with `--profile <profile-name>`.
 
 Inspect a target search space with:
 
 ```bash
-python3 -m evotensile.cli summarize-space
+python3 -m evotensile.cli summarize-space --profile <profile-name>
 ```
+
+Two diagnostic commands help define and maintain a profile's search space:
+- `proposal-coverage` generates proposals without executing them, then reports value coverage and invalid-rule counts so proposal bias can be tuned without shrinking the underlying domains.
+- `summarize-rejections` classifies TensileLite logs or run directories so repeated schema, `SolutionStructs`, KernelWriter/resource, runtime-validation, and unknown failures can be reviewed before becoming explicit invalidity rules.
+
+Use those diagnostics to keep hard rules source-backed and exact, while keeping proposal heuristics separate from validity.
 
 ### 2. Search Configs
 
@@ -45,13 +50,15 @@ Dry-run a plan:
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/search \
-  --profile gfx1151-nt-hhs \
+  --profile <profile-name> \
   --dry-run
 ```
 
-Build the TensileLite client prerequisites and then the external structured runner before scheduling real measurements:
+Build rocisa, TensileLite client, and EvoTensile structured runner:
 
 ```bash
+cd ~/rocm-libraries/projects/hipblaslt/tensilelite/rocisa
+CXX=$ROCM_PATH/llvm/bin/amdclang++ pip install -U --no-deps -e .
 cd ~/rocm-libraries
 ./build_tensilelite_client.sh
 cd ~/evotensile
@@ -66,8 +73,8 @@ Import the current hipBLASLt-selected configs once per DB/problem/grid so they p
 python3 scripts/import_hipblaslt_baselines.py \
   --db out/evotensile.sqlite \
   --output-dir out/hipblaslt_baselines \
-  --profile gfx1151-nt-hhs \
-  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/gfx1151"
+  --profile <profile-name> \
+  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/<gfx-target>"
 ```
 
 Run planned batches with adaptive sampling:
@@ -76,18 +83,18 @@ Run planned batches with adaptive sampling:
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/search \
-  --profile gfx1151-nt-hhs
+  --profile <profile-name>
 ```
 
-The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each SQLite DB file is one evidence namespace for a target hardware/environment/campaign. Use separate DB paths when comparing incompatible campaigns. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout. The bundled profile defaults to all CPU threads for TensileLite compile work, a `1800s` TensileLite build timeout, a `600s` structured-runner timeout, and continuing across batch failures; pass `0` to a timeout flag to disable it or `--stop-on-error` to fail fast.
+The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each SQLite DB file is one evidence namespace for a target hardware/environment/campaign. Use separate DB paths when comparing incompatible campaigns. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout. Profiles provide compile and runner timeout defaults. Pass `0` to a timeout flag to disable it or `--stop-on-error` to fail fast.
 
-Useful proposal modes include `random`, `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`; `seed-random*` names are compatibility aliases for random-plus-evidence proposals, not fixed known-seed injection. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can initialize non-random proposal operators through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
+Useful proposal modes include `random`, `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can initialize non-random proposal operators through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
 
-Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, and `--num-elements-to-validate`. `NumBenchmarks` and `NumElementsToValidate` are execution budgets rather than cache identity fields, so adaptive top-ups pool with the fully validated timing evidence. The default uses full validation with `NumElementsToValidate=-1`; unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
+Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, and `--num-elements-to-validate`. `NumBenchmarks` and `NumElementsToValidate` are execution budgets rather than cache identity fields, so adaptive top-ups pool with the fully validated timing evidence. The default uses full validation with `NumElementsToValidate=-1`. Unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
 
 Validation is a hard gate: only `status=ok` rows with passing validation, or GPU-only top-up rows backed by prior passing validation for the same pair, should be ranked or used as positive cache entries. Unknown validation is never ranked as positive.
 
-Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches` uses adaptive sampling by default: it starts with a small timing budget, then appends only the missing samples for statistically plausible contenders. The first validated run for each `(shape, candidate)` pair performs CPU/OpenBLAS validation; later GPU-only top-ups use `NumElementsToValidate=0` and are accepted only when prior validation evidence exists. Use `--fixed-sampling` only for debugging or fixed-budget utility runs.
+Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches` uses adaptive sampling by default: it starts with a small timing budget, then appends only the missing samples for statistically plausible contenders. The first validated run for each `(shape, candidate)` pair performs CPU/OpenBLAS validation. Later GPU-only top-ups use `NumElementsToValidate=0` and are accepted only when prior validation evidence exists. Use `--fixed-sampling` only for debugging or fixed-budget utility runs.
 
 Structured scheduler runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
 
@@ -99,7 +106,7 @@ Before manual inspection or GridBased updates, `repair-outliers` can identify sh
 python3 -m evotensile.cli repair-outliers \
   --db out/evotensile.sqlite \
   --output-dir out/repair_outliers \
-  --profile gfx1151-nt-hhs \
+  --profile <profile-name> \
   --num-random 32 \
   --gomea-count 32
 ```
@@ -113,7 +120,7 @@ Summarize cache status:
 ```bash
 python3 -m evotensile.cli summarize-cache \
   --db out/evotensile.sqlite \
-  --profile gfx1151-nt-hhs
+  --profile <profile-name>
 ```
 
 Rank validation-passed observations:
@@ -121,18 +128,18 @@ Rank validation-passed observations:
 ```bash
 python3 -m evotensile.cli rank-evals \
   --db out/evotensile.sqlite \
-  --profile gfx1151-nt-hhs \
+  --profile <profile-name> \
   --min-samples 2
 ```
 
 ### 5. Update hipBLASLt GridBased Logic
 
-Update checked-in hipBLASLt logic YAMLs directly from the SQLite DB. The updater is target-aware today; it defaults to the bundled gfx1151 HHS/HHS+AuxH/BBS/BBS+AuxB files. No intermediate winner export is required.
+Update checked-in hipBLASLt logic YAMLs directly from the SQLite DB. The updater uses the selected profile to locate and retarget supported logic files. No intermediate winner export is required.
 
 ```bash
 python3 scripts/update_hipblaslt_gridbased_logic.py \
   --db out/evotensile.sqlite \
-  --profile gfx1151-nt-hhs
+  --profile <profile-name>
 ```
 
 The updater writes TensileLite-style YAML formatting, retargets solution names, trims generated solution dictionaries to the key schema/order used by existing checked-in GridBased YAMLs, strips benchmark-only embedded `ProblemType`, and applies target-specific build-valid normalizations.
@@ -141,24 +148,24 @@ Review the hipBLASLt source diff before rebuilding:
 
 ```bash
 cd ~/rocm-libraries
-git diff --stat -- projects/hipblaslt/library/src/amd_detail/rocblaslt/src/Tensile/Logic/asm_full/gfx1151/GridBased
+git diff --stat -- projects/hipblaslt/library/src/amd_detail/rocblaslt/src/Tensile/Logic/asm_full/<gfx-target>/GridBased
 ```
 
 ### 6. Rebuild And Validate Performance
 
-Rebuild hipBLASLt from the modified `~/rocm-libraries` tree and install into the intended ROCm SDK prefix. By convention, keep the normal hipBLASLt build tree at `~/rocm-libraries/build/hipblaslt/`; only override `BUILD_DIR` when comparing multiple versions.
+Rebuild hipBLASLt from the modified `~/rocm-libraries` tree and install into the intended ROCm SDK prefix. By convention, keep the normal hipBLASLt build tree at `~/rocm-libraries/build/hipblaslt/`. Only override `BUILD_DIR` when comparing multiple versions.
 
 ```bash
 cd ~/rocm-libraries
-GPU_TARGETS=gfx1151 ./build_hipblaslt.sh
+GPU_TARGETS=<gfx-target> ./build_hipblaslt.sh
 ```
 
 Build client tools in the normal client build tree `~/rocm-libraries/build/hipblaslt-bench/`, also avoiding `BUILD_DIR` overrides unless comparing versions:
 
 ```bash
 cd ~/rocm-libraries
-TARGET=hipblaslt-bench GPU_TARGETS=gfx1151 ./build_hipblaslt_bench.sh
-TARGET=hipblaslt-test GPU_TARGETS=gfx1151 ./build_hipblaslt_bench.sh
+TARGET=hipblaslt-bench GPU_TARGETS=<gfx-target> ./build_hipblaslt_bench.sh
+TARGET=hipblaslt-test GPU_TARGETS=<gfx-target> ./build_hipblaslt_bench.sh
 ```
 
 Then run an application-level benchmark with the intended runtime environment. If the Python runtime uses a separate TensileLite asset package, point `HIPBLASLT_TENSILE_LIBPATH` at the newly installed assets so the rebuilt logic is actually used.
@@ -171,16 +178,16 @@ After performance validation, run repeatable installed-library correctness check
 cd ~/evotensile
 python3 scripts/verify_installed_hipblaslt.py \
   --bench ~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench \
-  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/gfx1151"
+  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/<gfx-target>"
 ```
 
 For broader upstream regression coverage, run `hipblaslt-test` with GTest XML output:
 
 ```bash
 cd ~/rocm-libraries/build/hipblaslt-bench/clients
-HIPBLASLT_TENSILE_LIBPATH="$ROCM_PATH/lib/hipblaslt/library/gfx1151" \
+HIPBLASLT_TENSILE_LIBPATH="$ROCM_PATH/lib/hipblaslt/library/<gfx-target>" \
 LD_LIBRARY_PATH="$ROCM_PATH/llvm/lib:$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}" \
-./hipblaslt-test --gtest_filter='*smoke*' --gtest_output=xml:/tmp/hipblaslt_test_smoke.xml
+./hipblaslt-test --gtest_filter='<test-filter>' --gtest_output=xml:/tmp/hipblaslt_test.xml
 ```
 
 ## Benchmark Protocol
@@ -259,7 +266,7 @@ The scheduled target is the maximum requested $n_c$, rounded up to `--adaptive-s
 
 Correctness is handled separately from repetition count. The first accepted run for a `(shape, candidate)` pair performs CPU/OpenBLAS validation. Later adaptive top-ups set `NumElementsToValidate=0` and are accepted only if the DB already contains passing validation evidence for that pair.
 
-### Repair Outlier Selection
+## Repair Outlier Selection
 
 After search, `repair-outliers` looks for shapes whose current best measured config is substantially below what nearby shapes imply. It uses performance, not time, because neighboring shapes can have different FLOP counts.
 
@@ -307,7 +314,7 @@ $$
 \lambda = 10^{-3} \sum_{u \in N_K(s)} w_u.
 $$
 
-The `10^{-3}` ridge is a small numerical stabilizer for the slope terms only; the intercept $\beta_0$ is not penalized. The local-linear prediction at the target is the intercept, clipped to the neighbor log-performance range:
+The `10^{-3}` ridge is a small numerical stabilizer for the slope terms only. The intercept $\beta_0$ is not penalized. The local-linear prediction at the target is the intercept, clipped to the neighbor log-performance range:
 
 $$
 \hat{p}_{s,\mathrm{lin}} = \mathrm{clip}\left(\beta_0,\ \min_{u \in N_K(s)} p_u,\ \max_{u \in N_K(s)} p_u\right).
@@ -343,12 +350,12 @@ $$
 
 where $\tau =$ `--outlier-threshold-pct` and defaults to `10%`. In other words, the current winner must be more than about `10%` below the local neighbor prediction in multiplicative performance terms. Selected shapes are sorted by residual, largest first, and `--max-outliers` can cap the repair set for staged runs.
 
-This test is intentionally heuristic. It identifies shapes worth more search budget; it does not prove the current winner is wrong, because real GEMM performance can have cliffs from tile divisibility, tails, LDS pressure, occupancy, or solution-selection discontinuities.
+This test is intentionally heuristic. It identifies shapes worth more search budget. It does not prove the current winner is wrong, because real GEMM performance can have cliffs from tile divisibility, tails, LDS pressure, occupancy, or solution-selection discontinuities.
 
 ## Current Limitations
 
-- The bundled problem type and search-space domains target gfx1151 FP16 NT HHS first.
-- Surrogate/LFBO proposal is planned but not implemented. Keep `PredictionThreshold: 2.0` to disable heuristics like Formocast and Origami in TensileLite, until they're accurate enough on gfx1151.
-- Timeout classification and multi-candidate build-failure attribution are still incomplete.
-- BBS/AuxH/AuxB retargeting needs target-specific validation before making measured-performance claims for those variants.
-- The production structured backend is intentionally narrow: it supports the current gfx1151 FP16 NT HHS bias + `scaleAlpha_vector` target and still needs broader target coverage before it is a general GEMM runner.
+- Bundled profiles and runners are target-specific. Broader data types, layouts, and epilogues need profile and backend coverage.
+- Surrogate/LFBO proposals are not implemented. Keep `PredictionThreshold: 2.0` to disable heuristics like Formocast and Origami in TensileLite, until they are accurate enough on gfx1151.
+- Timeout statuses and single-candidate build failures are recorded, but multi-candidate build failures still require salvage/isolation before individual candidates can be negative-cached confidently.
+- Logic-file update helpers are profile-aware, but each new target variant needs validation before measured-performance claims.
+- The production structured backend is intentionally narrower than the generic search abstractions and needs broader target coverage before it is a general GEMM runner.

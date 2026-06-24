@@ -1,4 +1,5 @@
 import math
+import random
 import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from .search.differential_evolution import differential_evolution_candidates
 from .search.gomea import gomea_candidates, gomea_neighborhood_candidates
 from .search.local_search import mutate_elites
 from .search.random_search import initial_random_batch
+from .search_space import cheap_constraints, explain_invalid_nt_hhs, random_candidate
 from .shapes import shape_from_id
 from .structured_runner import build_then_structured_benchmark
 from .yaml_writer import write_tensilelite_yaml
@@ -437,6 +439,24 @@ def _transfer_elites(
     return transfer
 
 
+def _shape_aware_random_batch(num_random: int, *, seed: int, target_shapes: list[Shape] | None) -> list[Candidate]:
+    if not target_shapes:
+        return initial_random_batch(num_random, seed=seed)
+    rng = random.Random(seed)
+    out: dict[str, Candidate] = {}
+    attempts = 0
+    max_attempts = max(1000, num_random * 1000)
+    while len(out) < num_random and attempts < max_attempts:
+        attempts += 1
+        candidate = random_candidate(rng, target_shapes=target_shapes)
+        params = candidate.canonical_params()
+        if all(cheap_constraints(params, shape=shape) for shape in target_shapes):
+            out[candidate.hash] = candidate
+    if len(out) < num_random:
+        raise RuntimeError(f"failed to generate {num_random} shape-valid random candidates after {attempts} attempts")
+    return list(out.values())
+
+
 def propose_candidates(
     db: EvoTensileDB,
     *,
@@ -508,7 +528,7 @@ def propose_candidates(
         elites = _dedupe_candidates([*elites, *transfer_elites])
 
     if uses_random:
-        candidates.extend(initial_random_batch(num_random, seed=seed))
+        candidates.extend(_shape_aware_random_batch(num_random, seed=seed, target_shapes=target_shapes))
 
     if proposal in {"local", "seed-random-local", "evolutionary"} and local_count > 0:
         candidates.extend(mutate_elites(elites, count=local_count, seed=seed + 1009, mutation_rate=mutation_rate))
@@ -546,6 +566,7 @@ def propose_candidates(
                 seed=seed + 3001,
                 elite_count=elite_count,
                 exclude={candidate.hash for candidate in candidates},
+                target_shapes=target_shapes,
             )
         )
 
@@ -564,6 +585,42 @@ def _resolve_timeout(value: float | None, default: float | None) -> float | None
     if value <= 0:
         return None
     return value
+
+
+def _record_shape_rule_rejections(
+    db: EvoTensileDB,
+    *,
+    shapes: list[Shape],
+    candidates: list[Candidate],
+    problem_type_hash: str,
+    benchmark_protocol_hash: str,
+) -> int:
+    counts = db.reusable_cache_entry_counts(
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+        shape_ids=[shape.id for shape in shapes],
+        candidate_hashes=[candidate.hash for candidate in candidates],
+    )
+    evaluations: list[EvaluationInsert] = []
+    for shape in shapes:
+        for candidate in candidates:
+            if counts.get((shape.id, candidate.hash)):
+                continue
+            if any(
+                reason.shape_dependent for reason in explain_invalid_nt_hhs(candidate.canonical_params(), shape=shape)
+            ):
+                evaluations.append(
+                    EvaluationInsert(
+                        shape_id=shape.id,
+                        candidate_hash=candidate.hash,
+                        run_id=None,
+                        status="rejected",
+                        problem_type_hash=problem_type_hash,
+                        benchmark_protocol_hash=benchmark_protocol_hash,
+                    )
+                )
+    db.insert_evaluations(evaluations)
+    return len(evaluations)
 
 
 def _missing_candidate_indices_by_shape(
@@ -598,6 +655,10 @@ def _missing_candidate_indices_by_shape(
     for shape_index, shape in enumerate(shapes):
         missing_items: list[tuple[int, int, bool]] = []
         for candidate_index, candidate in enumerate(candidates):
+            if any(
+                reason.shape_dependent for reason in explain_invalid_nt_hhs(candidate.canonical_params(), shape=shape)
+            ):
+                continue
             status_counts = {} if ignore_cache else counts.get((shape.id, candidate.hash), {})
             negative_count = sum(
                 count for status, count in status_counts.items() if status not in POSITIVE_CACHE_STATUSES
@@ -1071,6 +1132,14 @@ def execute_schedule(
     db.init()
     db.register_candidates(candidates)
     db.register_shapes(shapes)
+    if not dry_run and not generate_only:
+        _record_shape_rule_rejections(
+            db,
+            shapes=shapes,
+            candidates=candidates,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+        )
     planned = plan_batches(
         db,
         shapes=shapes,

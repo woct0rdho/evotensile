@@ -19,6 +19,7 @@ from .tensilelite_keys import (
     SOLUTION_INDEX_KEY,
     SOLUTION_NAME_MIN_KEY,
     SOLUTION_YAML_GLOBS,
+    WORK_GROUP_KEY,
 )
 
 
@@ -94,6 +95,50 @@ def _inactive_stagger_derived_key(key: str, solution: dict[str, Any], candidate_
     return _value_equal(candidate_params.get("StaggerU"), 0) and _value_equal(solution.get("StaggerU"), 0)
 
 
+def _inactive_lds_pad_block_size_key(key: str, solution: dict[str, Any], candidate_params: dict[str, Any]) -> bool:
+    if key not in {"LdsBlockSizePerPadA", "LdsBlockSizePerPadB"}:
+        return False
+    suffix = key[-1]
+    return _value_equal(candidate_params.get(f"LdsPad{suffix}"), 0) and _value_equal(solution.get(f"LdsPad{suffix}"), 0)
+
+
+def _candidate_loop_iters(candidate_params: dict[str, Any]) -> int | None:
+    matrix_instruction = candidate_params.get(MATRIX_INSTRUCTION_KEY)
+    work_group = candidate_params.get(WORK_GROUP_KEY)
+    depth = candidate_params.get("DepthU")
+    if depth is None:
+        return None
+    if not isinstance(matrix_instruction, list) or len(matrix_instruction) < 3 or not isinstance(work_group, list):
+        return None
+    try:
+        matrix_inst_k = int(matrix_instruction[2])
+        local_split_u = int(work_group[2])
+        depth_u = int(depth)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if matrix_inst_k <= 0 or local_split_u <= 0:
+        return None
+    inner_unroll = max(1, depth_u // matrix_inst_k) if _value_equal(candidate_params.get("ScheduleIterAlg"), 2) else 1
+    loop_unroll = depth_u // local_split_u
+    loop_unroll //= inner_unroll
+    return max(1, loop_unroll // matrix_inst_k)
+
+
+def _normalized_cluster_local_read_key(key: str, solution: dict[str, Any], candidate_params: dict[str, Any]) -> bool:
+    if key not in {"ClusterLocalRead", "PrefetchLocalRead"}:
+        return False
+    if not _value_equal(candidate_params.get("ClusterLocalRead"), 1) or not _value_equal(
+        solution.get("ClusterLocalRead"), 0
+    ):
+        return False
+    if not _value_equal(solution.get("PrefetchLocalRead"), 0):
+        return False
+    if _value_equal(candidate_params.get("ScheduleIterAlg"), 2):
+        return False
+    loop_iters = _candidate_loop_iters(candidate_params)
+    return loop_iters is not None and int(candidate_params.get("PrefetchLocalRead", 0)) >= loop_iters
+
+
 def solution_matches_candidate(solution: dict[str, Any], candidate_params: dict[str, Any]) -> bool:
     """Return True if a final TensileLite solution came from a candidate.
 
@@ -111,6 +156,14 @@ def solution_matches_candidate(solution: dict[str, Any], candidate_params: dict[
             # TensileLite may normalize StaggerUMapping/StaggerUStride even when
             # StaggerU=0 disables staggering, so those inactive fields are not
             # reliable evidence that the final solution came from another input.
+            continue
+        if _inactive_lds_pad_block_size_key(key, solution, candidate_params):
+            # TensileLite normalizes LdsBlockSizePerPad* to 0 when the matching
+            # LdsPad* is 0, because the block-size value is inert without padding.
+            continue
+        if _normalized_cluster_local_read_key(key, solution, candidate_params):
+            # TensileLite rewrites ClusterLocalRead and PrefetchLocalRead to 0
+            # when PLR already covers the loop iterations outside SIA2.
             continue
         if key not in solution:
             return False

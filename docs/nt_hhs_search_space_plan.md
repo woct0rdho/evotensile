@@ -13,7 +13,7 @@ This plan is intentionally not a list of known-valid NT configs. Known-valid con
 - Prefer negative rules over positive templates.
 - Treat TensileLite as the authoritative validator for accepted, rejected, and normalized solutions.
 - Keep shape-dependent invalidity separate from kernel-global invalidity.
-- Do not assume NN/TN/TT configs are valid for NT; use them only as inspiration for values and linkages.
+- Do not assume NN/TN/TT configs are valid for NT. Use them only as inspiration for values and linkages.
 - Do not rely on legacy known-valid seeds in random/evolutionary proposal modes.
 
 ## Target Interface
@@ -33,6 +33,17 @@ def explain_invalid_nt_hhs(params: dict[str, Any], *, shape: Shape | None = None
 - `shape_dependent`: whether the rule depends on `M/N/K/batch`.
 
 `cheap_constraints()` can remain as a fast boolean wrapper, but the explainable API should be the source of truth for debugging and mining.
+
+## Candidate Domain Model
+
+An EvoTensile candidate is a complete TensileLite solution parameter bundle emitted as one `Groups` entry, not an independent Cartesian product. The current NT HHS domain keeps broad categorical coverage for:
+- tile and work shape: `MatrixInstruction`, `WorkGroup`, `DepthU`, `GlobalSplitU`;
+- scheduling and prefetch: `PrefetchGlobalRead`, `PrefetchLocalRead`, `ScheduleIterAlg`, `1LDSBuffer`, `ClusterLocalRead`;
+- LDS layout and padding: `TransposeLDS`, `LdsBlockSizePerPadA/B`, `LdsPadA/B`, `SourceSwap`;
+- vectorization and stores: `VectorWidthA/B`, `GlobalReadVectorWidthA/B`, `StoreVectorWidth`, `StorePriorityOpt`, `StoreSyncOpt`, `GroupLoadStore`, `NumElementsPerBatchStore`;
+- shape assertions and pointer/cache behavior: assert multiples, `WorkGroupMapping`, `StaggerU`, `StaggerUStride`, `StaggerUMapping`, `ExpandPointerSwap`.
+
+Keep this domain broad. Encode hard validity only as explicit negative rules in `explain_invalid_nt_hhs()`, and use repairs/proposal bias only to make generated candidates practical.
 
 ## Disallowed Rule Categories
 
@@ -74,7 +85,7 @@ Keep store-path domains broad, but reject known invalid couplings:
 - `GroupLoadStore=True` without required `StoreSyncOpt`, `StorePriorityOpt`, or batch-store settings.
 - Store vector widths rejected by `SolutionStructs` or KernelWriter for specific macro-tile/store-path combinations.
 
-Do not infer performance preference from current winners; only encode build/validation invalidity.
+Do not infer performance preference from current winners. Only encode build/validation invalidity.
 
 ### 5. Resource Rules
 
@@ -158,7 +169,7 @@ Replace template-first random as the long-term main source with broad-domain sam
 - Use negative-cache lookup to skip known failures.
 - Keep sampling statistics by value and value-pair coverage.
 
-Random generation should maximize coverage of allowed values and pairs, not similarity to known winners.
+Random generation should maximize coverage of allowed values and pairs, not similarity to known winners. The current random path keeps `DOMAINS["TransposeLDS"] == [0, 1, 2]` but uses `NT_HHS_RANDOM_TLDS2_PROBABILITY` as a proposal-only bias toward the higher-yield TLDS2 path. For target shapes such as `8192,8192,1,8192`, shape-aware random generation sets `GlobalSplitU=1` directly because the workspace rule would reject larger GSU values for that shape. The fast direct TLDS2 sampler generates TLDS2 candidates with compatible `PrefetchGlobalRead=2`, `PrefetchLocalRead=0`, `VectorWidthB=1`, valid TLDS2 LDS pad-block choices, and proposal-only VALU lower-bound headroom. Explicit non-random candidates are still allowed to exceed that headroom and can still use TLDS0 when valid.
 
 ### Linkage Groups
 
@@ -166,9 +177,11 @@ Use invalidity rules and TensileLite rejection evidence to build GOMEA linkage g
 - `MatrixInstruction`, `WorkGroup`, `DepthU`, `GlobalSplitU`.
 - `TransposeLDS`, `LdsBlockSizePerPadA`, `LdsBlockSizePerPadB`, `LdsPadA`, `LdsPadB`.
 - `PrefetchGlobalRead`, `PrefetchLocalRead`, `1LDSBuffer`, `ClusterLocalRead`, `VectorWidthB`.
-- `GlobalReadVectorWidthA`, `GlobalReadVectorWidthB`, `VectorWidthB`.
-- `ScheduleIterAlg`, `WorkGroupMapping`, `StaggerU`, `StaggerUMapping`, `SourceSwap`.
+- `GlobalReadVectorWidthA`, `GlobalReadVectorWidthB`, `VectorWidthA`, `VectorWidthB`.
+- `ScheduleIterAlg`, `WorkGroupMapping`, `StaggerU`, `StaggerUStride`, `StaggerUMapping`, `SourceSwap`.
 - `StorePriorityOpt`, `NumElementsPerBatchStore`, `StoreSyncOpt`, `GroupLoadStore`, `StoreVectorWidth`.
+- `ExpandPointerSwap`.
+- `AssertFree0ElementMultiple`, `AssertFree1ElementMultiple`, `AssertSummationElementMultiple`.
 
 When GOMEA mixes a linkage group:
 - validate the child immediately,
@@ -186,7 +199,7 @@ Track whether proposals cover the broad allowed space:
 - final YAML normalization frequency,
 - unique accepted matrix-instruction/macro-tile families.
 
-Use these metrics to identify overly conservative rules or missing linkage groups.
+Use these metrics to identify overly conservative rules or missing linkage groups. `proposal-coverage` is the lightweight check for proposal-side coverage before spending TensileLite build/run time. `summarize-rejections` is the offline loop for turning repeated TensileLite rejection signatures into reviewable evidence without adding hard rules prematurely.
 
 ## Validation Stages
 
@@ -210,31 +223,38 @@ Status: initial tooling implemented.
 
 ### Stage 3: Constraint-Aware Random
 
-Status: initial implementation complete.
+Status: implemented and tuned for the retained `8192^3` path.
 
 - Replaced active template-first random generation with broad-domain sampling from `DOMAINS` plus mechanical repairs and `explain_invalid_nt_hhs()` filtering.
 - Removed active dependence on curated `RANDOM_KERNEL_BUNDLES` and per-bundle mutation fences for random proposal generation.
-- Removed the LDS tuple allowlist from validity; broad LDS tuples are allowed unless rejected by explicit TensileLite-backed rules.
-- Added tests that random candidates remain cheap-valid and cover many matrix-instruction and LDS-profile values.
-- Remaining work: measure TensileLite build-valid rate on representative NT shapes and use rejection-mining output to add only explicit negative rules.
+- Removed the LDS tuple allowlist from validity. Broad LDS tuples are allowed unless rejected by explicit TensileLite-backed rules.
+- Added proposal-only TLDS2 bias and a direct TLDS2 sampler so random generation remains broad but spends most attempts on high-yield NT HHS candidates.
+- Added shape-aware random generation so `8192^3` proposals avoid shape-invalid `GlobalSplitU > 1` instead of sampling and rejecting those slots.
+- Added proposal-only VALU lower-bound headroom for random generation. This is not a hard validity cutoff.
+- Added tests that random candidates remain cheap-valid, cover many matrix-instruction and LDS-profile values, preserve TLDS0 availability, and respect the random headroom target.
+- Remaining work: continue using rejection-mining output to add only explicit negative rules.
 
 ### Stage 4: GOMEA Integration
 
-Status: initial implementation complete.
+Status: implemented and validated on retained `8192^3` evidence.
 
 - Added exported `NT_HHS_LINKAGE_GROUPS` derived from rule families.
 - Fed the rule-derived linkage groups into stochastic GOMEA.
 - Added invalid-child backtracking: stochastic GOMEA applies linkage groups one at a time and keeps only rule-valid changes.
-- Added tests that GOMEA from broad random parents stays cheap-valid and that non-random GOMEA returns no candidates without cached/imported evidence.
-- Removed production known-seed and documented-winner constants from proposal initialization; fixed controls now live only in tests.
+- Added shape-aware and random-headroom filtering to stochastic GOMEA proposals, so GOMEA exploitation stays in the useful target-shape region without declaring those filters as global invalidity.
+- Added neighborhood singleton coverage for every multi-valued `DOMAINS` knob, including `VectorWidthA`, `StaggerUStride`, `ExpandPointerSwap`, and assert-multiple knobs.
+- Removed production known-seed and documented-winner constants from proposal initialization. Fixed controls now live only in tests.
 - Added proposal coverage metrics and a `proposal-coverage` CLI to summarize unique value coverage and invalid-rule counts for generated candidates.
+- Earlier non-hindsight `seed-random-gomea` reproduction checks generated the documented `8192^3` winner from proposal operators without inserting it directly. Pure categorical DE did not hit that exact winner in the checked budgets.
+- Latest retained filtered GOMEA check generated only new `ok` rows for `8192^3` under the capped runtime experiment. The prior unfiltered misses were backend/resource/runtime outcomes, not new hard rules.
 - Remaining work: record invalid-child reason counters inside each GOMEA generation and use them to refine linkage groups automatically.
 
 ### Stage 5: Search Runs
 
-- Re-run the one-shape `8192,8192,1,8192` experiment from an empty DB.
-- Require generation 0 to produce enough timed candidates before adding multi-generation search.
-- Then test staged multi-generation on the 100-shape grid.
+- Retain `out/one_shape_8192_single_fasttlds2_20260624_130547` as the latest useful fast random provenance run.
+- Retain `out/one_shape_8192_gomea16_filtered_20260624_132622` as the latest capped GOMEA exploitation check.
+- Use validation-passed random evidence to seed further GOMEA/local exploitation once residual backend failures remain stable.
+- Then test staged multi-generation on larger grids.
 
 ## Acceptance Criteria
 
