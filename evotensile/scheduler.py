@@ -22,6 +22,7 @@ from .search.random_search import initial_random_batch
 from .search_space import cheap_constraints, explain_invalid_nt_hhs, random_candidate
 from .shapes import shape_from_id
 from .structured_runner import build_then_structured_benchmark
+from .tensilelite_diagnostics import attribution_inserts_from_diagnostics, run_tensilelite_diagnostics
 from .yaml_writer import write_tensilelite_yaml
 
 
@@ -926,7 +927,7 @@ def _execute_current_batch(
     build_timeout_s: float | None,
     runner_timeout_s: float | None,
     generate_only: bool = False,
-) -> tuple[ExecutedBatch, bool, bool, list[Candidate]]:
+) -> tuple[ExecutedBatch, bool]:
     current_protocol = protocol.with_overrides(
         num_benchmarks=current.samples_per_pair,
         num_elements_to_validate=protocol.num_elements_to_validate if current.requires_validation else 0,
@@ -939,7 +940,7 @@ def _execute_current_batch(
         unique_run_dir=not generate_only,
     )
     if generate_only:
-        return ExecutedBatch(current, yaml_path, manifest_path, run_dir), False, False, []
+        return ExecutedBatch(current, yaml_path, manifest_path, run_dir), False
 
     build_result, structured_result, inserts, structured_errors = build_then_structured_benchmark(
         yaml_path,
@@ -996,16 +997,40 @@ def _execute_current_batch(
     runner_returncode = structured_result.returncode if structured_result is not None else None
     failed = not build_result.ok or (structured_result is not None and not structured_result.ok) or not ingest.ok
     accepted_candidate_hashes = {item.candidate_hash for item in inserts if item.status == "ok"}
-    failed_candidates = [
-        candidate for candidate in current.candidates if candidate.hash not in accepted_candidate_hashes
-    ]
-    build_only_failure = (
+    failed_candidate_hashes = {
+        candidate.hash for candidate in current.candidates if candidate.hash not in accepted_candidate_hashes
+    }
+    if (
         not build_result.ok
         and not structured_errors
         and (structured_result is None or structured_result.ok)
         and len(current.candidates) > 1
-        and bool(failed_candidates)
-    )
+        and failed_candidate_hashes
+    ):
+        diagnostics = run_tensilelite_diagnostics(
+            yaml_path,
+            manifest_path,
+            run_dir,
+            tensilelite_bin=tensilelite_bin,
+            db=db,
+            target_profile=target_profile,
+            protocol=current_protocol,
+            timeout_s=build_timeout_s,
+        )
+        diagnostic_inserts = attribution_inserts_from_diagnostics(
+            diagnostics.records,
+            planned_shape_ids=[shape.id for shape in current.shapes],
+            failed_candidate_hashes=failed_candidate_hashes,
+            run_id=diagnostics.run_id,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            unattributed_status="build_timeout_unattributed" if build_result.timed_out else "build_failed_unattributed",
+        )
+        db.insert_evaluations(diagnostic_inserts)
+        ingest = _ingest_result_from_inserts([*inserts, *diagnostic_inserts])
+        failed = (
+            failed or not diagnostics.ok or any(item.status.endswith("_unattributed") for item in diagnostic_inserts)
+        )
     executed = ExecutedBatch(
         planned=current,
         yaml_path=yaml_path,
@@ -1015,7 +1040,7 @@ def _execute_current_batch(
         runner_returncode=runner_returncode,
         ingest=ingest,
     )
-    return executed, failed, build_only_failure, failed_candidates
+    return executed, failed
 
 
 def execute_schedule(
@@ -1195,7 +1220,7 @@ def execute_schedule(
             missing_by_shape=missing_by_shape,
         )
 
-    def execute_current(current: PlannedBatch) -> tuple[ExecutedBatch, bool, bool, list[Candidate]]:
+    def execute_current(current: PlannedBatch) -> tuple[ExecutedBatch, bool]:
         return _execute_current_batch(
             db,
             current,
@@ -1214,36 +1239,11 @@ def execute_schedule(
 
     def handle_result(
         current: PlannedBatch,
-        result: tuple[ExecutedBatch, bool, bool, list[Candidate]],
+        result: tuple[ExecutedBatch, bool],
     ) -> None:
         nonlocal stop_requested
-        executed_batch, failed, build_only_failure, failed_candidates = result
+        executed_batch, failed = result
         executed.append(executed_batch)
-        if build_only_failure:
-            isolate = execute_schedule(
-                db,
-                shapes=current.shapes,
-                candidates=failed_candidates,
-                output_root=Path(output_root) / f"batch_{current.batch_index:04d}_isolate",
-                target_profile=target_profile,
-                protocol=protocol,
-                min_samples=target_samples,
-                candidate_batch_size=max(1, len(current.candidates) // 2),
-                shape_batch_size=shape_batch_size,
-                ignore_cache=True,
-                max_batches=None,
-                dry_run=False,
-                generate_only=False,
-                tensilelite_bin=tensilelite_bin,
-                compile_threads=compile_threads,
-                keep_going=True,
-                runner_bin=runner_bin,
-                build_timeout_s=build_timeout_s,
-                runner_timeout_s=runner_timeout_s,
-                batch_workers=1,
-            )
-            planned_batches.extend(isolate.planned_batches)
-            executed.extend(isolate.executed_batches)
         if failed and not keep_going:
             stop_requested = True
 
@@ -1258,7 +1258,7 @@ def execute_schedule(
                     break
         return ScheduleResult(planned_batches=planned_batches, executed_batches=executed)
 
-    futures: dict[Future[tuple[ExecutedBatch, bool, bool, list[Candidate]]], PlannedBatch] = {}
+    futures: dict[Future[tuple[ExecutedBatch, bool]], PlannedBatch] = {}
     with ThreadPoolExecutor(max_workers=effective_workers) as executor:
         while (batch_cursor < len(planned_batches) or pending_current_batches or futures) and not stop_requested:
             while len(futures) < effective_workers and not stop_requested:

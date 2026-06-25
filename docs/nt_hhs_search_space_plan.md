@@ -137,7 +137,7 @@ Classify failures into:
 - `kernelwriter_resource`: VGPR/LDS/occupancy/codegen resource failures.
 - `kernelwriter_bug_or_unknown`: codegen exception without clear rule.
 - `runtime_validation`: builds and runs but fails correctness.
-- `timeout`: unattributed unless isolated and repeatable.
+- `timeout`: reusable only when singleton/repeatable; multi-candidate timeouts remain unattributed audit evidence.
 
 ### Delta Debugging
 
@@ -150,9 +150,10 @@ For frequent rejection signatures:
 
 ## Negative Cache Policy
 
-Use a negative cache for isolated, attributable failures:
-- Cache only single-candidate build failures, validation failures, and repeated single-candidate timeouts.
-- Do not poison the negative cache on multi-candidate batch failures.
+Use a negative cache for attributable failures:
+- Cache single-candidate build failures, validation failures, and repeated single-candidate timeouts.
+- Cache multi-candidate build failures only when structured diagnostics attribute them to a candidate.
+- Do not poison the negative cache with `build_failed_unattributed` or `build_timeout_unattributed` rows.
 - Include TensileLite version, profile, problem type hash, and relevant protocol/build settings.
 - Separate kernel-global invalidity from shape-dependent invalidity.
 
@@ -199,7 +200,7 @@ Track whether proposals cover the broad allowed space:
 - final YAML normalization frequency,
 - unique accepted matrix-instruction/macro-tile families.
 
-Use these metrics to identify overly conservative rules or missing linkage groups. `proposal-coverage` is the lightweight check for proposal-side coverage before spending TensileLite build/run time. `summarize-rejections` is the offline loop for turning repeated TensileLite rejection signatures into reviewable evidence without adding hard rules prematurely.
+Use these metrics to identify overly conservative rules or missing linkage groups. `proposal-coverage` is the lightweight check for proposal-side coverage before spending TensileLite build/run time. Structured TensileLite diagnostics provide candidate-level `SolutionStructs` and KernelWriter evidence during failed schedules without scraping logs or recursively isolating batches.
 
 ## Validation Stages
 
@@ -212,14 +213,14 @@ Status: implemented.
 - Kept `cheap_constraints()` as a wrapper over the explainable rule API.
 - Added tests asserting representative invalid configs report expected rule ids.
 
-### Stage 2: Rejection Mining
+### Stage 2: Structured Diagnostics
 
-Status: initial tooling implemented.
+Status: implemented.
 
-- Added a TensileLite log classifier for schema, `SolutionStructs`, KernelWriter/resource, runtime validation, and unknown failures.
-- Added `summarize-rejections` CLI support for scanning log files or run directories.
-- Added tests for schema errors, zero accepted solutions, partial accepted solutions, resource messages, and JSON CLI output.
-- Remaining work: run broad build-only mining batches with `PrintSolutionRejectionReason=True`, delta-debug frequent signatures, and promote stable mechanical failures into hard rules.
+- Added structured TensileLite diagnostics for candidate-level `SolutionStructs` rejection and KernelWriter/source-generation failures.
+- Scheduler now runs diagnostics on failed multi-candidate builds and records attributed `build_failed` rows or non-reusable `build_failed_unattributed` / `build_timeout_unattributed` audit rows.
+- Removed log-scraping rejection summaries and recursive isolation as the default build-failure path.
+- Remaining work: promote only source-backed diagnostic signatures into hard rules when exact predicates are identified.
 
 ### Stage 3: Constraint-Aware Random
 

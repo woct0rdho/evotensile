@@ -382,6 +382,9 @@ def build_then_structured_benchmark(
         solution_yaml_paths=solution_yamls,
         planned_pairs=planned_pairs,
     )
+    if not build_result.ok and runnable:
+        accepted_keys = {(item.shape_id, item.candidate_hash) for item in runnable}
+        negative = [item for item in negative if (item.shape_id, item.candidate_hash) in accepted_keys]
     if not runnable:
         if not build_result.ok:
             return build_result, None, [], []
