@@ -16,6 +16,7 @@ from evotensile.scheduler import (
 )
 from evotensile.search_space import cheap_constraints, make_candidate
 from evotensile.shapes import pilot_100_shapes
+from evotensile.tensilelite_diagnostics import DiagnosticRecord, DiagnosticRunResult
 from tests.helpers import DOCUMENTED_WINNER_CANDIDATE, sample_candidates
 
 
@@ -657,7 +658,7 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
     )
 
 
-def test_execute_schedule_salvages_final_yaml_from_nonzero_build(tmp_path: Path):
+def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_build(tmp_path: Path, monkeypatch):
     fake_tensile = tmp_path / "fake_tensile.py"
     fake_tensile.write_text(
         dedent(
@@ -728,6 +729,31 @@ def test_execute_schedule_salvages_final_yaml_from_nonzero_build(tmp_path: Path)
     )
     fake_runner.chmod(0o755)
 
+    def fake_diagnostics(*args, **kwargs):
+        diagnostics_path = tmp_path / "diagnostics.jsonl"
+        diagnostics_path.write_text("", encoding="utf-8")
+        return DiagnosticRunResult(
+            run_id="diagnostics_run",
+            returncode=0,
+            records=[
+                DiagnosticRecord(
+                    candidate_hash=candidates[0].hash,
+                    candidate_index=0,
+                    status="kernelwriter_failed",
+                    phase="kernelwriter",
+                    reason="KernelWriter returned errcode -2",
+                    shape_ids=(shape.id,),
+                )
+            ],
+            results_path=diagnostics_path,
+            stdout_path=diagnostics_path,
+            stderr_path=diagnostics_path,
+            command=["diagnostics"],
+            duration_s=0.0,
+        )
+
+    monkeypatch.setattr("evotensile.scheduler.run_tensilelite_diagnostics", fake_diagnostics)
+
     result = execute_schedule(
         db,
         shapes=[shape],
@@ -740,12 +766,68 @@ def test_execute_schedule_salvages_final_yaml_from_nonzero_build(tmp_path: Path)
         keep_going=True,
     )
 
-    assert len(result.executed_batches) == 2
+    assert len(result.executed_batches) == 1
     assert result.executed_batches[0].ingest is not None
-    assert result.executed_batches[0].ingest.status_counts == {"ok": 10, "rejected": 1}
-    assert result.executed_batches[1].ingest is not None
-    assert result.executed_batches[1].ingest.status_counts == {"build_failed": 1}
-    assert db.cache_summary() == {"ok": 10, "rejected": 1, "build_failed": 1}
+    assert result.executed_batches[0].ingest.status_counts == {"ok": 10, "build_failed": 1}
+    assert db.cache_summary() == {"build_failed": 1, "ok": 10}
+
+
+def test_multi_candidate_build_failure_unattributed_is_not_reusable_cache(tmp_path: Path, monkeypatch):
+    fake_tensile = tmp_path / "fake_tensile.py"
+    fake_tensile.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n", encoding="utf-8")
+    fake_tensile.chmod(0o755)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = sample_candidates(2)
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+
+    def fake_diagnostics(*args, **kwargs):
+        diagnostics_path = tmp_path / "empty_diagnostics.jsonl"
+        diagnostics_path.write_text("", encoding="utf-8")
+        return DiagnosticRunResult(
+            run_id="diagnostics_unattributed",
+            returncode=0,
+            records=[],
+            results_path=diagnostics_path,
+            stdout_path=diagnostics_path,
+            stderr_path=diagnostics_path,
+            command=["diagnostics"],
+            duration_s=0.0,
+        )
+
+    monkeypatch.setattr("evotensile.scheduler.run_tensilelite_diagnostics", fake_diagnostics)
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "batches",
+        candidate_batch_size=2,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=tmp_path / "unused_runner",
+        keep_going=True,
+    )
+
+    assert len(result.executed_batches) == 1
+    assert result.executed_batches[0].ingest is not None
+    assert result.executed_batches[0].ingest.status_counts == {"build_failed_unattributed": 2}
+    assert db.cache_summary() == {"build_failed_unattributed": 2}
+    assert (
+        len(
+            plan_batches(
+                db,
+                shapes=[shape],
+                candidates=candidates,
+                problem_type_hash=p_hash,
+                benchmark_protocol_hash=b_hash,
+                candidate_batch_size=2,
+                shape_batch_size=1,
+            )
+        )
+        == 1
+    )
 
 
 def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path):

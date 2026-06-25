@@ -347,7 +347,7 @@ Post-100-shape status and remaining risks:
 - Exact-shape and nearest-shape transfer now seed each proposal from validation-passed winners of cached shapes before random restarts. Imported hipBLASLt baseline configs participate in this path only if they remain the best cached candidates for those shapes.
 - Pair-level cache inefficiency has a first fix: scheduler now groups shapes by exact missing candidate subset within each candidate/shape chunk, so planned batches do not deliberately re-run cached pairs. Future dense-merge heuristics may allow a small number of `ok` extras if compile overhead dominates.
 - APU thermal coupling: compile and benchmark are sequential, but compile defaults now favor outer batch parallelism (`--batch-workers` = available CPU cores, `--compile-threads 1`) instead of highly threaded per-batch builds. Default policy is still no deliberate compile/benchmark overlap and no deliberate cool-down sleep.
-- Multi-candidate build failure attribution: only single-candidate build failures are negative-cached today. If a multi-candidate batch fails, isolate with `--candidate-batch-size 1` before marking candidates bad.
+- Multi-candidate build failure attribution now uses structured TensileLite diagnostics. Attributed candidate-level failures are cached as `build_failed`; unresolved batch failures/timeouts are recorded as non-reusable `build_failed_unattributed` / `build_timeout_unattributed` audit evidence.
 - Search-time validation now defaults to full validation (`NumElementsToValidate=-1`) after adding the OpenBLAS-backed structured-runner reference path. `NumElementsToValidate` is an execution budget, not a timing-cache identity field, so GPU-only top-ups with prior validation evidence append under the same benchmark protocol hash.
 - Final-YAML mapping was repaired after the full scan. The repaired mapper handles TLDS2-derived `1LDSBuffer`/`PrefetchLocalRead` rewrites and inactive `StaggerU=0` `StaggerUMapping`/`StaggerUStride` normalization. Re-ingest now reports zero unmapped rows and zero unmatched final solutions.
 
@@ -444,7 +444,7 @@ Structured runner refactor status:
 
 - Expand production backend validation from the current accepted top-up pairs to `10-20` pairs spanning more shapes, candidates, and generated libraries before starting the 9,681-shape grid.
 - Decide whether to use explicit runner priming, additional warmups, or robust sample filtering for occasional first-use/timing outliers while keeping benchmark protocol identity user-controlled.
-- Improve multi-candidate build-failure/timeout attribution once failure signatures are better understood; single-candidate build timeouts are classified, but multi-candidate failures are still intentionally not negative-cached.
+- Continue mining structured diagnostic signatures for exact source-backed rules; multi-candidate failures/timeouts without candidate-level attribution remain intentionally non-reusable.
 - Decide whether profile-owned runner build commands should be executable workflow steps; profiles currently record the default runner path/build command, but users still run the build command explicitly.
 - Tune `repair-outliers` thresholds and budgets on staged larger-grid subsets before making it part of the default large-grid workflow.
 - Keep the rebuilt-hipBLASLt validation recipe as the standard post-install gate: target `hipblaslt-bench --verify` test, upstream `hipblaslt-test` smoke/filtered quick as needed, and the PyTorch/FeatherOps 1024^3 NT performance path before scaling further.

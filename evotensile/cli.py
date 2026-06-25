@@ -9,7 +9,6 @@ from .candidate import Candidate, Shape
 from .database import EvoTensileDB
 from .profile import DEFAULT_PROFILE, PROFILES, TargetProfile, get_profile
 from .protocol import BenchmarkProtocol
-from .rejection_mining import classification_counts, summarize_rejection_logs
 from .runner import DEFAULT_TENSILELITE_BIN
 from .scheduler import (
     DEFAULT_COMPILE_THREADS,
@@ -489,37 +488,6 @@ def cmd_rank_evals(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_summarize_rejections(args: argparse.Namespace) -> int:
-    summaries = summarize_rejection_logs(args.paths)
-    counts = classification_counts(summaries)
-    if args.json:
-        print(
-            json.dumps(
-                {
-                    "counts": counts,
-                    "logs": [summary.to_dict() for summary in summaries],
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
-    print("classification,count")
-    for classification, count in sorted(counts.items()):
-        print(f"{classification},{count}")
-    if args.verbose:
-        print("path,classification,actual_solutions,total_solutions,solution_stage,messages")
-        for summary in summaries:
-            print(
-                f"{summary.path},{summary.classification},"
-                f"{summary.actual_solutions if summary.actual_solutions is not None else ''},"
-                f"{summary.total_solutions if summary.total_solutions is not None else ''},"
-                f"{summary.solution_stage or ''},"
-                f"{' | '.join(summary.messages)}"
-            )
-    return 0
-
-
 def cmd_schedule_batches(args: argparse.Namespace) -> int:
     context = _schedule_context(args)
     candidates = _propose_candidates_for_shapes(
@@ -767,12 +735,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_protocol_args(cmd)
     _add_proposal_args(cmd)
     cmd.set_defaults(func=cmd_proposal_coverage)
-
-    cmd = sub.add_parser("summarize-rejections", help="Classify TensileLite rejection logs")
-    cmd.add_argument("paths", nargs="+", help="Log files or run directories to scan")
-    cmd.add_argument("--json", action="store_true", help="Emit structured JSON")
-    cmd.add_argument("--verbose", action="store_true", help="Print per-log classifications")
-    cmd.set_defaults(func=cmd_summarize_rejections)
 
     cmd = sub.add_parser("schedule-batches", help="Cache-aware batch scheduling, build, runner, and ingestion")
     cmd.add_argument("--db", required=True)

@@ -34,11 +34,9 @@ Inspect a target search space with:
 python3 -m evotensile.cli summarize-space --profile <profile-name>
 ```
 
-Two diagnostic commands help define and maintain a profile's search space:
-- `proposal-coverage` generates proposals without executing them, then reports value coverage and invalid-rule counts so proposal bias can be tuned without shrinking the underlying domains.
-- `summarize-rejections` classifies TensileLite logs or run directories so repeated schema, `SolutionStructs`, KernelWriter/resource, runtime-validation, and unknown failures can be reviewed before becoming explicit invalidity rules.
+`proposal-coverage` helps define and maintain a profile's search space by generating proposals without executing them, then reporting value coverage and invalid-rule counts so proposal bias can be tuned without shrinking the underlying domains.
 
-Use those diagnostics to keep hard rules source-backed and exact, while keeping proposal heuristics separate from validity.
+During real schedules, failed multi-candidate TensileLite builds are attributed through structured TensileLite diagnostics instead of log scraping or recursive isolation. Use those diagnostics to keep hard rules source-backed and exact, while keeping proposal heuristics separate from validity.
 
 ### 2. Search Configs
 
@@ -356,6 +354,6 @@ This test is intentionally heuristic. It identifies shapes worth more search bud
 
 - Bundled profiles and runners are target-specific. Broader data types, layouts, and epilogues need profile and backend coverage.
 - Surrogate/LFBO proposals are not implemented. Keep `PredictionThreshold: 2.0` to disable heuristics like Formocast and Origami in TensileLite, until they are accurate enough on gfx1151.
-- Timeout statuses and single-candidate build failures are recorded, but multi-candidate build failures still require salvage/isolation before individual candidates can be negative-cached confidently.
+- Timeout statuses and single-candidate build failures are recorded, and multi-candidate build failures/timeouts are attributed through structured TensileLite diagnostics; unresolved cases remain non-reusable audit evidence.
 - Logic-file update helpers are profile-aware, but each new target variant needs validation before measured-performance claims.
 - The production structured backend is intentionally narrower than the generic search abstractions and needs broader target coverage before it is a general GEMM runner.
