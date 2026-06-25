@@ -18,7 +18,7 @@ from evotensile.database import EvoTensileDB
 from evotensile.profile import PROFILES, get_profile
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.runner import DEFAULT_TENSILELITE_BIN
-from evotensile.scheduler import execute_schedule
+from evotensile.scheduler import DEFAULT_COMPILE_THREADS, execute_schedule
 from evotensile.shapes import Shape, parse_shape
 from evotensile.tensilelite_keys import DIRECT_SOLUTION_MATCH_KEYS
 
@@ -379,7 +379,10 @@ def main() -> int:
     parser.add_argument("--runner-bin", default=None)
     parser.add_argument("--tensilelite-bin", default=DEFAULT_TENSILELITE_BIN)
     parser.add_argument(
-        "--compile-threads", type=int, default=-1, help="TensileLite CpuThreads; -1 uses all CPU threads"
+        "--compile-threads",
+        type=int,
+        default=DEFAULT_COMPILE_THREADS,
+        help="TensileLite CpuThreads per batch; defaults to 1",
     )
     parser.add_argument("--build-timeout", type=float, default=None, help="defaults to the target profile; 0 disables")
     parser.add_argument("--runner-timeout", type=float, default=None, help="defaults to the target profile; 0 disables")

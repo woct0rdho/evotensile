@@ -12,6 +12,7 @@ from evotensile.candidate import Candidate
 from evotensile.manifest import write_manifest
 from evotensile.profile import get_profile
 from evotensile.runner import DEFAULT_TENSILELITE_BIN, run_tensilelite
+from evotensile.scheduler import DEFAULT_COMPILE_THREADS
 from evotensile.search_space import defaulted_params, explain_invalid_nt_hhs
 from evotensile.shapes import parse_shape
 from evotensile.solution_mapping import solution_matches_candidate
@@ -80,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", default="gfx1151-nt-hhs")
     parser.add_argument("--output-dir", type=Path, default=Path("out/tensilelite_oracle"))
     parser.add_argument("--tensilelite-bin", type=Path, default=Path(DEFAULT_TENSILELITE_BIN))
-    parser.add_argument("--compile-threads", type=int, default=32)
+    parser.add_argument("--compile-threads", type=int, default=DEFAULT_COMPILE_THREADS)
     parser.add_argument("--timeout", type=float, default=1800.0)
     parser.add_argument("--print-rejection-reasons", action="store_true")
     return parser.parse_args()

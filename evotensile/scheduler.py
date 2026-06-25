@@ -1,4 +1,5 @@
 import math
+import os
 import random
 import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -113,6 +114,18 @@ PROPOSAL_MODES = (
 )
 DEFAULT_PROPOSAL = DEFAULT_PROFILE.default_proposal
 DEFAULT_NUM_RANDOM = DEFAULT_PROFILE.default_num_random
+DEFAULT_COMPILE_THREADS = 1
+
+
+def default_batch_workers() -> int:
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            return max(1, len(os.sched_getaffinity(0)))
+        except OSError:
+            pass
+    return os.cpu_count() or 1
+
+
 DEFAULT_ELITE_COUNT = DEFAULT_PROFILE.default_elite_count
 DEFAULT_LOCAL_COUNT = DEFAULT_PROFILE.default_local_count
 DEFAULT_DE_COUNT = DEFAULT_PROFILE.default_de_count
@@ -1021,7 +1034,7 @@ def execute_schedule(
     dry_run: bool = False,
     generate_only: bool = False,
     tensilelite_bin: str | Path = DEFAULT_TENSILELITE_BIN,
-    compile_threads: int | None = -1,
+    compile_threads: int | None = DEFAULT_COMPILE_THREADS,
     keep_going: bool = False,
     runner_bin: str | Path | None = None,
     build_timeout_s: float | None = None,
@@ -1029,12 +1042,13 @@ def execute_schedule(
     adaptive_policy: AdaptivePolicy | None = None,
     adaptive_initial_samples: int = 3,
     adaptive_max_rounds: int = 4,
-    batch_workers: int = 1,
+    batch_workers: int | None = None,
 ) -> ScheduleResult:
     if not dry_run and not generate_only and runner_bin is None:
         raise ValueError("--runner-bin is required")
 
     protocol = protocol or target_profile.default_protocol
+    resolved_batch_workers = default_batch_workers() if batch_workers is None else batch_workers
     problem_type_hash = target_profile.problem_type_hash
     benchmark_protocol_hash = target_profile.benchmark_protocol_hash(protocol)
     build_timeout_s = _resolve_timeout(build_timeout_s, target_profile.default_build_timeout_s)
@@ -1066,7 +1080,7 @@ def execute_schedule(
             runner_bin=runner_bin,
             build_timeout_s=build_timeout_s,
             runner_timeout_s=runner_timeout_s,
-            batch_workers=batch_workers,
+            batch_workers=resolved_batch_workers,
         )
         planned = list(initial.planned_batches)
         executed = list(initial.executed_batches)
@@ -1107,7 +1121,7 @@ def execute_schedule(
                     runner_bin=runner_bin,
                     build_timeout_s=build_timeout_s,
                     runner_timeout_s=runner_timeout_s,
-                    batch_workers=batch_workers,
+                    batch_workers=resolved_batch_workers,
                 )
                 planned.extend(topup.planned_batches)
                 executed.extend(topup.executed_batches)
@@ -1124,7 +1138,7 @@ def execute_schedule(
             completed_rounds += 1
         return ScheduleResult(planned_batches=planned, executed_batches=executed, adaptive_rounds=completed_rounds)
 
-    if batch_workers <= 0:
+    if resolved_batch_workers <= 0:
         raise ValueError("batch_workers must be positive")
 
     target_samples = max(min_samples, protocol.num_benchmarks)
@@ -1233,7 +1247,7 @@ def execute_schedule(
         if failed and not keep_going:
             stop_requested = True
 
-    effective_workers = batch_workers if keep_going and not generate_only else 1
+    effective_workers = resolved_batch_workers if keep_going and not generate_only else 1
     if effective_workers == 1:
         while batch_cursor < len(planned_batches) and not stop_requested:
             batch = planned_batches[batch_cursor]
