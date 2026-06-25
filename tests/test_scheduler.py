@@ -899,6 +899,13 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
     assert default_metadata["adaptive_sampling"] is True
     assert default_metadata["stop_on_error"] is False
 
+    assert default_metadata["compile_cache_enabled"] is True
+    assert default_metadata["compile_cache_root"] == str(tmp_path / "default" / "compile_cache")
+
+    no_compile_cache_metadata = run_cli(tmp_path / "no_compile_cache", "--no-compile-cache")
+    assert no_compile_cache_metadata["compile_cache_enabled"] is False
+    assert no_compile_cache_metadata["compile_cache_root"] is None
+
     fail_fast_metadata = run_cli(tmp_path / "fail_fast", "--stop-on-error")
     fixed_sampling_metadata = run_cli(tmp_path / "fixed", "--fixed-sampling")
     assert fail_fast_metadata["stop_on_error"] is True

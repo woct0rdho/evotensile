@@ -52,6 +52,7 @@ DIRECT_SOLUTION_MATCH_KEYS = frozenset(
 )
 
 SOLUTION_YAML_GLOBS = (
+    "*_Final.yaml",
     "**/*_Final.yaml",
     "**/*_CSVWinner.yaml",
     "**/Data/*.yaml",

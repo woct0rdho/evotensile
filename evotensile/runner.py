@@ -64,6 +64,7 @@ def run_tensilelite(
     global_parameters: list[str] | None = None,
     env: dict[str, str] | None = None,
     timeout_s: float | None = None,
+    use_cache: bool = False,
 ) -> RunResult:
     yaml_path = Path(yaml_path)
     output_dir = Path(output_dir)
@@ -73,6 +74,8 @@ def run_tensilelite(
     stderr_path = output_dir / f"{run_id}.stderr.log"
 
     cmd = [str(tensilelite_bin), str(yaml_path), str(output_dir)]
+    if use_cache:
+        cmd.append("--use-cache")
     if build_only:
         cmd.append("--build-only")
     cmd.extend(_global_parameter_args(global_parameters, cpu_threads=cpu_threads))
@@ -122,6 +125,7 @@ def run_tensilelite(
                     "stdout_path": str(stdout_path),
                     "stderr_path": str(stderr_path),
                     "timed_out": timed_out,
+                    "use_cache": use_cache,
                 },
                 sort_keys=True,
             ),

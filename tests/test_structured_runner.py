@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 from textwrap import dedent
@@ -9,7 +10,7 @@ from evotensile.shapes import pilot_100_shapes
 from evotensile.structured_runner import (
     RunnablePair,
     StructuredSample,
-    _library_dir_from_run,
+    _library_dir_from_build,
     read_structured_results,
     validate_structured_samples,
 )
@@ -189,10 +190,10 @@ def test_validate_structured_samples_accepts_trusted_no_check_rows():
     assert inserts[0].status == "ok"
 
 
-def test_library_dir_from_run_accepts_tensilelite_build_only_cache_layout(tmp_path: Path):
-    run_dir = tmp_path / "run"
+def test_library_dir_from_build_accepts_tensilelite_build_only_cache_layout(tmp_path: Path):
+    build_dir = tmp_path / "build"
     cache_lib = (
-        run_dir
+        build_dir
         / "1_BenchmarkProblems"
         / "Cijk_Ailk_Bjlk_HHS_BH_Bias_H_HA_S_SAV_UserArgs_00"
         / "00_Final"
@@ -204,7 +205,7 @@ def test_library_dir_from_run_accepts_tensilelite_build_only_cache_layout(tmp_pa
     )
     cache_lib.mkdir(parents=True)
 
-    assert _library_dir_from_run(run_dir) == cache_lib
+    assert _library_dir_from_build(build_dir) == cache_lib
 
 
 def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path: Path):
@@ -292,6 +293,98 @@ def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path
             "SELECT status, validation, COUNT(*) FROM evaluations GROUP BY status, validation ORDER BY validation"
         ).fetchall()
     assert rows == [("ok", "NO_CHECK", 1), ("ok", "PASSED", 1)]
+
+
+def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
+    fake_tensile = tmp_path / "fake_tensile_cache.py"
+    fake_tensile.write_text(
+        dedent(
+            """\
+            #!/usr/bin/env python3
+            import json
+            import sys
+            from pathlib import Path
+
+            import yaml
+
+            config_path, out = Path(sys.argv[1]), Path(sys.argv[2])
+            out.mkdir(parents=True, exist_ok=True)
+            calls = out / "calls.jsonl"
+            with calls.open("a") as handle:
+                handle.write(json.dumps(sys.argv[1:]) + "\\n")
+            if "--build-only" not in sys.argv:
+                sys.exit(9)
+            config = yaml.safe_load(config_path.read_text())
+            problem = config["BenchmarkProblems"][0][1]
+            problem_sizes = problem["BenchmarkFinalParameters"][0]["ProblemSizes"]
+            solutions = []
+            for i, item in enumerate(problem["ForkParameters"][0]["Groups"][0]):
+                sol = dict(item)
+                mi = sol["MatrixInstruction"]
+                sol["MatrixInstruction"] = mi[:4]
+                sol["MIWaveTile"] = [mi[5], mi[6]]
+                sol["MIWaveGroup"] = [mi[7], mi[8]]
+                sol["SolutionIndex"] = i
+                sol["KernelNameMin"] = f"Kernel{i}"
+                solutions.append(sol)
+            final = [{"MinimumRequiredVersion": "5.0.0"}, {"ProblemSizes": problem_sizes}, *solutions]
+            (out / "00_Final.yaml").write_text(yaml.safe_dump(final, sort_keys=False))
+            cache = out / "1_BenchmarkProblems" / "ptype" / "00_Final" / "caches" / "abc123"
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / "cache.yaml").write_text("CodeObjectFiles: []\\nLibraryFile: library.yaml\\n")
+            lib = cache / "source" / "library" / "gfx1151"
+            lib.mkdir(parents=True, exist_ok=True)
+            (lib / "TensileLibrary_gfx1151.yaml").write_text("---\\nsolutions: []\\n")
+            (lib / "Kernels.so-000-gfx1151.hsaco").write_bytes(b"fake")
+            sys.exit(0)
+            """
+        ),
+        encoding="utf-8",
+    )
+    fake_tensile.chmod(0o755)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidate = sample_candidates(1)[0]
+    shape = pilot_100_shapes()[0]
+    compile_cache_root = tmp_path / "compile_cache"
+
+    first = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=[candidate],
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        compile_cache_root=compile_cache_root,
+    )
+    second = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=[candidate],
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
+        min_samples=2,
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        compile_cache_root=compile_cache_root,
+    )
+
+    assert first.executed_batches[0].build_output_dir == second.executed_batches[0].build_output_dir
+    build_dir = first.executed_batches[0].build_output_dir
+    assert build_dir is not None
+    calls = [json.loads(line) for line in (build_dir / "calls.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert "--use-cache" not in calls[0]
+    assert "--use-cache" in calls[1]
+    assert (build_dir / ".evotensile_compile_cache_ok").exists()
+    assert first.executed_batches[0].output_dir != build_dir
+    assert second.executed_batches[0].output_dir != build_dir
 
 
 def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):

@@ -268,6 +268,9 @@ def _execute_schedule_from_args(
         adaptive_initial_samples=args.adaptive_initial_samples,
         adaptive_max_rounds=args.adaptive_max_rounds,
         batch_workers=args.batch_workers,
+        compile_cache_root=None
+        if args.no_compile_cache
+        else args.compile_cache_dir or Path(args.output_dir) / "compile_cache",
     )
 
 
@@ -292,6 +295,10 @@ def _schedule_metadata_common(
         "candidate_batch_size": args.candidate_batch_size,
         "shape_batch_size": args.shape_batch_size,
         "batch_workers": args.batch_workers,
+        "compile_cache_root": None
+        if args.no_compile_cache
+        else str(args.compile_cache_dir or Path(args.output_dir) / "compile_cache"),
+        "compile_cache_enabled": not args.no_compile_cache,
         "min_samples": args.min_samples,
         "ignore_cache": args.ignore_cache,
         "dry_run": args.dry_run,
@@ -354,6 +361,13 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--min-samples", type=int, default=1)
     parser.add_argument("--ignore-cache", action="store_true")
+    parser.add_argument(
+        "--compile-cache-dir",
+        type=Path,
+        default=None,
+        help="Stable TensileLite build-cache directory; defaults to OUTPUT_DIR/compile_cache",
+    )
+    parser.add_argument("--no-compile-cache", action="store_true", help="Disable stable TensileLite build-cache reuse")
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
@@ -541,6 +555,7 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
                 "yaml_path": str(executed.yaml_path),
                 "manifest_path": str(executed.manifest_path),
                 "output_dir": str(executed.output_dir),
+                "build_output_dir": str(executed.build_output_dir) if executed.build_output_dir is not None else None,
                 "ingest": {
                     "inserted": executed.ingest.inserted if executed.ingest is not None else 0,
                     "rejected": executed.ingest.rejected if executed.ingest is not None else 0,
@@ -670,6 +685,7 @@ def cmd_repair_outliers(args: argparse.Namespace) -> int:
                 "yaml_path": str(executed.yaml_path),
                 "manifest_path": str(executed.manifest_path),
                 "output_dir": str(executed.output_dir),
+                "build_output_dir": str(executed.build_output_dir) if executed.build_output_dir is not None else None,
                 "ingest": None
                 if executed.ingest is None
                 else {

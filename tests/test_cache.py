@@ -1,7 +1,10 @@
+from textwrap import dedent
+
 from evotensile.cache import CacheKey, benchmark_protocol_hash
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL, global_parameter_items
+from evotensile.runner import run_tensilelite
 from evotensile.shapes import pilot_100_shapes
 from tests.helpers import sample_candidates
 
@@ -55,6 +58,34 @@ def test_db_cache_key_lookup(tmp_path):
     assert db.has_cached_evaluation(key)
     assert db.has_reusable_cache_entry(key)
     assert db.cache_summary() == {"ok": 1}
+
+
+def test_run_tensilelite_use_cache_emits_cli_flag(tmp_path):
+    fake_tensile = tmp_path / "fake_tensile.py"
+    fake_tensile.write_text(
+        dedent(
+            """\
+            #!/usr/bin/env python3
+            import json
+            import sys
+            from pathlib import Path
+
+            out = Path(sys.argv[2])
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "argv.json").write_text(json.dumps(sys.argv[1:]))
+            """
+        ),
+        encoding="utf-8",
+    )
+    fake_tensile.chmod(0o755)
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text("{}\n", encoding="utf-8")
+
+    result = run_tensilelite(yaml_path, tmp_path / "out", tensilelite_bin=fake_tensile, build_only=True, use_cache=True)
+
+    assert result.ok
+    assert result.command[:4] == [str(fake_tensile), str(yaml_path), str(tmp_path / "out"), "--use-cache"]
+    assert "--build-only" in result.command
 
 
 def test_negative_cache_statuses_are_reusable_but_not_rankable(tmp_path):
