@@ -130,6 +130,39 @@ def test_plan_batches_requests_only_missing_sample_count(tmp_path: Path):
     assert not batches[0].requires_validation
 
 
+def test_plan_batches_reuses_detailed_hipblaslt_validation_evidence(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = sample_candidates(1)
+    shapes = pilot_100_shapes()[:1]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.insert_evaluation(
+        shape_id=shapes[0].id,
+        candidate_hash=candidates[0].hash,
+        run_id="cached",
+        status="ok",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        time_us=1.0,
+        validation="PASSED checked=1048576 stride=1 backend=hipblaslt_gpu_compare",
+    )
+
+    batches = plan_batches(
+        db,
+        shapes=shapes,
+        candidates=candidates,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        min_samples=3,
+        candidate_batch_size=1,
+        shape_batch_size=1,
+    )
+
+    assert len(batches) == 1
+    assert not batches[0].requires_validation
+
+
 def test_plan_batches_requires_validation_without_prior_validation_evidence(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -818,7 +851,7 @@ def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_b
             parser = argparse.ArgumentParser()
             parser.add_argument("--pairs")
             parser.add_argument("--output")
-            args = parser.parse_args()
+            args, _ = parser.parse_known_args()
             with open(args.pairs) as src, open(args.output, "w") as out:
                 for line in src:
                     pair = json.loads(line)

@@ -179,4 +179,6 @@ def test_learn_linkage_models_and_nearest_assignment():
     assert summary.enabled is True
     assert summary.model_count == 2
     assert sorted(model.cluster_size for model in models) == [3, 3]
-    assert nearest_linkage_model((3, 3, 3, 1), models).leader_candidate_hash == "b0"
+    nearest = nearest_linkage_model((3, 3, 3, 1), models)
+    assert nearest is not None
+    assert nearest.leader_candidate_hash == "b0"

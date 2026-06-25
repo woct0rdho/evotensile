@@ -13,6 +13,10 @@ from .metrics import gflops_from_us
 VALIDATION_PASS_TOKENS = ("PASSED", "OK", "VALID")
 
 
+def validation_token(value: str | None) -> str:
+    return (value or "").strip().split(maxsplit=1)[0].upper()
+
+
 def _median(values: list[float]) -> float | None:
     if not values:
         return None
@@ -450,7 +454,10 @@ class EvoTensileDB:
                   AND shape_id IN ({shape_placeholders})
                   AND candidate_hash IN ({candidate_placeholders})
                   AND status = 'ok'
-                  AND UPPER(validation) IN ({validation_placeholders})
+                  AND UPPER(CASE
+                    WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0 THEN TRIM(COALESCE(validation, ''))
+                    ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1, INSTR(TRIM(COALESCE(validation, '')), ' ') - 1)
+                  END) IN ({validation_placeholders})
                 """,
                 (
                     problem_type_hash,

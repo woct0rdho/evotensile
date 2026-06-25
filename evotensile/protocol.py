@@ -52,6 +52,7 @@ class BenchmarkProtocol:
     granularity_threshold: float = 0.0
     skip_slow_solution_ratio: float = 0.0
     parallel_gpu_execution: int = 1
+    validation_backend: str = "hipblaslt"
 
     def __post_init__(self) -> None:
         if self.num_warmups < 0:
@@ -68,6 +69,8 @@ class BenchmarkProtocol:
             raise ValueError("HardwareMonitor is not supported by the structured runner")
         if self.parallel_gpu_execution != 1:
             raise ValueError("ParallelGpuExecution must be 1 for serial structured benchmarking")
+        if self.validation_backend not in {"cpu", "hipblaslt", "none"}:
+            raise ValueError("validation_backend must be one of: cpu, hipblaslt, none")
 
     @property
     def samples_per_pair(self) -> int:
@@ -107,8 +110,12 @@ class BenchmarkProtocol:
             "ParallelGpuExecution": self.parallel_gpu_execution,
         }
 
+    def runner_parameters(self) -> dict[str, Any]:
+        return {"ValidationBackend": self.validation_backend}
+
     def identity_parameters(self) -> dict[str, Any]:
-        return {key: value for key, value in self.global_parameters().items() if key in BENCHMARK_PROTOCOL_KEYS}
+        values = {**self.global_parameters(), **self.runner_parameters()}
+        return {key: value for key, value in values.items() if key in BENCHMARK_PROTOCOL_KEYS}
 
     def protocol_hash(self) -> str:
         return stable_hash(self.identity_parameters(), prefix="bproto_")[:23]

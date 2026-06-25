@@ -1,6 +1,6 @@
 # EvoTensile Plan
 
-EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. The current completed pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, followed by checked-in hipBLASLt HHS/HHS+AuxH/BBS/BBS+AuxB GridBased YAML updates, rebuild, PyTorch-level performance validation, and repeatable installed-library correctness validation. The current workflow uses imported current-hipBLASLt baseline candidates, a structured exact-pair backend, adaptive sampling, and optional local-outlier repair before scaling to finer/larger shape grids.
+EvoTensile is a smart-search autotuner for TensileLite. The current completed pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid described in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs_grid.md`, followed by checked-in hipBLASLt HHS/HHS+AuxH/BBS/BBS+AuxB GridBased YAML updates, rebuild, PyTorch-level performance validation, and repeatable installed-library correctness validation. The current workflow uses imported current-hipBLASLt baseline candidates, a structured exact-pair backend, adaptive sampling, and optional local-outlier repair before scaling to finer/larger shape grids.
 
 ## 1. Motivation
 

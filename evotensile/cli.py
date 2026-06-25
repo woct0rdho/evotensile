@@ -55,6 +55,7 @@ def _protocol(args: argparse.Namespace, profile: TargetProfile) -> BenchmarkProt
         enqueues_per_sync=getattr(args, "enqueues_per_sync", None),
         syncs_per_benchmark=getattr(args, "syncs_per_benchmark", None),
         num_elements_to_validate=getattr(args, "num_elements_to_validate", None),
+        validation_backend=getattr(args, "validation_backend", None),
     )
     return protocol
 
@@ -122,6 +123,12 @@ def _add_protocol_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--enqueues-per-sync", type=int, default=None)
     parser.add_argument("--syncs-per-benchmark", type=int, default=None)
     parser.add_argument("--num-elements-to-validate", type=int, default=None)
+    parser.add_argument(
+        "--validation-backend",
+        choices=("cpu", "hipblaslt", "none"),
+        default=None,
+        help="Structured-runner validation backend; defaults to hipblaslt GPU oracle",
+    )
 
 
 def _add_timeout_args(parser: argparse.ArgumentParser) -> None:
@@ -360,6 +367,8 @@ def _schedule_metadata_common(
         "problem_type_hash": context.problem_hash,
         "benchmark_protocol_hash": context.protocol_hash,
         "protocol": context.protocol.global_parameters(),
+        "runner_protocol": context.protocol.runner_parameters(),
+        "validation_backend": context.protocol.validation_backend,
         "proposal": args.proposal,
         "candidates": len(candidates),
         "shapes": len(shapes),
