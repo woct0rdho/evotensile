@@ -12,6 +12,7 @@ from .protocol import BenchmarkProtocol
 from .rejection_mining import classification_counts, summarize_rejection_logs
 from .runner import DEFAULT_TENSILELITE_BIN
 from .scheduler import (
+    DEFAULT_COMPILE_THREADS,
     DEFAULT_CROSSOVER_RATE,
     DEFAULT_DE_COUNT,
     DEFAULT_ELITE_COUNT,
@@ -25,6 +26,7 @@ from .scheduler import (
     DEFAULT_TRANSFER_SHAPES,
     PROPOSAL_MODES,
     ScheduleResult,
+    default_batch_workers,
     detect_underperforming_shapes,
     execute_schedule,
     propose_candidates,
@@ -345,7 +347,12 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
         help="Candidates per TensileLite config; defaults to 1 for proposal-driven exploration",
     )
     parser.add_argument("--shape-batch-size", type=int, default=DEFAULT_PROFILE.default_shape_batch_size)
-    parser.add_argument("--batch-workers", type=int, default=1, help="Parallel TensileLite batches to run")
+    parser.add_argument(
+        "--batch-workers",
+        type=int,
+        default=default_batch_workers(),
+        help="Parallel TensileLite batches to run; defaults to available CPU cores",
+    )
     parser.add_argument("--min-samples", type=int, default=1)
     parser.add_argument("--ignore-cache", action="store_true")
     parser.add_argument("--max-batches", type=int, default=None)
@@ -355,8 +362,8 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--compile-threads",
         type=int,
-        default=-1,
-        help="TensileLite CpuThreads; -1 uses all CPU threads",
+        default=DEFAULT_COMPILE_THREADS,
+        help="TensileLite CpuThreads per batch; defaults to 1",
     )
     parser.add_argument(
         "--runner-bin", default=None, help="Structured runner executable; defaults to the target profile"

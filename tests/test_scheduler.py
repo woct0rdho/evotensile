@@ -7,6 +7,7 @@ from evotensile.cli import main as cli_main
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.scheduler import (
+    default_batch_workers,
     detect_underperforming_shapes,
     execute_schedule,
     plan_batches,
@@ -812,7 +813,7 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
     assert default_metadata["executed_batches"] == []
     assert default_metadata["runner_bin"] == DEFAULT_PROFILE.default_runner_bin
     assert default_metadata["candidate_batch_size"] == 1
-    assert default_metadata["batch_workers"] == 1
+    assert default_metadata["batch_workers"] == default_batch_workers()
     assert default_metadata["adaptive_sampling"] is True
     assert default_metadata["stop_on_error"] is False
 
