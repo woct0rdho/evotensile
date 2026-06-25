@@ -20,12 +20,15 @@
 #include <Tensile/hip/HipUtils.hpp>
 
 #include <hip/hip_runtime.h>
+#include <hipblaslt/hipblaslt-ext.hpp>
+#include <hipblaslt/hipblaslt.h>
 
 #ifdef EVOTENSILE_USE_OPENBLAS
 #include <cblas.h>
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -55,6 +58,13 @@ namespace
     constexpr size_t DEFAULT_WORKSPACE_BYTES = 128ull * 1024ull * 1024ull;
     constexpr size_t SYNCHRONIZER_ELEMENTS   = 409600;
 
+    enum class ValidationBackend
+    {
+        Cpu,
+        Hipblaslt,
+        None,
+    };
+
     struct Args
     {
         std::string pairs;
@@ -67,6 +77,7 @@ namespace
         bool        validateOnly   = false;
         int         primeEnqueues  = 0;
         size_t      workspaceSize  = DEFAULT_WORKSPACE_BYTES;
+        ValidationBackend validationBackend = ValidationBackend::Hipblaslt;
     };
 
     struct Pair
@@ -220,16 +231,233 @@ namespace
         DeviceBuffer<Half>  devD;
         DeviceBuffer<Half>  devBias;
         DeviceBuffer<float> devScaleAlphaVec;
+        DeviceBuffer<float> devHipblasltScaleAlphaVec;
+        DeviceBuffer<Half>  devReferenceD;
+        DeviceBuffer<unsigned long long> devCompareSummary;
         DeviceBuffer<char>  devWorkspace;
         DeviceBuffer<float> devSynchronizer;
+    };
+
+    struct CompareSummary
+    {
+        unsigned long long mismatches;
+        unsigned long long firstMismatch;
+        unsigned long long maxAbsDiffBits;
+        unsigned long long checked;
+    };
+
+    __device__ unsigned long long floatAsOrderedBits(float value)
+    {
+        return static_cast<unsigned long long>(__float_as_uint(value));
+    }
+
+    __global__ void prepareScaleAlphaVecKernel(float const* input, float* output, size_t count)
+    {
+        size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx < count)
+            output[idx] = 2.0f * input[idx];
+    }
+
+    __global__ void compareHalfBuffersKernel(Half const* candidate,
+                                             Half const* reference,
+                                             unsigned long long* summary,
+                                             size_t total,
+                                             size_t stride)
+    {
+        size_t idx = (blockIdx.x * blockDim.x + threadIdx.x) * stride;
+        if(idx >= total)
+            return;
+
+        float expected = static_cast<float>(reference[idx]);
+        float actual   = static_cast<float>(candidate[idx]);
+        float absDiff  = fabsf(expected - actual);
+        bool  ok       = expected == actual || absDiff < 0.01f * (fabsf(expected) + fabsf(actual) + 1.0f);
+
+        atomicAdd(&summary[3], 1ull);
+        if(!ok)
+        {
+            atomicAdd(&summary[0], 1ull);
+            atomicMin(&summary[1], static_cast<unsigned long long>(idx));
+            atomicMax(&summary[2], floatAsOrderedBits(absDiff));
+        }
+    }
+
+    std::string hipblasltStatusString(hipblasStatus_t status)
+    {
+        switch(status)
+        {
+        case HIPBLAS_STATUS_SUCCESS:
+            return "HIPBLAS_STATUS_SUCCESS";
+        case HIPBLAS_STATUS_NOT_INITIALIZED:
+            return "HIPBLAS_STATUS_NOT_INITIALIZED";
+        case HIPBLAS_STATUS_ALLOC_FAILED:
+            return "HIPBLAS_STATUS_ALLOC_FAILED";
+        case HIPBLAS_STATUS_INVALID_VALUE:
+            return "HIPBLAS_STATUS_INVALID_VALUE";
+        case HIPBLAS_STATUS_MAPPING_ERROR:
+            return "HIPBLAS_STATUS_MAPPING_ERROR";
+        case HIPBLAS_STATUS_EXECUTION_FAILED:
+            return "HIPBLAS_STATUS_EXECUTION_FAILED";
+        case HIPBLAS_STATUS_INTERNAL_ERROR:
+            return "HIPBLAS_STATUS_INTERNAL_ERROR";
+        case HIPBLAS_STATUS_NOT_SUPPORTED:
+            return "HIPBLAS_STATUS_NOT_SUPPORTED";
+        case HIPBLAS_STATUS_ARCH_MISMATCH:
+            return "HIPBLAS_STATUS_ARCH_MISMATCH";
+        case HIPBLAS_STATUS_HANDLE_IS_NULLPTR:
+            return "HIPBLAS_STATUS_HANDLE_IS_NULLPTR";
+        case HIPBLAS_STATUS_INVALID_ENUM:
+            return "HIPBLAS_STATUS_INVALID_ENUM";
+        case HIPBLAS_STATUS_UNKNOWN:
+            return "HIPBLAS_STATUS_UNKNOWN";
+        default:
+            return "HIPBLAS_STATUS_" + std::to_string(static_cast<int>(status));
+        }
+    }
+
+    void hipblasltCheck(hipblasStatus_t status, std::string const& what)
+    {
+        if(status != HIPBLAS_STATUS_SUCCESS)
+            throw std::runtime_error(what + " failed: " + hipblasltStatusString(status));
+    }
+
+    class HipblasltHandle
+    {
+    public:
+        HipblasltHandle()
+        {
+            hipblasltCheck(hipblasLtCreate(&m_handle), "hipblasLtCreate");
+        }
+        HipblasltHandle(HipblasltHandle const&)            = delete;
+        HipblasltHandle& operator=(HipblasltHandle const&) = delete;
+        ~HipblasltHandle()
+        {
+            if(m_handle != nullptr)
+                hipblasLtDestroy(m_handle);
+        }
+        operator hipblasLtHandle_t() const
+        {
+            return m_handle;
+        }
+
+    private:
+        hipblasLtHandle_t m_handle = nullptr;
+    };
+
+    class HipblasltMatrixLayout
+    {
+    public:
+        HipblasltMatrixLayout(hipDataType type, uint64_t rows, uint64_t cols, int64_t ld)
+        {
+            hipblasltCheck(hipblasLtMatrixLayoutCreate(&m_layout, type, rows, cols, ld),
+                           "hipblasLtMatrixLayoutCreate");
+        }
+        HipblasltMatrixLayout(HipblasltMatrixLayout const&)            = delete;
+        HipblasltMatrixLayout& operator=(HipblasltMatrixLayout const&) = delete;
+        ~HipblasltMatrixLayout()
+        {
+            if(m_layout != nullptr)
+                hipblasLtMatrixLayoutDestroy(m_layout);
+        }
+        operator hipblasLtMatrixLayout_t() const
+        {
+            return m_layout;
+        }
+        void setAttribute(hipblasLtMatrixLayoutAttribute_t attr, void const* value, size_t size, char const* name)
+        {
+            hipblasltCheck(hipblasLtMatrixLayoutSetAttribute(m_layout, attr, value, size), name);
+        }
+
+    private:
+        hipblasLtMatrixLayout_t m_layout = nullptr;
+    };
+
+    class HipblasltMatmulDesc
+    {
+    public:
+        HipblasltMatmulDesc(hipblasComputeType_t computeType, hipDataType scaleType)
+        {
+            hipblasltCheck(hipblasLtMatmulDescCreate(&m_desc, computeType, scaleType),
+                           "hipblasLtMatmulDescCreate");
+        }
+        HipblasltMatmulDesc(HipblasltMatmulDesc const&)            = delete;
+        HipblasltMatmulDesc& operator=(HipblasltMatmulDesc const&) = delete;
+        ~HipblasltMatmulDesc()
+        {
+            if(m_desc != nullptr)
+                hipblasLtMatmulDescDestroy(m_desc);
+        }
+        operator hipblasLtMatmulDesc_t() const
+        {
+            return m_desc;
+        }
+        void setAttribute(hipblasLtMatmulDescAttributes_t attr, void const* value, size_t size, char const* name)
+        {
+            hipblasltCheck(hipblasLtMatmulDescSetAttribute(m_desc, attr, value, size), name);
+        }
+
+    private:
+        hipblasLtMatmulDesc_t m_desc = nullptr;
+    };
+
+    class HipblasltPreference
+    {
+    public:
+        HipblasltPreference()
+        {
+            hipblasltCheck(hipblasLtMatmulPreferenceCreate(&m_pref), "hipblasLtMatmulPreferenceCreate");
+        }
+        HipblasltPreference(HipblasltPreference const&)            = delete;
+        HipblasltPreference& operator=(HipblasltPreference const&) = delete;
+        ~HipblasltPreference()
+        {
+            if(m_pref != nullptr)
+                hipblasLtMatmulPreferenceDestroy(m_pref);
+        }
+        operator hipblasLtMatmulPreference_t() const
+        {
+            return m_pref;
+        }
+        void setAttribute(hipblasLtMatmulPreferenceAttributes_t attr, void const* value, size_t size, char const* name)
+        {
+            hipblasltCheck(hipblasLtMatmulPreferenceSetAttribute(m_pref, attr, value, size), name);
+        }
+
+    private:
+        hipblasLtMatmulPreference_t m_pref = nullptr;
     };
 
     [[noreturn]] void usage(std::ostream& os, int code)
     {
         os << "usage: evotensile-structured-runner --pairs pairs.jsonl --output results.jsonl "
               "--library-dir DIR [--library-file FILE] [--code-object FILE] [--device IDX] "
-              "[--prime-enqueues N]\n";
+              "[--validation-backend cpu|hipblaslt|none] [--prime-enqueues N]\n";
         std::exit(code);
+    }
+
+    ValidationBackend parseValidationBackend(std::string const& value)
+    {
+        if(value == "cpu")
+            return ValidationBackend::Cpu;
+        if(value == "hipblaslt")
+            return ValidationBackend::Hipblaslt;
+        if(value == "none")
+            return ValidationBackend::None;
+        throw std::runtime_error("unknown validation backend: " + value);
+    }
+
+    std::string validationBackendName(ValidationBackend backend)
+    {
+        switch(backend)
+        {
+        case ValidationBackend::Cpu:
+            return "cpu";
+        case ValidationBackend::Hipblaslt:
+            return "hipblaslt";
+        case ValidationBackend::None:
+            return "none";
+        }
+        return "unknown";
     }
 
     Args parseArgs(int argc, char** argv)
@@ -264,6 +492,8 @@ namespace
                 args.useUserArgs = true;
             else if(key == "--validate-only")
                 args.validateOnly = true;
+            else if(key == "--validation-backend")
+                args.validationBackend = parseValidationBackend(needValue(key));
             else if(key == "--help" || key == "-h")
                 usage(std::cout, 0);
             else
@@ -652,6 +882,9 @@ namespace
         buffers.devD.reset(buffers.hostD.size());
         buffers.devBias.reset(buffers.hostBias.size());
         buffers.devScaleAlphaVec.reset(buffers.hostScaleAlphaVec.size());
+        buffers.devHipblasltScaleAlphaVec.reset(buffers.hostScaleAlphaVec.size());
+        buffers.devReferenceD.reset(buffers.hostD.size());
+        buffers.devCompareSummary.reset(4);
         buffers.devWorkspace.reset(workspaceSize);
         buffers.devSynchronizer.reset(SYNCHRONIZER_ELEMENTS);
 
@@ -679,6 +912,14 @@ namespace
                                 buffers.hostScaleAlphaVec.data(),
                                 buffers.hostScaleAlphaVec.size() * sizeof(float),
                                 hipMemcpyHostToDevice));
+        HIP_CHECK_EXC(hipMemcpy(buffers.devReferenceD.get(),
+                                buffers.hostD.data(),
+                                buffers.hostD.size() * sizeof(Half),
+                                hipMemcpyHostToDevice));
+        size_t scaleBlocks = (buffers.hostScaleAlphaVec.size() + 255) / 256;
+        prepareScaleAlphaVecKernel<<<scaleBlocks, 256>>>(
+            buffers.devScaleAlphaVec.get(), buffers.devHipblasltScaleAlphaVec.get(), buffers.hostScaleAlphaVec.size());
+        HIP_CHECK_EXC(hipGetLastError());
         HIP_CHECK_EXC(hipMemset(buffers.devWorkspace.get(), 0, workspaceSize));
         HIP_CHECK_EXC(hipMemset(buffers.devSynchronizer.get(), 0, SYNCHRONIZER_ELEMENTS * sizeof(float)));
         return buffers;
@@ -816,13 +1057,196 @@ namespace
     }
 #endif
 
-    bool validateResult(Pair const& pair, Buffers& buffers, std::string& message)
+    void setBatchedLayout(HipblasltMatrixLayout& layout,
+                          int32_t               batchCount,
+                          int64_t               stride,
+                          char const*           label)
     {
-        if(pair.numElementsToValidate == 0)
+        std::string batchCountLabel = std::string(label) + " batch count";
+        layout.setAttribute(
+            HIPBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batchCount, sizeof(batchCount), batchCountLabel.c_str());
+        std::string batchStrideLabel = std::string(label) + " batch stride";
+        layout.setAttribute(HIPBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET,
+                            &stride,
+                            sizeof(stride),
+                            batchStrideLabel.c_str());
+    }
+
+    bool runHipblasltOracle(Pair const& pair,
+                            Buffers&    buffers,
+                            hipStream_t stream,
+                            size_t      workspaceSize,
+                            std::string& message)
+    {
+        size_t total = static_cast<size_t>(pair.m) * static_cast<size_t>(pair.n)
+                       * static_cast<size_t>(pair.batch);
+        size_t stride = 1;
+        if(pair.numElementsToValidate > 0 && static_cast<size_t>(pair.numElementsToValidate) < total)
+            stride = nextPrime(total / static_cast<size_t>(pair.numElementsToValidate));
+        size_t checkedTarget = (total + stride - 1) / stride;
+
+        HIP_CHECK_EXC(hipMemcpyAsync(buffers.devReferenceD.get(),
+                                     buffers.hostD.data(),
+                                     buffers.hostD.size() * sizeof(Half),
+                                     hipMemcpyHostToDevice,
+                                     stream));
+
+        HipblasltHandle handle;
+        int64_t         m     = pair.m;
+        int64_t         n     = pair.n;
+        int64_t         k     = pair.k;
+        int32_t         batch = static_cast<int32_t>(pair.batch);
+
+        HipblasltMatrixLayout matA(HIP_R_16F, m, k, m);
+        HipblasltMatrixLayout matB(HIP_R_16F, n, k, n);
+        HipblasltMatrixLayout matC(HIP_R_16F, m, n, m);
+        HipblasltMatrixLayout matD(HIP_R_16F, m, n, m);
+        if(batch > 1)
+        {
+            setBatchedLayout(matA, batch, m * k, "A");
+            setBatchedLayout(matB, batch, n * k, "B");
+            setBatchedLayout(matC, batch, m * n, "C");
+            setBatchedLayout(matD, batch, m * n, "D");
+        }
+
+        HipblasltMatmulDesc matmul(HIPBLAS_COMPUTE_32F, HIP_R_32F);
+        hipblasOperation_t  transA = HIPBLAS_OP_N;
+        hipblasOperation_t  transB = HIPBLAS_OP_T;
+        matmul.setAttribute(HIPBLASLT_MATMUL_DESC_TRANSA, &transA, sizeof(transA), "set transA");
+        matmul.setAttribute(HIPBLASLT_MATMUL_DESC_TRANSB, &transB, sizeof(transB), "set transB");
+
+        hipblasLtEpilogue_t epilogue = HIPBLASLT_EPILOGUE_BIAS;
+        matmul.setAttribute(HIPBLASLT_MATMUL_DESC_EPILOGUE, &epilogue, sizeof(epilogue), "set epilogue");
+        hipDataType biasType = HIP_R_16F;
+        matmul.setAttribute(HIPBLASLT_MATMUL_DESC_BIAS_DATA_TYPE, &biasType, sizeof(biasType), "set bias type");
+        void* biasPtr = buffers.devBias.get();
+        matmul.setAttribute(HIPBLASLT_MATMUL_DESC_BIAS_POINTER, &biasPtr, sizeof(biasPtr), "set bias pointer");
+        hipblasLtPointerMode_t pointerMode = HIPBLASLT_POINTER_MODE_ALPHA_DEVICE_VECTOR_BETA_HOST;
+        matmul.setAttribute(HIPBLASLT_MATMUL_DESC_POINTER_MODE,
+                            &pointerMode,
+                            sizeof(pointerMode),
+                            "set alpha-vector pointer mode");
+        hipDataType computeInputType = HIP_R_16F;
+        matmul.setAttribute(HIPBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_A_EXT,
+                            &computeInputType,
+                            sizeof(computeInputType),
+                            "set compute input A type");
+        matmul.setAttribute(HIPBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_B_EXT,
+                            &computeInputType,
+                            sizeof(computeInputType),
+                            "set compute input B type");
+
+        float beta = 2.0f;
+
+        hipblaslt_ext::Gemm gemm(handle,
+                                  matmul,
+                                  buffers.devHipblasltScaleAlphaVec.get(),
+                                  buffers.devA.get(),
+                                  matA,
+                                  buffers.devB.get(),
+                                  matB,
+                                  &beta,
+                                  buffers.devC.get(),
+                                  matC,
+                                  buffers.devReferenceD.get(),
+                                  matD);
+        gemm.setMaxWorkspaceBytes(workspaceSize);
+
+        hipblaslt_ext::GemmPreference gemmPref;
+        gemmPref.setMaxWorkspaceBytes(workspaceSize);
+
+        constexpr int requestedAlgorithms = 16;
+        std::vector<hipblasLtMatmulHeuristicResult_t> heuristics;
+        hipblasltCheck(gemm.algoGetHeuristic(requestedAlgorithms, gemmPref, heuristics),
+                       "hipblaslt_ext::Gemm::algoGetHeuristic");
+        if(heuristics.empty())
+        {
+            message = "FAILED backend=hipblaslt reason=no_heuristic_solution";
+            return false;
+        }
+
+        size_t          usedWorkspace = 0;
+        hipblasStatus_t lastStatus    = HIPBLAS_STATUS_NOT_SUPPORTED;
+        bool            initialized   = false;
+        for(auto const& heuristic : heuristics)
+        {
+            auto   algo = heuristic.algo;
+            size_t requiredWorkspace = 0;
+            lastStatus = gemm.isAlgoSupported(algo, requiredWorkspace);
+            if(lastStatus != HIPBLAS_STATUS_SUCCESS)
+                continue;
+            if(requiredWorkspace > workspaceSize)
+            {
+                lastStatus = HIPBLAS_STATUS_ALLOC_FAILED;
+                continue;
+            }
+            lastStatus = gemm.initialize(algo, buffers.devWorkspace.get(), true, stream);
+            if(lastStatus != HIPBLAS_STATUS_SUCCESS)
+                continue;
+            usedWorkspace = requiredWorkspace;
+            initialized   = true;
+            break;
+        }
+        if(!initialized)
+        {
+            std::ostringstream os;
+            os << "FAILED backend=hipblaslt reason=no_supported_heuristic_solution last_status="
+               << hipblasltStatusString(lastStatus) << " heuristics=" << heuristics.size();
+            message = os.str();
+            return false;
+        }
+
+        hipblasltCheck(gemm.run(stream), "hipblaslt_ext::Gemm::run");
+
+        std::array<unsigned long long, 4> initialSummary = {0, std::numeric_limits<unsigned long long>::max(), 0, 0};
+        HIP_CHECK_EXC(hipMemcpyAsync(buffers.devCompareSummary.get(),
+                                     initialSummary.data(),
+                                     initialSummary.size() * sizeof(unsigned long long),
+                                     hipMemcpyHostToDevice,
+                                     stream));
+        size_t compareBlocks = (checkedTarget + 255) / 256;
+        compareHalfBuffersKernel<<<compareBlocks, 256, 0, stream>>>(
+            buffers.devD.get(), buffers.devReferenceD.get(), buffers.devCompareSummary.get(), total, stride);
+        HIP_CHECK_EXC(hipGetLastError());
+        CompareSummary summary{};
+        HIP_CHECK_EXC(hipMemcpyAsync(&summary,
+                                     buffers.devCompareSummary.get(),
+                                     sizeof(summary),
+                                     hipMemcpyDeviceToHost,
+                                     stream));
+        HIP_CHECK_EXC(hipStreamSynchronize(stream));
+
+        if(summary.mismatches != 0)
+        {
+            std::ostringstream os;
+            os << "FAILED elem=" << summary.firstMismatch << " mismatches=" << summary.mismatches
+               << " checked=" << summary.checked << " stride=" << stride
+               << " max_abs_diff_bits=" << summary.maxAbsDiffBits << " backend=hipblaslt_gpu_compare";
+            message = os.str();
+            return false;
+        }
+        std::ostringstream os;
+        os << "PASSED checked=" << summary.checked << " stride=" << stride
+           << " backend=hipblaslt_gpu_compare workspace=" << usedWorkspace;
+        message = os.str();
+        return true;
+    }
+
+    bool validateResult(Pair const& pair,
+                        Buffers& buffers,
+                        hipStream_t stream,
+                        size_t workspaceSize,
+                        ValidationBackend backend,
+                        std::string& message)
+    {
+        if(pair.numElementsToValidate == 0 || backend == ValidationBackend::None)
         {
             message = "NO_CHECK";
             return true;
         }
+
+        if(backend == ValidationBackend::Hipblaslt)
+            return runHipblasltOracle(pair, buffers, stream, workspaceSize, message);
 
         size_t total = static_cast<size_t>(pair.m) * static_cast<size_t>(pair.n)
                        * static_cast<size_t>(pair.batch);
@@ -941,7 +1365,8 @@ namespace
                  size_t workspaceSize,
                  bool useUserArgs,
                  bool validateOnly,
-                 int primeEnqueues)
+                 int primeEnqueues,
+                 ValidationBackend validationBackend)
     {
         try
         {
@@ -1002,7 +1427,8 @@ namespace
                 if(i == 0 && pair.numElementsToValidate != 0)
                 {
                     HIP_CHECK_EXC(hipStreamSynchronize(stream));
-                    validationOk = validateResult(pair, buffers, validationDetail);
+                    validationOk = validateResult(
+                        pair, buffers, stream, workspaceSize, validationBackend, validationDetail);
                     if(!validationOk)
                         break;
                 }
@@ -1011,7 +1437,8 @@ namespace
             {
                 HIP_CHECK_EXC(adapter.launchKernels(kernels, stream, nullptr, nullptr));
                 HIP_CHECK_EXC(hipStreamSynchronize(stream));
-                validationOk = validateResult(pair, buffers, validationDetail);
+                validationOk = validateResult(
+                    pair, buffers, stream, workspaceSize, validationBackend, validationDetail);
             }
             HIP_CHECK_EXC(hipStreamSynchronize(stream));
 
@@ -1134,7 +1561,8 @@ int main(int argc, char** argv)
             throw std::runtime_error("could not open output file: " + args.output);
 
         std::cerr << "evotensile structured runner: " << pairs.size() << " pair(s), arch=" << arch
-                  << ", library=" << libraryFile << ", codeObject=" << codeObject << "\n";
+                  << ", library=" << libraryFile << ", codeObject=" << codeObject
+                  << ", validation_backend=" << validationBackendName(args.validationBackend) << "\n";
         for(auto const& pair : pairs)
             runPair(out,
                     pair,
@@ -1145,7 +1573,8 @@ int main(int argc, char** argv)
                     args.workspaceSize,
                     args.useUserArgs,
                     args.validateOnly,
-                    args.primeEnqueues);
+                    args.primeEnqueues,
+                    args.validationBackend);
         out.flush();
         HIP_CHECK_EXC(hipDeviceSynchronize());
         return 0;

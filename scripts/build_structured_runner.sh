@@ -72,14 +72,15 @@ COMMON_FLAGS=(
   -o "$OUT" \
   -L"$ROCM_PATH/lib" \
   -L"$ROCM_PATH/lib/llvm/lib" \
-  -Wl,-rpath,"$ROCM_PATH/lib:$ROCM_PATH/lib/llvm/lib" \
+  -L"$ROCM_PATH/lib/hipblaslt" \
+  -Wl,-rpath,"$ROCM_PATH/lib:$ROCM_PATH/lib/llvm/lib:$ROCM_PATH/lib/hipblaslt" \
   "$COMMON_A" \
   -lLLVM-23git \
   "$ORIGAMI_A" \
   -lamd_smi \
   "$MXDATAGEN_A" \
   --hip-link --offload-arch="$GFX_ARCH" \
-  -lamdhip64 -lomp -ldl -lpthread -lm -lrt -lz -lzstd \
+  -lhipblaslt -lamdhip64 -lomp -ldl -lpthread -lm -lrt -lz -lzstd \
   "${OPENBLAS_LIBS[@]}"
 
 echo "$OUT"

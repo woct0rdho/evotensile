@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .candidate import Candidate, Shape
-from .database import EvaluationInsert, EvoTensileDB
+from .database import EvaluationInsert, EvoTensileDB, validation_token
 from .manifest import manifest_by_shape_candidate, read_manifest
 from .profile import TargetProfile
 from .protocol import BenchmarkProtocol
@@ -73,6 +73,9 @@ def _sample_from_json(value: dict[str, Any]) -> StructuredSample:
     validation = value.get("validation")
     if validation is not None:
         validation = str(validation)
+    validation_detail = value.get("validation_detail")
+    if validation_detail not in (None, ""):
+        validation = str(validation_detail)
     solution_index = value.get("solution_index")
     return StructuredSample(
         shape_id=shape_id,
@@ -195,7 +198,7 @@ def _normalized_sample_status(sample: StructuredSample, *, allow_no_check: bool 
     if status == "ok":
         if sample.validation is None:
             return "validation_unknown"
-        validation = sample.validation.upper()
+        validation = validation_token(sample.validation)
         if validation == "NO_CHECK":
             if not allow_no_check:
                 return "validation_unknown"
@@ -306,7 +309,15 @@ def run_structured_backend(
 
     start = time.perf_counter()
     resolved_library_dir = Path(library_dir) if library_dir is not None else _library_dir_from_build(run_dir)
-    command = [str(runner_bin), "--pairs", str(pairs_path), "--output", str(results_path)]
+    command = [
+        str(runner_bin),
+        "--pairs",
+        str(pairs_path),
+        "--output",
+        str(results_path),
+        "--validation-backend",
+        protocol.validation_backend,
+    ]
     if resolved_library_dir is not None:
         command.extend(["--library-dir", str(resolved_library_dir)])
     timed_out = False
@@ -445,6 +456,7 @@ def build_then_structured_benchmark(
                 "solution_yamls": solution_yamls,
                 "build_output_dir": str(build_output_dir),
                 "use_build_cache": use_build_cache,
+                "validation_backend": protocol.validation_backend,
             },
             sort_keys=True,
         ),

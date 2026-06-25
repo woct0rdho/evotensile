@@ -9,8 +9,9 @@ from evotensile.shapes import pilot_100_shapes
 from tests.helpers import sample_candidates
 
 
-def test_default_protocol_uses_full_validation():
+def test_default_protocol_uses_full_hipblaslt_validation():
     assert DEFAULT_BENCHMARK_PROTOCOL.num_elements_to_validate == -1
+    assert DEFAULT_BENCHMARK_PROTOCOL.validation_backend == "hipblaslt"
     assert DEFAULT_PROFILE.benchmark_protocol_hash() == DEFAULT_BENCHMARK_PROTOCOL.protocol_hash()
 
 
@@ -25,9 +26,11 @@ def test_protocol_hash_ignores_sampling_budget_and_validation_execution():
     base = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL)
     more_samples = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=120))
     gpu_only_topup = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_elements_to_validate=0))
+    cpu_validation = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(validation_backend="cpu"))
     changed_warmups = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=5))
     assert base == more_samples
     assert base == gpu_only_topup
+    assert base == cpu_validation
     assert base != changed_warmups
 
 

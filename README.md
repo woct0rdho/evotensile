@@ -2,7 +2,7 @@
 
 Work in progress. README is AI-generated.
 
-EvoTensile is an external smart-search autotuner for TensileLite / hipBLASLt. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, uses TensileLite for solution/code-object generation, and records structured timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion) and [rocm_wmma_gemm](https://github.com/adelj88/rocm_wmma_gemm).
+EvoTensile is a smart-search autotuner for TensileLite. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, uses TensileLite for solution/code-object generation, and records structured timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion) and [rocm_wmma_gemm](https://github.com/adelj88/rocm_wmma_gemm).
 
 The repository currently includes one concrete target configuration, but the core code is intended to stay reusable: candidate hashing, shape handling, search-space encoding, YAML emission, runner orchestration, benchmark-protocol hashing, validation-aware ingestion, ranking, adaptive finalist top-ups, hipBLASLt baseline import, and logic-file update helpers.
 
@@ -90,11 +90,11 @@ Production CLI defaults favor throughput: `--batch-workers` defaults to availabl
 
 Useful proposal modes include `random`, `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can initialize non-random proposal operators through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
 
-Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, and `--num-elements-to-validate`. `NumBenchmarks` and `NumElementsToValidate` are execution budgets rather than cache identity fields, so adaptive top-ups pool with the fully validated timing evidence. The default uses full validation with `NumElementsToValidate=-1`. Unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
+Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, `--num-elements-to-validate`, and `--validation-backend`. `NumBenchmarks` and `NumElementsToValidate` are execution budgets rather than cache identity fields, so adaptive top-ups pool with the fully validated timing evidence. The default uses full hipBLASLt GPU-oracle validation with `NumElementsToValidate=-1`; use `--validation-backend cpu` for CPU/OpenBLAS audit validation or `--validation-backend none` only for explicitly trusted timing-only top-ups. Unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
 
 Validation is a hard gate: only `status=ok` rows with passing validation, or GPU-only top-up rows backed by prior passing validation for the same pair, should be ranked or used as positive cache entries. Unknown validation is never ranked as positive.
 
-Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches` uses adaptive sampling by default: it starts with a small timing budget, then appends only the missing samples for statistically plausible contenders. The first validated run for each `(shape, candidate)` pair performs CPU/OpenBLAS validation. Later GPU-only top-ups use `NumElementsToValidate=0` and are accepted only when prior validation evidence exists. Use `--fixed-sampling` only for debugging or fixed-budget utility runs.
+Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches` uses adaptive sampling by default: it starts with a small timing budget, then appends only the missing samples for statistically plausible contenders. The first validated run for each `(shape, candidate)` pair uses the selected validation backend, which defaults to hipBLASLt GPU-oracle comparison. Later timing-only top-ups use `NumElementsToValidate=0` and are accepted only when prior validation evidence exists. Use `--fixed-sampling` only for debugging or fixed-budget utility runs.
 
 Structured scheduler runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
 
@@ -264,7 +264,7 @@ $$
 
 The scheduled target is the maximum requested $n_c$, rounded up to `--adaptive-sample-step` and clamped to `--adaptive-min-samples` / `--adaptive-max-samples`. `--adaptive-max-k` limits how many plausible candidates are topped up for one shape.
 
-Correctness is handled separately from repetition count. The first accepted run for a `(shape, candidate)` pair performs CPU/OpenBLAS validation. Later adaptive top-ups set `NumElementsToValidate=0` and are accepted only if the DB already contains passing validation evidence for that pair.
+Correctness is handled separately from repetition count. The first accepted run for a `(shape, candidate)` pair performs validation once with the configured backend, defaulting to hipBLASLt GPU-oracle comparison. Later adaptive top-ups set `NumElementsToValidate=0` and are accepted only if the DB already contains passing validation evidence for that pair.
 
 ## Repair Outlier Selection
 

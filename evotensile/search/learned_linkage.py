@@ -4,7 +4,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from evotensile.candidate import Candidate, Shape
-from evotensile.database import EvoTensileDB, EvaluationSummary
+from evotensile.database import EvaluationSummary, EvoTensileDB
 from evotensile.search.encoding import PARAM_NAMES, candidate_to_genome, hamming_distance
 
 DEFAULT_TRUNCATION_TAU = 0.5
@@ -74,6 +74,7 @@ class LinkageLearningSummary:
     evidence_count: int
     selected_count: int
     fallback_reason: str | None = None
+
 
 def ordinal_gene_indices(param_names: Iterable[str] = DEFAULT_ORDINAL_PARAM_NAMES) -> frozenset[int]:
     names = set(param_names)
@@ -409,4 +410,6 @@ def learn_linkage_models_from_db(
 def nearest_linkage_model(genome: tuple[int, ...], models: Sequence[LinkageModel]) -> LinkageModel | None:
     if not models:
         return None
-    return min(models, key=lambda model: (hamming_distance(genome, model.leader_genome), model.leader_candidate_hash or ""))
+    return min(
+        models, key=lambda model: (hamming_distance(genome, model.leader_genome), model.leader_candidate_hash or "")
+    )

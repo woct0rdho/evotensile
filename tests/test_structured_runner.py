@@ -12,6 +12,7 @@ from evotensile.structured_runner import (
     StructuredSample,
     _library_dir_from_build,
     read_structured_results,
+    run_structured_backend,
     validate_structured_samples,
 )
 from tests.helpers import sample_candidates
@@ -30,7 +31,7 @@ def _fake_structured_runner(path: Path) -> Path:
             p.add_argument("--pairs")
             p.add_argument("--output")
             p.add_argument("--library-dir", default=None)
-            args = p.parse_args()
+            args, _ = p.parse_known_args()
 
             with open(args.pairs) as src, open(args.output, "w") as out:
                 for line in src:
@@ -161,6 +162,35 @@ def test_validate_structured_samples_accepts_negative_rows_without_sample_index(
     assert inserts[0].validation == "DID_NOT_SATISFY_ASSERTS"
 
 
+def test_validate_structured_samples_preserves_backend_validation_detail():
+    pair = RunnablePair(
+        shape_id="m1_n1_b1_k1",
+        candidate_hash="cand_1",
+        problem_index=0,
+        requested_solution_index=0,
+        library_solution_index=0,
+        manifest_solution_index=0,
+    )
+    sample = StructuredSample(
+        shape_id=pair.shape_id,
+        candidate_hash=pair.candidate_hash,
+        status="ok",
+        sample_index=0,
+        time_us=1.0,
+        validation="PASSED checked=1 backend=hipblaslt_gpu_compare",
+        solution_index=0,
+    )
+
+    inserts = validate_structured_samples(
+        [sample],
+        runnable_pairs=[pair],
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+    )
+
+    assert inserts[0].status == "ok"
+    assert inserts[0].validation == "PASSED checked=1 backend=hipblaslt_gpu_compare"
+
+
 def test_validate_structured_samples_accepts_trusted_no_check_rows():
     pair = RunnablePair(
         shape_id="m1_n1_b1_k1",
@@ -206,6 +236,46 @@ def test_library_dir_from_build_accepts_tensilelite_build_only_cache_layout(tmp_
     cache_lib.mkdir(parents=True)
 
     assert _library_dir_from_build(build_dir) == cache_lib
+
+
+def test_run_structured_backend_passes_default_hipblaslt_backend(tmp_path: Path):
+    runner = tmp_path / "runner.py"
+    runner.write_text(
+        dedent(
+            """\
+            #!/usr/bin/env python3
+            import json
+            import sys
+            from pathlib import Path
+
+            Path(sys.argv[sys.argv.index("--output") + 1]).write_text("")
+            Path(sys.argv[sys.argv.index("--output") + 1]).with_suffix(".argv.json").write_text(json.dumps(sys.argv[1:]))
+            """
+        ),
+        encoding="utf-8",
+    )
+    runner.chmod(0o755)
+    pair = RunnablePair(
+        shape_id="m1_n1_b1_k1",
+        candidate_hash="cand_1",
+        problem_index=0,
+        requested_solution_index=0,
+        library_solution_index=0,
+        manifest_solution_index=0,
+    )
+
+    output = run_structured_backend(
+        run_dir=tmp_path,
+        pairs=[pair],
+        shapes=[pilot_100_shapes()[0].__class__(m=1, n=1, batch=1, k=1)],
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        runner_bin=runner,
+        library_dir=tmp_path,
+    )
+
+    assert output.returncode == 0
+    assert "--validation-backend" in output.command
+    assert output.command[output.command.index("--validation-backend") + 1] == "hipblaslt"
 
 
 def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path: Path):
@@ -401,7 +471,7 @@ def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
             p.add_argument("--pairs")
             p.add_argument("--output")
             p.add_argument("--library-dir")
-            args = p.parse_args()
+            args, _ = p.parse_known_args()
 
             with open(args.output, "w") as out:
                 out.write(
@@ -454,7 +524,7 @@ def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path
             p.add_argument("--pairs")
             p.add_argument("--output")
             p.add_argument("--library-dir")
-            args = p.parse_args()
+            args, _ = p.parse_known_args()
 
             with open(args.pairs) as src, open(args.output, "w") as out:
                 pair = json.loads(next(src))
@@ -511,7 +581,7 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
             p.add_argument("--pairs")
             p.add_argument("--output")
             p.add_argument("--library-dir")
-            args = p.parse_args()
+            args, _ = p.parse_known_args()
 
             with open(args.pairs) as src, open(args.output, "w") as out:
                 pair = json.loads(next(src))
@@ -568,7 +638,7 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
             p.add_argument("--pairs")
             p.add_argument("--output")
             p.add_argument("--library-dir")
-            args = p.parse_args()
+            args, _ = p.parse_known_args()
 
             with open(args.pairs) as src, open(args.output, "w") as out:
                 pair = json.loads(next(src))
@@ -627,7 +697,7 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
             p.add_argument("--pairs")
             p.add_argument("--output")
             p.add_argument("--library-dir")
-            args = p.parse_args()
+            args, _ = p.parse_known_args()
 
             with open(args.pairs) as src, open(args.output, "w") as out:
                 pair = json.loads(next(src))
