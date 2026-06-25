@@ -16,6 +16,11 @@ from .scheduler import (
     DEFAULT_DE_COUNT,
     DEFAULT_ELITE_COUNT,
     DEFAULT_GOMEA_COUNT,
+    DEFAULT_LEARNED_LINKAGE_ENABLED,
+    DEFAULT_LINKAGE_MAX_CLUSTERS,
+    DEFAULT_LINKAGE_MIN_SAMPLES,
+    DEFAULT_LINKAGE_ORDINAL_BINS,
+    DEFAULT_LINKAGE_TRUNCATION_TAU,
     DEFAULT_LOCAL_COUNT,
     DEFAULT_MUTATION_RATE,
     DEFAULT_NUM_RANDOM,
@@ -33,6 +38,7 @@ from .scheduler import (
     repair_seed_candidates,
 )
 from .search.coverage import candidate_coverage
+from .search.learned_linkage import learn_linkage_models_from_db
 from .search.random_search import initial_random_batch
 from .search_space import DOMAINS, MATRIX_INSTRUCTIONS, macro_tile
 from .shapes import parse_shape
@@ -191,12 +197,17 @@ def _validate_schedule_args(args: argparse.Namespace) -> None:
         "adaptive_max_samples",
         "adaptive_sample_step",
         "adaptive_max_k",
+        "linkage_min_samples",
+        "linkage_max_clusters",
+        "linkage_ordinal_bins",
     )
     for name in nonnegative_ints:
         if getattr(args, name) < 0:
             raise ValueError(f"--{name.replace('_', '-')} must be non-negative")
     if args.adaptive_max_samples < args.adaptive_min_samples:
         raise ValueError("--adaptive-max-samples must be >= --adaptive-min-samples")
+    if args.linkage_truncation_tau <= 0.0 or args.linkage_truncation_tau > 1.0:
+        raise ValueError("--linkage-truncation-tau must be in (0, 1]")
 
 
 def _schedule_context(args: argparse.Namespace) -> ScheduleCliContext:
@@ -246,6 +257,11 @@ def _propose_candidates_for_shapes(
         mutation_rate=args.mutation_rate,
         crossover_rate=args.crossover_rate,
         random_gene_rate=args.random_gene_rate,
+        learned_linkage=not args.no_learned_linkage,
+        linkage_truncation_tau=args.linkage_truncation_tau,
+        linkage_min_samples=args.linkage_min_samples,
+        linkage_max_clusters=args.linkage_max_clusters,
+        linkage_ordinal_bins=args.linkage_ordinal_bins,
     )
 
 
@@ -293,6 +309,42 @@ def _execute_schedule_from_args(
     )
 
 
+def _learned_linkage_metadata(
+    args: argparse.Namespace, context: ScheduleCliContext, shapes: list[Shape]
+) -> dict[str, object]:
+    if args.no_learned_linkage:
+        return {
+            "learned_linkage_requested": False,
+            "learned_linkage_enabled": False,
+            "linkage_model_count": 0,
+            "linkage_fallback_reason": "disabled",
+            "linkage_models": [],
+        }
+    models, summary = learn_linkage_models_from_db(
+        context.db,
+        problem_type_hash=context.problem_hash,
+        benchmark_protocol_hash=context.protocol_hash,
+        shapes=shapes,
+        truncation_tau=args.linkage_truncation_tau,
+        min_samples=args.linkage_min_samples,
+        max_clusters=args.linkage_max_clusters,
+        ordinal_bins=args.linkage_ordinal_bins,
+    )
+    return {
+        "learned_linkage_requested": True,
+        "learned_linkage_enabled": summary.enabled,
+        "linkage_model_count": summary.model_count,
+        "linkage_evidence_count": summary.evidence_count,
+        "linkage_selected_count": summary.selected_count,
+        "linkage_fallback_reason": summary.fallback_reason,
+        "linkage_truncation_tau": args.linkage_truncation_tau,
+        "linkage_min_samples": args.linkage_min_samples,
+        "linkage_max_clusters": args.linkage_max_clusters,
+        "linkage_ordinal_bins": args.linkage_ordinal_bins,
+        "linkage_models": [model.summary() for model in models],
+    }
+
+
 def _schedule_metadata_common(
     args: argparse.Namespace,
     context: ScheduleCliContext,
@@ -331,6 +383,7 @@ def _schedule_metadata_common(
         "adaptive_max_rounds": args.adaptive_max_rounds,
         "adaptive_rounds": result.adaptive_rounds,
         "adaptive_policy": None if context.adaptive_policy is None else context.adaptive_policy.__dict__,
+        **_learned_linkage_metadata(args, context, shapes),
         "planned_batches": len(result.planned_batches),
         "planned_missing_pairs": result.missing_pairs,
         "planned_nominal_pairs": result.nominal_pairs,
@@ -362,6 +415,23 @@ def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False)
     parser.add_argument("--mutation-rate", type=float, default=DEFAULT_MUTATION_RATE)
     parser.add_argument("--crossover-rate", type=float, default=DEFAULT_CROSSOVER_RATE)
     parser.add_argument("--random-gene-rate", type=float, default=DEFAULT_RANDOM_GENE_RATE)
+    parser.add_argument(
+        "--learned-linkage",
+        dest="no_learned_linkage",
+        action="store_false",
+        default=not DEFAULT_LEARNED_LINKAGE_ENABLED,
+        help="Use validated DB evidence to learn basin-aware GOMEA linkage models",
+    )
+    parser.add_argument(
+        "--no-learned-linkage",
+        dest="no_learned_linkage",
+        action="store_true",
+        help="Disable learned-linkage GOMEA models for A/B checks",
+    )
+    parser.add_argument("--linkage-truncation-tau", type=float, default=DEFAULT_LINKAGE_TRUNCATION_TAU)
+    parser.add_argument("--linkage-min-samples", type=int, default=DEFAULT_LINKAGE_MIN_SAMPLES)
+    parser.add_argument("--linkage-max-clusters", type=int, default=DEFAULT_LINKAGE_MAX_CLUSTERS)
+    parser.add_argument("--linkage-ordinal-bins", type=int, default=DEFAULT_LINKAGE_ORDINAL_BINS)
 
 
 def _add_execution_args(parser: argparse.ArgumentParser) -> None:
