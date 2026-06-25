@@ -131,13 +131,14 @@ def _write_pairs(path: Path, pairs: list[RunnablePair], shapes: dict[str, Shape]
             )
 
 
-def _library_dir_from_run(run_dir: Path) -> Path | None:
+def _library_dir_from_build(build_dir: Path) -> Path | None:
     patterns = (
         "4_LibraryClient/library/gfx*",
         "1_BenchmarkProblems/**/source/library/gfx*",
+        "**/source/library/gfx*",
     )
     for pattern in patterns:
-        candidates = sorted(path for path in run_dir.glob(pattern) if path.is_dir())
+        candidates = sorted(path for path in build_dir.glob(pattern) if path.is_dir())
         if candidates:
             return candidates[0]
     return None
@@ -290,7 +291,9 @@ def run_structured_backend(
     runner_bin: str | Path | None = None,
     env: dict[str, str] | None = None,
     timeout_s: float | None = None,
+    library_dir: str | Path | None = None,
 ) -> StructuredRunOutput:
+    run_dir.mkdir(parents=True, exist_ok=True)
     run_id = f"structured_{uuid.uuid4().hex[:12]}"
     stdout_path = run_dir / f"{run_id}.stdout.log"
     stderr_path = run_dir / f"{run_id}.stderr.log"
@@ -302,10 +305,10 @@ def run_structured_backend(
         raise ValueError("runner_bin is required for the structured runner")
 
     start = time.perf_counter()
-    library_dir = _library_dir_from_run(run_dir)
+    resolved_library_dir = Path(library_dir) if library_dir is not None else _library_dir_from_build(run_dir)
     command = [str(runner_bin), "--pairs", str(pairs_path), "--output", str(results_path)]
-    if library_dir is not None:
-        command.extend(["--library-dir", str(library_dir)])
+    if resolved_library_dir is not None:
+        command.extend(["--library-dir", str(resolved_library_dir)])
     timed_out = False
     returncode = 0
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
@@ -356,14 +359,17 @@ def build_then_structured_benchmark(
     trust_prior_validation: bool = False,
     build_timeout_s: float | None = None,
     runner_timeout_s: float | None = None,
+    build_dir: str | Path | None = None,
+    use_build_cache: bool = False,
 ) -> tuple[RunResult, StructuredRunOutput | None, list[EvaluationInsert], list[str]]:
     run_dir = Path(run_dir)
+    build_output_dir = Path(build_dir) if build_dir is not None else run_dir
     problem_type_hash = target_profile.problem_type_hash
     benchmark_protocol_hash = target_profile.benchmark_protocol_hash(protocol)
     build_globals = target_profile.global_parameter_items(protocol)
     build_result = run_tensilelite(
         yaml_path,
-        run_dir,
+        build_output_dir,
         tensilelite_bin=tensilelite_bin,
         db=db,
         build_only=True,
@@ -371,12 +377,13 @@ def build_then_structured_benchmark(
         global_parameters=build_globals,
         env=env,
         timeout_s=build_timeout_s,
+        use_cache=use_build_cache,
     )
     planned_pairs = {(shape.id, candidate.hash) for shape in shapes for candidate in candidates}
     if not build_result.ok and not build_result.output_dir.exists():
         return build_result, None, [], []
 
-    solution_yamls = [str(path) for path in find_solution_yamls([run_dir])]
+    solution_yamls = [str(path) for path in find_solution_yamls([build_output_dir])]
     runnable, negative = build_runnable_pairs(
         manifest_path=manifest_path,
         solution_yaml_paths=solution_yamls,
@@ -416,6 +423,7 @@ def build_then_structured_benchmark(
         runner_bin=runner_bin,
         env=env,
         timeout_s=runner_timeout_s,
+        library_dir=_library_dir_from_build(build_output_dir),
     )
     structured_run_id = f"run_{uuid.uuid4().hex[:12]}"
     db.insert_run(
@@ -435,6 +443,8 @@ def build_then_structured_benchmark(
                 "runnable_pairs": len(runnable),
                 "negative_pairs": len(negative),
                 "solution_yamls": solution_yamls,
+                "build_output_dir": str(build_output_dir),
+                "use_build_cache": use_build_cache,
             },
             sort_keys=True,
         ),

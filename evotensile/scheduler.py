@@ -1,7 +1,11 @@
+import contextlib
+import errno
 import math
 import os
 import random
+import time
 import uuid
+from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,6 +75,7 @@ class ExecutedBatch:
     build_returncode: int | None = None
     runner_returncode: int | None = None
     ingest: BatchIngestResult | None = None
+    build_output_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +121,7 @@ PROPOSAL_MODES = (
 DEFAULT_PROPOSAL = DEFAULT_PROFILE.default_proposal
 DEFAULT_NUM_RANDOM = DEFAULT_PROFILE.default_num_random
 DEFAULT_COMPILE_THREADS = 1
+_COMPILE_CACHE_LOCK_POLL_S = 0.1
 
 
 def default_batch_workers() -> int:
@@ -782,6 +788,85 @@ def _batch_fingerprint(batch: PlannedBatch) -> str:
     return stable_hash(payload, prefix="batch_")[:18]
 
 
+def _compile_cache_global_parameters(target_profile: TargetProfile, protocol: BenchmarkProtocol) -> dict[str, object]:
+    protocol_keys = set(protocol.global_parameters())
+    return {
+        key: value
+        for key, value in target_profile.global_parameters(protocol).items()
+        if key not in protocol_keys
+        and key
+        not in {
+            "ForceRedoBenchmarkProblems",
+            "ForceRedoLibraryLogic",
+            "ValidationMaxToPrint",
+            "ValidationPrintValids",
+        }
+    }
+
+
+def _compile_cache_key(
+    candidates: list[Candidate],
+    *,
+    target_profile: TargetProfile,
+    protocol: BenchmarkProtocol,
+) -> str:
+    payload = {
+        "candidates": [candidate.hash for candidate in candidates],
+        "global_parameters": _compile_cache_global_parameters(target_profile, protocol),
+        "library_logic": target_profile.library_logic,
+        "problem_type_hash": target_profile.problem_type_hash,
+    }
+    return stable_hash(payload, prefix="ccache_")[:22]
+
+
+def _compile_cache_dir(
+    compile_cache_root: str | Path | None,
+    current: PlannedBatch,
+    *,
+    target_profile: TargetProfile,
+    protocol: BenchmarkProtocol,
+) -> Path | None:
+    if compile_cache_root is None:
+        return None
+    return Path(compile_cache_root) / _compile_cache_key(
+        current.candidates,
+        target_profile=target_profile,
+        protocol=protocol,
+    )
+
+
+def _compile_cache_success_marker(path: Path) -> Path:
+    return path / ".evotensile_compile_cache_ok"
+
+
+def _has_tensilelite_cache(path: Path) -> bool:
+    return _compile_cache_success_marker(path).exists() and any(path.glob("**/caches/*/cache.yaml"))
+
+
+def _mark_compile_cache_success(path: Path) -> None:
+    _compile_cache_success_marker(path).write_text("ok\n", encoding="utf-8")
+
+
+@contextlib.contextmanager
+def _compile_cache_lock(path: Path) -> Iterator[None]:
+    lock_dir = path.parent / f".{path.name}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        try:
+            lock_dir.mkdir()
+            break
+        except FileExistsError:
+            time.sleep(_COMPILE_CACHE_LOCK_POLL_S)
+    try:
+        yield
+    finally:
+        try:
+            lock_dir.rmdir()
+        except OSError as exc:
+            if exc.errno != errno.ENOENT:
+                raise
+
+
 def write_batch_inputs(
     batch: PlannedBatch,
     output_root: str | Path,
@@ -927,6 +1012,7 @@ def _execute_current_batch(
     build_timeout_s: float | None,
     runner_timeout_s: float | None,
     generate_only: bool = False,
+    compile_cache_root: str | Path | None = None,
 ) -> tuple[ExecutedBatch, bool]:
     current_protocol = protocol.with_overrides(
         num_benchmarks=current.samples_per_pair,
@@ -942,22 +1028,52 @@ def _execute_current_batch(
     if generate_only:
         return ExecutedBatch(current, yaml_path, manifest_path, run_dir), False
 
-    build_result, structured_result, inserts, structured_errors = build_then_structured_benchmark(
-        yaml_path,
-        manifest_path,
-        run_dir,
-        shapes=current.shapes,
-        candidates=current.candidates,
-        db=db,
-        tensilelite_bin=tensilelite_bin,
-        compile_threads=compile_threads,
+    compile_cache_dir = _compile_cache_dir(
+        compile_cache_root,
+        current,
         target_profile=target_profile,
         protocol=current_protocol,
-        runner_bin=runner_bin,
-        trust_prior_validation=not current.requires_validation,
-        build_timeout_s=build_timeout_s,
-        runner_timeout_s=runner_timeout_s,
     )
+    build_dir = compile_cache_dir or run_dir
+    if compile_cache_dir is not None:
+        with _compile_cache_lock(compile_cache_dir):
+            build_result, structured_result, inserts, structured_errors = build_then_structured_benchmark(
+                yaml_path,
+                manifest_path,
+                run_dir,
+                shapes=current.shapes,
+                candidates=current.candidates,
+                db=db,
+                tensilelite_bin=tensilelite_bin,
+                compile_threads=compile_threads,
+                target_profile=target_profile,
+                protocol=current_protocol,
+                runner_bin=runner_bin,
+                trust_prior_validation=not current.requires_validation,
+                build_timeout_s=build_timeout_s,
+                runner_timeout_s=runner_timeout_s,
+                build_dir=compile_cache_dir,
+                use_build_cache=_has_tensilelite_cache(compile_cache_dir),
+            )
+            if build_result.ok:
+                _mark_compile_cache_success(compile_cache_dir)
+    else:
+        build_result, structured_result, inserts, structured_errors = build_then_structured_benchmark(
+            yaml_path,
+            manifest_path,
+            run_dir,
+            shapes=current.shapes,
+            candidates=current.candidates,
+            db=db,
+            tensilelite_bin=tensilelite_bin,
+            compile_threads=compile_threads,
+            target_profile=target_profile,
+            protocol=current_protocol,
+            runner_bin=runner_bin,
+            trust_prior_validation=not current.requires_validation,
+            build_timeout_s=build_timeout_s,
+            runner_timeout_s=runner_timeout_s,
+        )
     if build_result.timed_out and len(current.candidates) == 1:
         recorded = _record_batch_status(
             db,
@@ -1010,7 +1126,7 @@ def _execute_current_batch(
         diagnostics = run_tensilelite_diagnostics(
             yaml_path,
             manifest_path,
-            run_dir,
+            build_dir,
             tensilelite_bin=tensilelite_bin,
             db=db,
             target_profile=target_profile,
@@ -1039,6 +1155,7 @@ def _execute_current_batch(
         build_returncode=build_result.returncode,
         runner_returncode=runner_returncode,
         ingest=ingest,
+        build_output_dir=build_dir,
     )
     return executed, failed
 
@@ -1068,6 +1185,7 @@ def execute_schedule(
     adaptive_initial_samples: int = 3,
     adaptive_max_rounds: int = 4,
     batch_workers: int | None = None,
+    compile_cache_root: str | Path | None = None,
 ) -> ScheduleResult:
     if not dry_run and not generate_only and runner_bin is None:
         raise ValueError("--runner-bin is required")
@@ -1106,6 +1224,7 @@ def execute_schedule(
             build_timeout_s=build_timeout_s,
             runner_timeout_s=runner_timeout_s,
             batch_workers=resolved_batch_workers,
+            compile_cache_root=compile_cache_root,
         )
         planned = list(initial.planned_batches)
         executed = list(initial.executed_batches)
@@ -1134,7 +1253,7 @@ def execute_schedule(
                     target_profile=target_profile,
                     protocol=protocol.with_overrides(num_benchmarks=target_samples),
                     min_samples=target_samples,
-                    candidate_batch_size=max(1, len(group_candidates)),
+                    candidate_batch_size=1 if compile_cache_root is not None else max(1, len(group_candidates)),
                     shape_batch_size=shape_batch_size,
                     ignore_cache=False,
                     max_batches=None,
@@ -1147,6 +1266,7 @@ def execute_schedule(
                     build_timeout_s=build_timeout_s,
                     runner_timeout_s=runner_timeout_s,
                     batch_workers=resolved_batch_workers,
+                    compile_cache_root=compile_cache_root,
                 )
                 planned.extend(topup.planned_batches)
                 executed.extend(topup.executed_batches)
@@ -1235,6 +1355,7 @@ def execute_schedule(
             build_timeout_s=build_timeout_s,
             runner_timeout_s=runner_timeout_s,
             generate_only=generate_only,
+            compile_cache_root=compile_cache_root,
         )
 
     def handle_result(

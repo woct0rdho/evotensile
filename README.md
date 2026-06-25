@@ -354,6 +354,5 @@ This test is intentionally heuristic. It identifies shapes worth more search bud
 
 - Bundled profiles and runners are target-specific. Broader data types, layouts, and epilogues need profile and backend coverage.
 - Surrogate/LFBO proposals are not implemented. Keep `PredictionThreshold: 2.0` to disable heuristics like Formocast and Origami in TensileLite, until they are accurate enough on gfx1151.
-- Timeout statuses and single-candidate build failures are recorded, and multi-candidate build failures/timeouts are attributed through structured TensileLite diagnostics; unresolved cases remain non-reusable audit evidence.
-- Logic-file update helpers are profile-aware, but each new target variant needs validation before measured-performance claims.
+- Logic file update helpers are profile-aware, but each new target variant needs validation before measured-performance claims.
 - The production structured backend is intentionally narrower than the generic search abstractions and needs broader target coverage before it is a general GEMM runner.
