@@ -28,6 +28,7 @@ from .scheduler import (
     default_batch_workers,
     detect_underperforming_shapes,
     execute_schedule,
+    production_candidate_batch_size,
     propose_candidates,
     repair_seed_candidates,
 )
@@ -146,17 +147,29 @@ class ScheduleCliContext:
     adaptive_policy: AdaptivePolicy | None
 
 
-def _resolve_candidate_batch_size(args: argparse.Namespace, profile: TargetProfile) -> int:
+def _resolve_candidate_batch_size(
+    args: argparse.Namespace,
+    profile: TargetProfile,
+    *,
+    candidates: list[Candidate],
+    shapes: list[Shape],
+) -> int:
     if args.candidate_batch_size is not None:
         return args.candidate_batch_size
-    return 1 if args.proposal in PROPOSAL_MODES else profile.default_candidate_batch_size
+    return production_candidate_batch_size(
+        candidate_count=len(candidates),
+        shape_count=len(shapes),
+        shape_batch_size=args.shape_batch_size,
+        batch_workers=args.batch_workers,
+        max_candidate_batch_size=profile.default_candidate_batch_size,
+    )
 
 
 def _validate_schedule_args(args: argparse.Namespace) -> None:
-    profile = _profile(args)
-    args.candidate_batch_size = _resolve_candidate_batch_size(args, profile)
+    _profile(args)
+    if args.candidate_batch_size is not None and args.candidate_batch_size <= 0:
+        raise ValueError("--candidate-batch-size must be positive")
     positive_ints = (
-        "candidate_batch_size",
         "shape_batch_size",
         "min_samples",
         "adaptive_initial_samples",
@@ -244,6 +257,12 @@ def _execute_schedule_from_args(
     candidates: list[Candidate],
     dry_run: bool | None = None,
 ) -> ScheduleResult:
+    args.candidate_batch_size = _resolve_candidate_batch_size(
+        args,
+        context.profile,
+        candidates=candidates,
+        shapes=shapes,
+    )
     return execute_schedule(
         context.db,
         shapes=shapes,
@@ -350,7 +369,7 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
         "--candidate-batch-size",
         type=int,
         default=None,
-        help="Candidates per TensileLite config; defaults to 1 for proposal-driven exploration",
+        help="Candidates per TensileLite config; defaults to a production throughput heuristic; use 1 for debugging",
     )
     parser.add_argument("--shape-batch-size", type=int, default=DEFAULT_PROFILE.default_shape_batch_size)
     parser.add_argument(

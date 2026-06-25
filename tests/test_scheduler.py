@@ -11,6 +11,7 @@ from evotensile.scheduler import (
     detect_underperforming_shapes,
     execute_schedule,
     plan_batches,
+    production_candidate_batch_size,
     propose_candidates,
     repair_seed_candidates,
 )
@@ -22,6 +23,39 @@ from tests.helpers import DOCUMENTED_WINNER_CANDIDATE, sample_candidates
 
 def _time_us_for_gflops(shape: Shape, gflops: float) -> float:
     return 2.0 * shape.m * shape.n * shape.batch * shape.k / (gflops * 1e9) * 1e6
+
+
+def test_production_candidate_batch_size_maximizes_size_while_saturating_workers():
+    assert (
+        production_candidate_batch_size(
+            candidate_count=64,
+            shape_count=100,
+            shape_batch_size=100,
+            batch_workers=32,
+            max_candidate_batch_size=32,
+        )
+        == 2
+    )
+    assert (
+        production_candidate_batch_size(
+            candidate_count=64,
+            shape_count=100,
+            shape_batch_size=25,
+            batch_workers=32,
+            max_candidate_batch_size=32,
+        )
+        == 9
+    )
+    assert (
+        production_candidate_batch_size(
+            candidate_count=16,
+            shape_count=1,
+            shape_batch_size=100,
+            batch_workers=32,
+            max_candidate_batch_size=32,
+        )
+        == 1
+    )
 
 
 def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
@@ -894,13 +928,32 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
     assert default_metadata["planned_batches"] >= 1
     assert default_metadata["executed_batches"] == []
     assert default_metadata["runner_bin"] == DEFAULT_PROFILE.default_runner_bin
-    assert default_metadata["candidate_batch_size"] == 1
+    assert default_metadata["candidate_batch_size"] == production_candidate_batch_size(
+        candidate_count=default_metadata["candidates"],
+        shape_count=default_metadata["shapes"],
+        shape_batch_size=default_metadata["shape_batch_size"],
+        batch_workers=default_metadata["batch_workers"],
+        max_candidate_batch_size=DEFAULT_PROFILE.default_candidate_batch_size,
+    )
     assert default_metadata["batch_workers"] == default_batch_workers()
     assert default_metadata["adaptive_sampling"] is True
     assert default_metadata["stop_on_error"] is False
 
     assert default_metadata["compile_cache_enabled"] is True
     assert default_metadata["compile_cache_root"] == str(tmp_path / "default" / "compile_cache")
+
+    large_batch_metadata = run_cli(
+        tmp_path / "large_batch",
+        "--num-random",
+        "16",
+        "--batch-workers",
+        "8",
+    )
+    assert large_batch_metadata["candidate_batch_size"] > 1
+    assert large_batch_metadata["planned_batches"] >= large_batch_metadata["batch_workers"]
+
+    debug_singleton_metadata = run_cli(tmp_path / "debug_singleton", "--candidate-batch-size", "1")
+    assert debug_singleton_metadata["candidate_batch_size"] == 1
 
     no_compile_cache_metadata = run_cli(tmp_path / "no_compile_cache", "--no-compile-cache")
     assert no_compile_cache_metadata["compile_cache_enabled"] is False

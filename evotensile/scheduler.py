@@ -133,6 +133,24 @@ def default_batch_workers() -> int:
     return os.cpu_count() or 1
 
 
+def production_candidate_batch_size(
+    *,
+    candidate_count: int,
+    shape_count: int,
+    shape_batch_size: int,
+    batch_workers: int,
+    max_candidate_batch_size: int,
+) -> int:
+    if candidate_count <= 0 or batch_workers <= 0:
+        return 1
+    shape_batches = max(1, math.ceil(max(1, shape_count) / shape_batch_size))
+    max_size = max(1, min(candidate_count, max_candidate_batch_size))
+    for candidate_batch_size in range(max_size, 0, -1):
+        if math.ceil(candidate_count / candidate_batch_size) * shape_batches >= batch_workers:
+            return candidate_batch_size
+    return 1
+
+
 DEFAULT_ELITE_COUNT = DEFAULT_PROFILE.default_elite_count
 DEFAULT_LOCAL_COUNT = DEFAULT_PROFILE.default_local_count
 DEFAULT_DE_COUNT = DEFAULT_PROFILE.default_de_count
@@ -1253,7 +1271,7 @@ def execute_schedule(
                     target_profile=target_profile,
                     protocol=protocol.with_overrides(num_benchmarks=target_samples),
                     min_samples=target_samples,
-                    candidate_batch_size=1 if compile_cache_root is not None else max(1, len(group_candidates)),
+                    candidate_batch_size=candidate_batch_size,
                     shape_batch_size=shape_batch_size,
                     ignore_cache=False,
                     max_batches=None,
