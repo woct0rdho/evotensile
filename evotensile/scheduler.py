@@ -21,6 +21,15 @@ from .protocol import BenchmarkProtocol
 from .runner import DEFAULT_TENSILELITE_BIN
 from .search.differential_evolution import differential_evolution_candidates
 from .search.gomea import gomea_candidates, gomea_neighborhood_candidates
+from .search.learned_linkage import (
+    DEFAULT_MAX_CLUSTERS,
+    DEFAULT_MIN_LINKAGE_SAMPLES,
+    DEFAULT_ORDINAL_BINS,
+    DEFAULT_TRUNCATION_TAU,
+    LinkageLearningSummary,
+    LinkageModel,
+    learn_linkage_models_from_db,
+)
 from .search.local_search import mutate_elites
 from .search.random_search import initial_random_batch
 from .search_space import cheap_constraints, explain_invalid_nt_hhs, random_candidate
@@ -160,6 +169,11 @@ DEFAULT_TRANSFER_PER_SHAPE = DEFAULT_PROFILE.default_transfer_per_shape
 DEFAULT_MUTATION_RATE = DEFAULT_PROFILE.default_mutation_rate
 DEFAULT_CROSSOVER_RATE = DEFAULT_PROFILE.default_crossover_rate
 DEFAULT_RANDOM_GENE_RATE = DEFAULT_PROFILE.default_random_gene_rate
+DEFAULT_LEARNED_LINKAGE_ENABLED = True
+DEFAULT_LINKAGE_TRUNCATION_TAU = DEFAULT_TRUNCATION_TAU
+DEFAULT_LINKAGE_MIN_SAMPLES = DEFAULT_MIN_LINKAGE_SAMPLES
+DEFAULT_LINKAGE_MAX_CLUSTERS = DEFAULT_MAX_CLUSTERS
+DEFAULT_LINKAGE_ORDINAL_BINS = DEFAULT_ORDINAL_BINS
 
 
 def _dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
@@ -192,6 +206,32 @@ def _shape_distance(left: Shape, right: Shape) -> float:
     right_features = right.features()
     keys = ("log2_m", "log2_n", "log2_k", "log2_m_over_n", "log2_k_over_m", "log2_k_over_n")
     return math.sqrt(sum((left_features[key] - right_features[key]) ** 2 for key in keys))
+
+
+def _learned_linkage_models_for_proposal(
+    db: EvoTensileDB,
+    *,
+    enabled: bool,
+    problem_type_hash: str | None,
+    benchmark_protocol_hash: str | None,
+    target_shapes: list[Shape] | None,
+    min_samples: int,
+    truncation_tau: float,
+    max_clusters: int,
+    ordinal_bins: int,
+) -> tuple[list[LinkageModel], LinkageLearningSummary]:
+    if not enabled:
+        return [], LinkageLearningSummary(False, 0, 0, 0, "disabled")
+    return learn_linkage_models_from_db(
+        db,
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+        shapes=target_shapes,
+        truncation_tau=truncation_tau,
+        min_samples=min_samples,
+        max_clusters=max_clusters,
+        ordinal_bins=ordinal_bins,
+    )
 
 
 def _nearest_shape_ids(targets: list[Shape], source_shape_ids: set[str], *, limit: int) -> list[str]:
@@ -514,6 +554,11 @@ def propose_candidates(
     mutation_rate: float = DEFAULT_MUTATION_RATE,
     crossover_rate: float = DEFAULT_CROSSOVER_RATE,
     random_gene_rate: float = DEFAULT_RANDOM_GENE_RATE,
+    learned_linkage: bool = DEFAULT_LEARNED_LINKAGE_ENABLED,
+    linkage_truncation_tau: float = DEFAULT_LINKAGE_TRUNCATION_TAU,
+    linkage_min_samples: int = DEFAULT_LINKAGE_MIN_SAMPLES,
+    linkage_max_clusters: int = DEFAULT_LINKAGE_MAX_CLUSTERS,
+    linkage_ordinal_bins: int = DEFAULT_LINKAGE_ORDINAL_BINS,
 ) -> list[Candidate]:
     """Build candidates from random proposals and/or cached/imported elites."""
     if proposal not in PROPOSAL_MODES:
@@ -586,6 +631,17 @@ def propose_candidates(
 
     if proposal in {"gomea", "seed-random-gomea", "evolutionary"} and gomea_count > 0:
         parents = _dedupe_candidates(elites)
+        linkage_models, _ = _learned_linkage_models_for_proposal(
+            db,
+            enabled=learned_linkage,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            target_shapes=target_shapes,
+            min_samples=linkage_min_samples,
+            truncation_tau=linkage_truncation_tau,
+            max_clusters=linkage_max_clusters,
+            ordinal_bins=linkage_ordinal_bins,
+        )
         neighborhood_parents = parents
         gomea_budget = max(0, gomea_count)
         neighborhood_budget = gomea_budget // 2
@@ -605,6 +661,7 @@ def propose_candidates(
                 elite_count=elite_count,
                 exclude={candidate.hash for candidate in candidates},
                 target_shapes=target_shapes,
+                linkage_models=linkage_models,
             )
         )
 

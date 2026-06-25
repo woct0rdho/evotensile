@@ -528,6 +528,81 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
     assert candidates[1].hash not in {parent for candidate in proposed for parent in candidate.parent_hashes}
 
 
+def test_gomea_proposal_uses_learned_linkage_by_default_when_evidence_exists(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = sample_candidates(6)
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes([shape])
+    for idx, candidate in enumerate(candidates):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=1.0 + idx,
+            validation="PASSED",
+        )
+
+    proposed = propose_candidates(
+        db,
+        proposal="gomea",
+        gomea_count=4,
+        elite_count=6,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        linkage_min_samples=3,
+        linkage_truncation_tau=1.0,
+    )
+
+    assert proposed
+    assert all(candidate.source == "gomea" for candidate in proposed)
+    assert all(cheap_constraints(candidate.canonical_params()) for candidate in proposed)
+
+
+def test_gomea_proposal_accepts_learned_linkage_from_db_evidence(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = sample_candidates(6)
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes([shape])
+    for idx, candidate in enumerate(candidates):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=1.0 + idx,
+            validation="PASSED",
+        )
+
+    proposed = propose_candidates(
+        db,
+        proposal="gomea",
+        gomea_count=4,
+        elite_count=6,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        learned_linkage=True,
+        linkage_min_samples=3,
+        linkage_truncation_tau=1.0,
+    )
+
+    assert proposed
+    assert all(candidate.source == "gomea" for candidate in proposed)
+    assert all(cheap_constraints(candidate.canonical_params()) for candidate in proposed)
+
+
 def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -938,6 +1013,9 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
     assert default_metadata["batch_workers"] == default_batch_workers()
     assert default_metadata["adaptive_sampling"] is True
     assert default_metadata["stop_on_error"] is False
+    assert default_metadata["learned_linkage_requested"] is True
+    assert default_metadata["learned_linkage_enabled"] is False
+    assert default_metadata["linkage_fallback_reason"] == "insufficient_validated_evidence"
 
     assert default_metadata["compile_cache_enabled"] is True
     assert default_metadata["compile_cache_root"] == str(tmp_path / "default" / "compile_cache")
@@ -954,6 +1032,16 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
 
     debug_singleton_metadata = run_cli(tmp_path / "debug_singleton", "--candidate-batch-size", "1")
     assert debug_singleton_metadata["candidate_batch_size"] == 1
+
+    learned_metadata = run_cli(tmp_path / "learned", "--learned-linkage")
+    assert learned_metadata["learned_linkage_requested"] is True
+    assert learned_metadata["learned_linkage_enabled"] is False
+    assert learned_metadata["linkage_fallback_reason"] == "insufficient_validated_evidence"
+    assert learned_metadata["linkage_min_samples"] == 8
+
+    no_learned_metadata = run_cli(tmp_path / "no_learned", "--no-learned-linkage")
+    assert no_learned_metadata["learned_linkage_requested"] is False
+    assert no_learned_metadata["linkage_fallback_reason"] == "disabled"
 
     no_compile_cache_metadata = run_cli(tmp_path / "no_compile_cache", "--no-compile-cache")
     assert no_compile_cache_metadata["compile_cache_enabled"] is False

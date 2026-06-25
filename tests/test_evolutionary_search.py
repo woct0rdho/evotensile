@@ -8,6 +8,7 @@ from evotensile.search.gomea import (
     gomea_neighborhood_candidates,
     neighborhood_group_names,
 )
+from evotensile.search.learned_linkage import LinkageModel
 from evotensile.search.random_search import initial_random_batch
 from evotensile.search_space import (
     DOMAINS,
@@ -479,6 +480,24 @@ def test_gomea_uses_nt_hhs_linkage_groups_with_random_parents():
     assert max(_valu_vgpr_lower_bound(candidate.canonical_params()) for candidate in proposed) <= (
         NT_HHS_RANDOM_VALU_VGPR_HEADROOM
     )
+
+
+def test_gomea_accepts_learned_linkage_models():
+    parents = initial_random_batch(12, seed=1151)
+    leader = candidate_to_genome(parents[0])
+    model = LinkageModel(
+        leader_genome=leader,
+        leader_candidate_hash=parents[0].hash,
+        fos_groups=((0, 1),),
+        cluster_size=2,
+        evidence_count=12,
+    )
+
+    proposed = gomea_candidates(parents, count=8, seed=1153, linkage_models=[model])
+
+    assert proposed
+    assert all(candidate.source == "gomea" for candidate in proposed)
+    assert all(cheap_constraints(candidate.canonical_params()) for candidate in proposed)
 
 
 def test_gomea_neighborhood_covers_all_mutable_domain_knobs():
