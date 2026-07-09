@@ -21,9 +21,9 @@ Target-specific notes, exact artifacts, measured results, and remaining kernel-s
 ### 1. Define Problem, Shapes, And Search Space
 
 A target profile defines:
-- a TensileLite problem type, including data types, layout, batching, epilogue flags, and validation settings;
-- exact input shapes, usually represented as `shape_id = m{M}_n{N}_b{batch}_k{K}`;
-- a typed benchmark protocol used consistently for YAML generation, runner JSONL, and cache hashing;
+- a TensileLite problem type, including data types, layout, batching, epilogue flags, and validation settings.
+- exact input shapes, usually represented as `shape_id = m{M}_n{N}_b{batch}_k{K}`.
+- a typed benchmark protocol used consistently for YAML generation, runner JSONL, and cache hashing.
 - a candidate search space made of complete TensileLite solution dictionaries, not independent Cartesian products.
 
 Each target profile derives `problem_type_hash` and `benchmark_protocol_hash`. Pass the selected profile with `--profile <profile-name>`.
@@ -90,7 +90,7 @@ Production CLI defaults favor throughput: `--batch-workers` defaults to availabl
 
 Useful proposal modes include `random`, `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can initialize non-random proposal operators through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
 
-Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, `--num-elements-to-validate`, and `--validation-backend`. `NumBenchmarks` and `NumElementsToValidate` are execution budgets rather than cache identity fields, so adaptive top-ups pool with the fully validated timing evidence. The default uses full hipBLASLt GPU-oracle validation with `NumElementsToValidate=-1`; use `--validation-backend cpu` for CPU/OpenBLAS audit validation or `--validation-backend none` only for explicitly trusted timing-only top-ups. Unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
+Supported protocol overrides are typed CLI options such as `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, `--num-elements-to-validate`, and `--validation-backend`. `NumBenchmarks` and `NumElementsToValidate` are execution budgets rather than cache identity fields, so adaptive top-ups pool with the fully validated timing evidence. The default uses full hipBLASLt GPU-oracle validation with `NumElementsToValidate=-1`. Use `--validation-backend cpu` for CPU/OpenBLAS audit validation or `--validation-backend none` only for explicitly trusted timing-only top-ups. Unsupported TensileLite global parameters are intentionally not accepted by the search CLI.
 
 Validation is a hard gate: only `status=ok` rows with passing validation, or GPU-only top-up rows backed by prior passing validation for the same pair, should be ranked or used as positive cache entries. Unknown validation is never ranked as positive.
 
@@ -207,150 +207,6 @@ NumElementsToValidate: -1
 Cold-loop behavior is intentionally not tracked during tuning because it increases tuning time and optimizes for first-run or bursty-idle effects rather than sustained throughput. Analyze cold-loop behavior later only if first-request latency becomes important.
 
 Benchmark protocol is represented by the typed `BenchmarkProtocol` profile object and included in the benchmark-protocol hash. `NumBenchmarks` and `NumElementsToValidate` are intentionally excluded from benchmark protocol identity because they control sampling/validation execution, not timing compatibility. Compile-only settings such as `CpuThreads` are phase-specific and also excluded.
-
-## Winner Selection Math
-
-For each shape, EvoTensile treats each validation-passed candidate as one noisy timing arm. Timing samples are analyzed in log-time space so multiplicative noise and percent gaps are handled consistently.
-
-For candidate $c$ with positive timing samples $t_{c,1}, \dots, t_{c,n}$:
-
-$$
-y_{c,i} = \log(t_{c,i}), \qquad s_c = \mathrm{median}(y_{c,*}).
-$$
-
-The score $s_c$ is the median log time, so lower is better. The robust log-noise estimate is:
-
-$$
-\sigma_c = \max\left(\mathrm{stdev}(y_c), 1.4826 \mathrm{MAD}(y_c), \frac{\mathrm{IQR}(y_c)}{1.349}\right).
-$$
-
-The constants are normal-consistency factors for robust scale estimates. `1.4826` converts median absolute deviation to a standard-deviation estimate under normal noise because $1 / \Phi^{-1}(0.75) \approx 1.4826$. `1.349` converts IQR to a standard-deviation estimate because $\Phi^{-1}(0.75) - \Phi^{-1}(0.25) \approx 1.349$.
-
-The approximate standard error of the median log time is:
-
-$$
-\mathrm{SE}_c = 1.253 \frac{\sigma_c}{\sqrt{n}}.
-$$
-
-Here `1.253` is $\sqrt{\pi / 2}$, the asymptotic ratio between the standard error of a sample median and a sample mean for normally distributed noise.
-
-Let $b$ be the current best candidate by lowest $s_c$. For another candidate $c$, define the log-time gap and confidence interval:
-
-$$
-g_c = s_c - s_b,
-$$
-
-$$
-\mathrm{CI}_c = g_c \pm z_\alpha \sqrt{\mathrm{SE}_c^2 + \mathrm{SE}_b^2}.
-$$
-
-A candidate remains plausible if its lower confidence bound is within the indifference zone $\epsilon$:
-
-$$
-\mathrm{CI}_{c,\mathrm{low}} \le \log(1 + \epsilon).
-$$
-
-This means the candidate is not confidently slower than the current best by more than the requested percent tolerance. If no non-best candidate is plausible, the best is resolved. If all plausible candidates are mutually inside the $\pm\epsilon$ zone, the shape is marked practically equivalent and no more samples are scheduled.
-
-When a shape remains unresolved, EvoTensile estimates a target sample count for the plausible contenders. For contender $c$:
-
-$$
-d_c = \max\left(\left| |s_c - s_b| - \epsilon_{\log} \right|, \delta_{\min}\right),
-$$
-
-$$
-n_c = \left\lceil\left(\frac{z_\alpha \cdot 1.253 \sqrt{\sigma_b^2 + \sigma_c^2}}{d_c}\right)^2\right\rceil.
-$$
-
-The scheduled target is the maximum requested $n_c$, rounded up to `--adaptive-sample-step` and clamped to `--adaptive-min-samples` / `--adaptive-max-samples`. `--adaptive-max-k` limits how many plausible candidates are topped up for one shape.
-
-Correctness is handled separately from repetition count. The first accepted run for a `(shape, candidate)` pair performs validation once with the configured backend, defaulting to hipBLASLt GPU-oracle comparison. Later adaptive top-ups set `NumElementsToValidate=0` and are accepted only if the DB already contains passing validation evidence for that pair.
-
-## Repair Outlier Selection
-
-After search, `repair-outliers` looks for shapes whose current best measured config is substantially below what nearby shapes imply. It uses performance, not time, because neighboring shapes can have different FLOP counts.
-
-For shape $s$, let $P_s$ be the median GFLOP/s of its current DB-ranked winner, using only shapes with at least `--outlier-min-samples` samples. The default is `10` samples so repair uses confirmed/adaptive evidence rather than early screening noise. Define log performance:
-
-$$
-p_s = \log(P_s).
-$$
-
-Each shape is embedded in log/ratio feature space:
-
-$$
-x_s = \left[\log_2 M,\ \log_2 N,\ \log_2 K,\ \log_2(M/N),\ \log_2(K/M),\ \log_2(K/N)\right].
-$$
-
-Distance to another tuned shape $u$ is Euclidean distance:
-
-$$
-d(s,u) = \|x_s - x_u\|_2.
-$$
-
-For each target shape, EvoTensile takes the nearest $K$ other shapes with winners, where $K =$ `--neighbor-count` and defaults to `8`. The neighbor weight is:
-
-$$
-w_u = \frac{1}{\max(d(s,u), 0.125)}.
-$$
-
-The `0.125` floor prevents nearly duplicate shapes from getting infinite weight. In log2 feature units, `0.125` is one eighth of an octave, so it is small enough to still favor very close shapes while keeping the local fit numerically stable.
-
-The primary prediction is a weighted local linear fit around the target shape:
-
-$$
-p_u \approx \beta_0 + \beta^T(x_u - x_s).
-$$
-
-The fitted coefficients minimize:
-
-$$
-\sum_{u \in N_K(s)} w_u \left(p_u - \beta_0 - \beta^T(x_u - x_s)\right)^2 + \lambda\|\beta\|_2^2,
-$$
-
-with:
-
-$$
-\lambda = 10^{-3} \sum_{u \in N_K(s)} w_u.
-$$
-
-The `10^{-3}` ridge is a small numerical stabilizer for the slope terms only. The intercept $\beta_0$ is not penalized. The local-linear prediction at the target is the intercept, clipped to the neighbor log-performance range:
-
-$$
-\hat{p}_{s,\mathrm{lin}} = \mathrm{clip}\left(\beta_0,\ \min_{u \in N_K(s)} p_u,\ \max_{u \in N_K(s)} p_u\right).
-$$
-
-EvoTensile also computes a weighted upper-neighborhood envelope:
-
-$$
-\hat{p}_{s,\mathrm{env}} = Q_q\left(\{p_u\}_{u \in N_K(s)},\ \{w_u\}_{u \in N_K(s)}\right),
-$$
-
-where $q =$ `--envelope-quantile` and defaults to `0.75`. The `0.75` quantile is an upper-quartile envelope: more optimistic than the median, but less sensitive than the maximum to one unusually fast or noisy neighbor.
-
-The final predicted local envelope is conservative:
-
-$$
-\hat{p}_s = \min\left(\hat{p}_{s,\mathrm{lin}},\ \hat{p}_{s,\mathrm{env}}\right),
-$$
-
-falling back to $\hat{p}_{s,\mathrm{env}}$ if fewer than three neighbors are available for the linear fit.
-
-The repair residual is:
-
-$$
-r_s = \hat{p}_s - p_s.
-$$
-
-A shape is selected for repair when:
-
-$$
-r_s > \log(1 + \tau),
-$$
-
-where $\tau =$ `--outlier-threshold-pct` and defaults to `10%`. In other words, the current winner must be more than about `10%` below the local neighbor prediction in multiplicative performance terms. Selected shapes are sorted by residual, largest first, and `--max-outliers` can cap the repair set for staged runs.
-
-This test is intentionally heuristic. It identifies shapes worth more search budget. It does not prove the current winner is wrong, because real GEMM performance can have cliffs from tile divisibility, tails, LDS pressure, occupancy, or solution-selection discontinuities.
 
 ## Current Limitations
 
