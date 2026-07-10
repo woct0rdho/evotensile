@@ -1,4 +1,3 @@
-import itertools
 import random
 from collections.abc import Sequence
 
@@ -41,20 +40,10 @@ NT_HHS_LINKAGE_GROUPS = (
     ("ExpandPointerSwap",),
     ("AssertFree0ElementMultiple", "AssertFree1ElementMultiple", "AssertSummationElementMultiple"),
 )
-_PRIORITY_GROUPS = (
-    ("ScheduleIterAlg", "StorePriorityOpt"),
-    ("ScheduleIterAlg", "StorePriorityOpt", "NumElementsPerBatchStore"),
-    ("StorePriorityOpt", "NumElementsPerBatchStore", "StoreSyncOpt", "GroupLoadStore"),
-    ("PrefetchGlobalRead", "PrefetchLocalRead", "1LDSBuffer", "TransposeLDS"),
-    ("SourceSwap", "ClusterLocalRead", "TransposeLDS"),
-    ("MatrixInstruction", "DepthU"),
-    ("GlobalSplitU", "DepthU"),
-    *NT_HHS_LINKAGE_GROUPS,
-)
 
 
 def neighborhood_group_names() -> tuple[tuple[str, ...], ...]:
-    groups = [*_PRIORITY_GROUPS, *tuple((name,) for group in _PRIORITY_GROUPS for name in group)]
+    groups = [*NT_HHS_LINKAGE_GROUPS, *tuple((name,) for name in PARAM_NAMES)]
     seen_groups: list[tuple[str, ...]] = []
     for group in groups:
         if group not in seen_groups:
@@ -62,9 +51,22 @@ def neighborhood_group_names() -> tuple[tuple[str, ...], ...]:
     return tuple(seen_groups)
 
 
-def _group_value_products(names: tuple[str, ...], current: dict[str, object]):
-    value_lists = [ordered_domain_values(name, current.get(name)) for name in names]
-    return itertools.product(*value_lists)
+def _random_group_trial(
+    group: tuple[str, ...],
+    current: dict[str, object],
+    *,
+    rng: random.Random,
+) -> dict[str, object]:
+    trial = dict(current)
+    changed_name = rng.choice(group)
+    for name in group:
+        values = ordered_domain_values(name, current.get(name))
+        alternatives = values[1:]
+        if name == changed_name and alternatives:
+            trial[name] = rng.choice(alternatives)
+        elif alternatives and rng.random() < 0.5:
+            trial[name] = rng.choice(alternatives)
+    return trial
 
 
 def gomea_neighborhood_candidates(
@@ -74,36 +76,33 @@ def gomea_neighborhood_candidates(
     max_elites: int | None = 4,
     exclude: set[str] | None = None,
     beam_width: int = 16,
+    seed: int = 0,
 ) -> list[Candidate]:
-    """Sweep and compose compact FOS groups around ranked elites."""
+    """Sample static and univariate neighborhoods fairly across ranked elites."""
     if count <= 0:
         return []
     out: list[Candidate] = []
     seen_hashes = set(exclude or ())
-    seen_groups = neighborhood_group_names()
+    rng = random.Random(seed)
     parent_pool = parents if max_elites is None else parents[:max_elites]
-    for parent in parent_pool:
-        frontier = [dict(parent.canonical_params())]
-        for group in seen_groups:
-            next_frontier: list[dict[str, object]] = []
-            for base in frontier:
-                for values in _group_value_products(group, base):
-                    if all(base.get(name) == value for name, value in zip(group, values, strict=True)):
-                        continue
-                    trial = dict(base)
-                    trial.update(dict(zip(group, values, strict=True)))
-                    try:
-                        candidate = make_candidate(trial, source="gomea", parents=[parent.hash])
-                    except ValueError:
-                        continue
-                    if candidate.hash in seen_hashes:
-                        continue
-                    seen_hashes.add(candidate.hash)
-                    out.append(candidate)
-                    next_frontier.append(candidate.canonical_params())
-                    if len(out) >= count:
-                        return out
-            frontier = [*frontier[:1], *next_frontier[:beam_width]]
+    slots = [(parent, group) for parent in parent_pool for group in neighborhood_group_names()]
+    rng.shuffle(slots)
+    max_attempts_per_slot = max(4, beam_width)
+    for parent, group in slots:
+        base = dict(parent.canonical_params())
+        for _ in range(max_attempts_per_slot):
+            trial = _random_group_trial(group, base, rng=rng)
+            try:
+                candidate = make_candidate(trial, source="gomea", parents=[parent.hash])
+            except ValueError:
+                continue
+            if candidate.hash in seen_hashes:
+                continue
+            seen_hashes.add(candidate.hash)
+            out.append(candidate)
+            break
+        if len(out) >= count:
+            break
     return out[:count]
 
 

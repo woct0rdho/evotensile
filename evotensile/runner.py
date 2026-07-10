@@ -1,12 +1,13 @@
 import json
 import os
-import subprocess
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from .activity import apu_activity_lock
 from .database import EvoTensileDB
+from .subprocess_utils import run_logged_process
 
 DEFAULT_TENSILELITE_BIN = os.path.expanduser("~/rocm-libraries/projects/hipblaslt/tensilelite/Tensile/bin/Tensile")
 
@@ -83,22 +84,17 @@ def run_tensilelite(
     start = time.perf_counter()
     timed_out = False
     returncode = 0
-    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
-        try:
-            proc = subprocess.run(
+    with apu_activity_lock(exclusive=False):
+        with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
+            returncode, timed_out = run_logged_process(
                 cmd,
                 stdout=stdout,
                 stderr=stderr,
-                text=True,
                 env=_merged_env(env),
-                check=False,
-                timeout=timeout_s,
+                timeout_s=timeout_s,
             )
-            returncode = proc.returncode
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            returncode = 124
-            stderr.write(f"\nTensileLite build timed out after {exc.timeout} seconds\n")
+            if timed_out:
+                stderr.write(f"\nTensileLite build timed out after {timeout_s} seconds\n")
     duration_s = time.perf_counter() - start
 
     result = RunResult(

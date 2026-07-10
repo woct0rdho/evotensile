@@ -1,8 +1,10 @@
 import json
 import sqlite3
+import time
 from pathlib import Path
 from textwrap import dedent
 
+from evotensile.adaptive_retime import AdaptivePolicy
 from evotensile.database import EvoTensileDB
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.scheduler import execute_schedule
@@ -10,12 +12,50 @@ from evotensile.shapes import pilot_100_shapes
 from evotensile.structured_runner import (
     RunnablePair,
     StructuredSample,
-    _library_dir_from_build,
+    library_dir_from_build,
     read_structured_results,
-    run_structured_backend,
-    validate_structured_samples,
+    run_structured_phase,
+    validate_benchmark_samples,
+    validate_validation_samples,
 )
+from evotensile.subprocess_utils import run_logged_process
 from tests.helpers import sample_candidates
+
+
+def test_timed_out_process_kills_descendants(tmp_path: Path):
+    marker = tmp_path / "orphan-marker"
+    script = tmp_path / "spawn_child.py"
+    script.write_text(
+        dedent(
+            f"""\
+            #!/usr/bin/env python3
+            import subprocess
+            import time
+
+            subprocess.Popen([
+                "python3",
+                "-c",
+                "import pathlib,time; time.sleep(0.3); pathlib.Path({str(marker)!r}).write_text('alive')",
+            ])
+            time.sleep(10)
+            """
+        ),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    with (tmp_path / "stdout.log").open("w") as stdout, (tmp_path / "stderr.log").open("w") as stderr:
+        returncode, timed_out = run_logged_process(
+            [str(script)],
+            stdout=stdout,
+            stderr=stderr,
+            env=None,
+            timeout_s=0.1,
+        )
+    time.sleep(0.4)
+
+    assert returncode == 124
+    assert timed_out
+    assert not marker.exists()
 
 
 def _fake_structured_runner(path: Path) -> Path:
@@ -26,34 +66,73 @@ def _fake_structured_runner(path: Path) -> Path:
             #!/usr/bin/env python3
             import argparse
             import json
+            import os
+            import time
+            from pathlib import Path
 
             p = argparse.ArgumentParser()
+            p.add_argument("--mode", choices=("validate", "benchmark"), required=True)
             p.add_argument("--pairs")
             p.add_argument("--output")
             p.add_argument("--library-dir", default=None)
             args, _ = p.parse_known_args()
 
+            events_path = os.environ.get("EVOTENSILE_TEST_PHASE_EVENTS")
+            if events_path:
+                with Path(events_path).open("a") as events:
+                    events.write(f"{args.mode}_start\\n")
+            active_dir = os.environ.get("EVOTENSILE_TEST_GPU_ACTIVE_DIR") if args.mode == "benchmark" else None
+            active_path = Path(active_dir) if active_dir else None
+            if active_path is not None:
+                try:
+                    active_path.mkdir()
+                except FileExistsError:
+                    active_path.with_suffix(".overlap").write_text("overlap\\n")
+                time.sleep(0.2)
+
             with open(args.pairs) as src, open(args.output, "w") as out:
                 for line in src:
                     pair = json.loads(line)
                     flops = 2.0 * pair["m"] * pair["n"] * pair["batch"] * pair["k"]
-                    for sample_index in range(pair.get("num_benchmarks", 1)):
-                        time_us = max(1.0, flops / 1.0e9) * (1.0 + sample_index * 0.001)
+                    if args.mode == "validate":
                         out.write(
                             json.dumps(
                                 {
                                     "shape_id": pair["shape_id"],
                                     "candidate_hash": pair["candidate_hash"],
                                     "status": "ok",
-                                    "sample_index": sample_index,
-                                    "time_us": time_us,
-                                    "validation": "NO_CHECK" if pair.get("num_elements_to_validate") == 0 else "PASSED",
+                                    "sample_index": 0,
+                                    "time_us": None,
+                                    "validation": "PASSED",
                                     "solution_index": pair["library_solution_index"],
                                 },
                                 sort_keys=True,
                             )
                             + "\\n"
                         )
+                    else:
+                        for sample_index in range(pair.get("num_benchmarks", 1)):
+                            time_us = max(1.0, flops / 1.0e9) * (1.0 + sample_index * 0.001)
+                            out.write(
+                                json.dumps(
+                                    {
+                                        "shape_id": pair["shape_id"],
+                                        "candidate_hash": pair["candidate_hash"],
+                                        "status": "ok",
+                                        "sample_index": sample_index,
+                                        "time_us": time_us,
+                                        "validation": "NO_CHECK",
+                                        "solution_index": pair["library_solution_index"],
+                                    },
+                                    sort_keys=True,
+                                )
+                                + "\\n"
+                            )
+            if active_path is not None and active_path.exists():
+                active_path.rmdir()
+            if events_path:
+                with Path(events_path).open("a") as events:
+                    events.write(f"{args.mode}_end\\n")
             """
         ),
         encoding="utf-8",
@@ -68,11 +147,16 @@ def _fake_build_tensile(path: Path) -> Path:
         dedent(
             """\
             #!/usr/bin/env python3
+            import os
             import sys
             from pathlib import Path
 
             import yaml
 
+            events_path = os.environ.get("EVOTENSILE_TEST_PHASE_EVENTS")
+            if events_path:
+                with Path(events_path).open("a") as events:
+                    events.write("compile_start\\n")
             config_path, out = Path(sys.argv[1]), Path(sys.argv[2])
             out.mkdir(parents=True, exist_ok=True)
             if "--build-only" not in sys.argv:
@@ -96,7 +180,10 @@ def _fake_build_tensile(path: Path) -> Path:
             lib.mkdir(parents=True, exist_ok=True)
             (lib / "TensileLibrary_gfx1151.yaml").write_text("---\\nsolutions: []\\n")
             (lib / "Kernels.so-000-gfx1151.hsaco").write_bytes(b"fake")
-            sys.exit(0)
+            if events_path:
+                with Path(events_path).open("a") as events:
+                    events.write("compile_end\\n")
+            sys.exit(int(os.environ.get("EVOTENSILE_TEST_BUILD_RETURNCODE", "0")))
             """
         ),
         encoding="utf-8",
@@ -105,8 +192,8 @@ def _fake_build_tensile(path: Path) -> Path:
     return script
 
 
-def test_validate_structured_samples_requires_prior_validation_for_no_check_rows():
-    pair = RunnablePair(
+def _pair() -> RunnablePair:
+    return RunnablePair(
         shape_id="m1_n1_b1_k1",
         candidate_hash="cand_1",
         problem_index=0,
@@ -114,110 +201,83 @@ def test_validate_structured_samples_requires_prior_validation_for_no_check_rows
         library_solution_index=0,
         manifest_solution_index=0,
     )
-    sample = StructuredSample(
-        shape_id=pair.shape_id,
-        candidate_hash=pair.candidate_hash,
-        status="ok",
-        sample_index=0,
-        time_us=1.0,
-        validation="NO_CHECK",
-        solution_index=0,
+
+
+def test_validation_samples_create_separate_correctness_evidence():
+    pair = _pair()
+    outcome = validate_validation_samples(
+        [
+            StructuredSample(
+                shape_id=pair.shape_id,
+                candidate_hash=pair.candidate_hash,
+                status="ok",
+                sample_index=0,
+                time_us=None,
+                validation="PASSED checked=1 backend=hipblaslt_gpu_compare",
+                solution_index=0,
+            )
+        ],
+        runnable_pairs=[pair],
+        problem_type_hash="ptype",
+        validation_protocol_hash="vproto",
+        benchmark_protocol_hash="bproto",
+        run_id="validation_run",
     )
 
-    inserts = validate_structured_samples(
-        [sample],
+    assert outcome.passed_pairs == [pair]
+    assert outcome.validations[0].status == "passed"
+    assert outcome.validations[0].detail == "PASSED checked=1 backend=hipblaslt_gpu_compare"
+    assert outcome.negative_evaluations == []
+
+
+def test_validation_failure_creates_reusable_negative_evaluation():
+    pair = _pair()
+    outcome = validate_validation_samples(
+        [
+            StructuredSample(
+                shape_id=pair.shape_id,
+                candidate_hash=pair.candidate_hash,
+                status="validation_fail",
+                validation="FAILED mismatch",
+                solution_index=0,
+            )
+        ],
+        runnable_pairs=[pair],
+        problem_type_hash="ptype",
+        validation_protocol_hash="vproto",
+        benchmark_protocol_hash="bproto",
+        run_id="validation_run",
+    )
+
+    assert outcome.passed_pairs == []
+    assert outcome.validations[0].status == "failed"
+    assert outcome.negative_evaluations[0].status == "validation_fail"
+
+
+def test_benchmark_samples_must_be_timing_only():
+    pair = _pair()
+    inserts = validate_benchmark_samples(
+        [
+            StructuredSample(
+                shape_id=pair.shape_id,
+                candidate_hash=pair.candidate_hash,
+                status="ok",
+                sample_index=0,
+                time_us=1.0,
+                validation="NO_CHECK",
+                solution_index=0,
+            )
+        ],
         runnable_pairs=[pair],
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1, num_elements_to_validate=0),
-    )
-
-    assert inserts[0].status == "validation_unknown"
-
-
-def test_validate_structured_samples_accepts_negative_rows_without_sample_index():
-    pair = RunnablePair(
-        shape_id="m1_n1_b1_k1",
-        candidate_hash="cand_1",
-        problem_index=0,
-        requested_solution_index=0,
-        library_solution_index=0,
-        manifest_solution_index=0,
-    )
-    sample = StructuredSample(
-        shape_id=pair.shape_id,
-        candidate_hash=pair.candidate_hash,
-        status="rejected",
-        sample_index=None,
-        time_us=None,
-        validation="DID_NOT_SATISFY_ASSERTS",
-        solution_index=0,
-    )
-
-    inserts = validate_structured_samples(
-        [sample],
-        runnable_pairs=[pair],
-        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
-    )
-
-    assert inserts[0].status == "rejected"
-    assert inserts[0].validation == "DID_NOT_SATISFY_ASSERTS"
-
-
-def test_validate_structured_samples_preserves_backend_validation_detail():
-    pair = RunnablePair(
-        shape_id="m1_n1_b1_k1",
-        candidate_hash="cand_1",
-        problem_index=0,
-        requested_solution_index=0,
-        library_solution_index=0,
-        manifest_solution_index=0,
-    )
-    sample = StructuredSample(
-        shape_id=pair.shape_id,
-        candidate_hash=pair.candidate_hash,
-        status="ok",
-        sample_index=0,
-        time_us=1.0,
-        validation="PASSED checked=1 backend=hipblaslt_gpu_compare",
-        solution_index=0,
-    )
-
-    inserts = validate_structured_samples(
-        [sample],
-        runnable_pairs=[pair],
-        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        problem_type_hash="ptype",
+        benchmark_protocol_hash="bproto",
+        run_id="benchmark_run",
     )
 
     assert inserts[0].status == "ok"
-    assert inserts[0].validation == "PASSED checked=1 backend=hipblaslt_gpu_compare"
-
-
-def test_validate_structured_samples_accepts_trusted_no_check_rows():
-    pair = RunnablePair(
-        shape_id="m1_n1_b1_k1",
-        candidate_hash="cand_1",
-        problem_index=0,
-        requested_solution_index=0,
-        library_solution_index=0,
-        manifest_solution_index=0,
-    )
-    sample = StructuredSample(
-        shape_id=pair.shape_id,
-        candidate_hash=pair.candidate_hash,
-        status="ok",
-        sample_index=0,
-        time_us=1.0,
-        validation="NO_CHECK",
-        solution_index=0,
-    )
-
-    inserts = validate_structured_samples(
-        [sample],
-        runnable_pairs=[pair],
-        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1, num_elements_to_validate=0),
-        allow_no_check=True,
-    )
-
-    assert inserts[0].status == "ok"
+    assert inserts[0].time_us == 1.0
+    assert inserts[0].validation == "PASSED prior_validation"
 
 
 def test_library_dir_from_build_accepts_tensilelite_build_only_cache_layout(tmp_path: Path):
@@ -235,10 +295,10 @@ def test_library_dir_from_build_accepts_tensilelite_build_only_cache_layout(tmp_
     )
     cache_lib.mkdir(parents=True)
 
-    assert _library_dir_from_build(build_dir) == cache_lib
+    assert library_dir_from_build(build_dir) == cache_lib
 
 
-def test_run_structured_backend_passes_default_hipblaslt_backend(tmp_path: Path):
+def test_run_structured_phase_passes_explicit_mode_and_backend(tmp_path: Path):
     runner = tmp_path / "runner.py"
     runner.write_text(
         dedent(
@@ -264,7 +324,8 @@ def test_run_structured_backend_passes_default_hipblaslt_backend(tmp_path: Path)
         manifest_solution_index=0,
     )
 
-    output = run_structured_backend(
+    output = run_structured_phase(
+        mode="validate",
         run_dir=tmp_path,
         pairs=[pair],
         shapes=[pilot_100_shapes()[0].__class__(m=1, n=1, batch=1, k=1)],
@@ -274,8 +335,117 @@ def test_run_structured_backend_passes_default_hipblaslt_backend(tmp_path: Path)
     )
 
     assert output.returncode == 0
+    assert output.command[output.command.index("--mode") + 1] == "validate"
     assert "--validation-backend" in output.command
     assert output.command[output.command.index("--validation-backend") + 1] == "hipblaslt"
+
+
+def test_parallel_prepare_finishes_before_serial_benchmark_queue(tmp_path: Path, monkeypatch):
+    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = sample_candidates(2)
+    shape = pilot_100_shapes()[0]
+    events_path = tmp_path / "phase-events.log"
+    monkeypatch.setenv("EVOTENSILE_APU_LOCK_PATH", str(tmp_path / "apu.lock"))
+    monkeypatch.setenv("EVOTENSILE_TEST_GPU_ACTIVE_DIR", str(tmp_path / "gpu-active"))
+    monkeypatch.setenv("EVOTENSILE_TEST_PHASE_EVENTS", str(events_path))
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        prepare_workers=2,
+    )
+
+    assert len(result.executed_batches) == 2
+    events = events_path.read_text(encoding="utf-8").splitlines()
+    assert events.count("compile_end") == 2
+    assert events.count("validate_end") == 2
+    prepare_end_indices = [i for i, event in enumerate(events) if event in {"compile_end", "validate_end"}]
+    assert events.index("benchmark_start") > max(prepare_end_indices)
+    assert not (tmp_path / "gpu-active.overlap").exists()
+    assert not (tmp_path / "gpu-active").exists()
+    assert db.cache_summary() == {"ok": 2}
+
+
+def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
+    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = sample_candidates(2)
+    shape = pilot_100_shapes()[0]
+    events_path = tmp_path / "adaptive-events.log"
+    monkeypatch.setenv("EVOTENSILE_APU_LOCK_PATH", str(tmp_path / "apu.lock"))
+    monkeypatch.setenv("EVOTENSILE_TEST_PHASE_EVENTS", str(events_path))
+    decision_calls = 0
+
+    def forced_topup(*args, **kwargs):
+        nonlocal decision_calls
+        decision_calls += 1
+        return [(3, [shape], candidates)] if decision_calls == 1 else []
+
+    monkeypatch.setattr("evotensile.scheduler._adaptive_topup_groups", forced_topup)
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=3),
+        candidate_batch_size=2,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        prepare_workers=2,
+        adaptive_policy=AdaptivePolicy(),
+        adaptive_initial_samples=1,
+        adaptive_max_rounds=2,
+    )
+
+    events = events_path.read_text(encoding="utf-8").splitlines()
+    assert events.count("compile_start") == 1
+    assert events.count("validate_start") == 1
+    assert events.count("benchmark_start") == 2
+    assert result.adaptive_rounds == 1
+    assert [batch.phase for batch in result.executed_batches] == ["initial", "adaptive"]
+    assert db.cache_summary() == {"ok": 6}
+
+
+def test_singleton_nonzero_build_salvages_runnable_artifact(tmp_path: Path, monkeypatch):
+    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    monkeypatch.setenv("EVOTENSILE_TEST_BUILD_RETURNCODE", "2")
+
+    result = execute_schedule(
+        db,
+        shapes=pilot_100_shapes()[:1],
+        candidates=sample_candidates(1),
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+    )
+
+    executed = result.executed_batches[0]
+    assert executed.build_returncode == 2
+    assert executed.validation_returncode == 0
+    assert executed.runner_returncode == 0
+    assert executed.ingest is not None
+    assert executed.ingest.status_counts == {"ok": 1}
+    assert db.cache_summary() == {"ok": 1}
 
 
 def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path: Path):
@@ -307,13 +477,13 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
     assert executed.ingest.status_counts == {"ok": 12}
     assert db.cache_summary() == {"ok": 12}
 
-    result_files = list(executed.output_dir.glob("*.results.jsonl"))
+    result_files = list(executed.output_dir.glob("benchmark_*.results.jsonl"))
     assert len(result_files) == 1
     samples = read_structured_results(result_files[0])
     assert {(s.shape_id, s.candidate_hash) for s in samples} == {
         (shape.id, candidate.hash) for shape in shapes for candidate in candidates
     }
-    assert all(sample.validation == "PASSED" for sample in samples)
+    assert all(sample.validation == "NO_CHECK" for sample in samples)
 
     with sqlite3.connect(tmp_path / "sched.sqlite") as con:
         rows = con.execute(
@@ -359,10 +529,12 @@ def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path
     assert first.executed_batches[0].planned.requires_validation
     assert not second.executed_batches[0].planned.requires_validation
     with sqlite3.connect(tmp_path / "sched.sqlite") as con:
-        rows = con.execute(
+        timing_rows = con.execute(
             "SELECT status, validation, COUNT(*) FROM evaluations GROUP BY status, validation ORDER BY validation"
         ).fetchall()
-    assert rows == [("ok", "NO_CHECK", 1), ("ok", "PASSED", 1)]
+        validation_rows = con.execute("SELECT status, COUNT(*) FROM validations GROUP BY status").fetchall()
+    assert timing_rows == [("ok", "PASSED prior_validation", 2)]
+    assert validation_rows == [("passed", 1)]
 
 
 def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
@@ -578,6 +750,7 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
             import json
 
             p = argparse.ArgumentParser()
+            p.add_argument("--mode", required=True)
             p.add_argument("--pairs")
             p.add_argument("--output")
             p.add_argument("--library-dir")
@@ -592,8 +765,8 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
                             "candidate_hash": pair["candidate_hash"],
                             "status": "ok",
                             "sample_index": 0,
-                            "time_us": 1,
-                            "validation": "PASSED",
+                            "time_us": None if args.mode == "validate" else 1,
+                            "validation": "PASSED" if args.mode == "validate" else "NO_CHECK",
                             "solution_index": pair["library_solution_index"],
                         }
                     )
@@ -635,6 +808,7 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
             import json
 
             p = argparse.ArgumentParser()
+            p.add_argument("--mode", required=True)
             p.add_argument("--pairs")
             p.add_argument("--output")
             p.add_argument("--library-dir")
@@ -642,7 +816,8 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
 
             with open(args.pairs) as src, open(args.output, "w") as out:
                 pair = json.loads(next(src))
-                for _ in range(2):
+                count = 1 if args.mode == "validate" else 2
+                for _ in range(count):
                     out.write(
                         json.dumps(
                             {
@@ -650,8 +825,8 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
                                 "candidate_hash": pair["candidate_hash"],
                                 "status": "ok",
                                 "sample_index": 0,
-                                "time_us": 1,
-                                    "validation": "PASSED",
+                                "time_us": None if args.mode == "validate" else 1,
+                                "validation": "PASSED" if args.mode == "validate" else "NO_CHECK",
                                 "solution_index": pair["library_solution_index"],
                             }
                         )
@@ -694,6 +869,7 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
             import sys
 
             p = argparse.ArgumentParser()
+            p.add_argument("--mode", required=True)
             p.add_argument("--pairs")
             p.add_argument("--output")
             p.add_argument("--library-dir")
@@ -708,14 +884,14 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
                             "candidate_hash": pair["candidate_hash"],
                             "status": "ok",
                             "sample_index": 0,
-                            "time_us": 1,
-                            "validation": "PASSED",
+                            "time_us": None if args.mode == "validate" else 1,
+                            "validation": "PASSED" if args.mode == "validate" else "NO_CHECK",
                             "solution_index": pair["library_solution_index"],
                         }
                     )
                     + "\\n"
                 )
-            sys.exit(3)
+            sys.exit(3 if args.mode == "benchmark" else 0)
             """
         ),
         encoding="utf-8",
@@ -749,9 +925,28 @@ def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
         dedent(
             """\
             #!/usr/bin/env python3
+            import argparse
+            import json
             import time
 
-            time.sleep(10)
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--mode", required=True)
+            parser.add_argument("--pairs")
+            parser.add_argument("--output")
+            args, _ = parser.parse_known_args()
+            if args.mode == "benchmark":
+                time.sleep(10)
+            with open(args.pairs) as src, open(args.output, "w") as out:
+                pair = json.loads(next(src))
+                out.write(json.dumps({
+                    "shape_id": pair["shape_id"],
+                    "candidate_hash": pair["candidate_hash"],
+                    "status": "ok",
+                    "sample_index": 0,
+                    "time_us": None,
+                    "validation": "PASSED",
+                    "solution_index": pair["library_solution_index"],
+                }) + "\\n")
             """
         ),
         encoding="utf-8",
@@ -775,7 +970,7 @@ def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
     assert executed.runner_returncode == 124
     assert executed.ingest is not None
     assert executed.ingest.ok is False
-    assert "incomplete sample set" in executed.ingest.errors[0]
+    assert "benchmark phase timed out" in executed.ingest.errors[0]
     assert db.cache_summary() == {"runner_timeout": 1}
 
 
@@ -813,6 +1008,10 @@ def test_structured_maps_renumbered_normalized_final_yaml_solution(tmp_path: Pat
                     sort_keys=False,
                 )
             )
+            lib = out / "4_LibraryClient" / "library" / "gfx1151"
+            lib.mkdir(parents=True, exist_ok=True)
+            (lib / "TensileLibrary_gfx1151.yaml").write_text("---\\nsolutions: []\\n")
+            (lib / "Kernels.so-000-gfx1151.hsaco").write_bytes(b"fake")
             sys.exit(0)
             """
         ),
@@ -874,6 +1073,10 @@ def test_structured_records_rejected_candidate_from_final_yaml(tmp_path: Path):
                     sort_keys=False,
                 )
             )
+            lib = out / "4_LibraryClient" / "library" / "gfx1151"
+            lib.mkdir(parents=True, exist_ok=True)
+            (lib / "TensileLibrary_gfx1151.yaml").write_text("---\\nsolutions: []\\n")
+            (lib / "Kernels.so-000-gfx1151.hsaco").write_bytes(b"fake")
             sys.exit(0)
             """
         ),

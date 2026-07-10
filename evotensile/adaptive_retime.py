@@ -335,7 +335,16 @@ def load_timing_stats(
     shape_ids: set[str] | None = None,
     candidate_hashes: set[str] | None = None,
 ) -> dict[str, list[CandidateTimingStats]]:
-    clauses = ["problem_type_hash = ?", "status = 'ok'", "time_us IS NOT NULL"]
+    clauses = [
+        "problem_type_hash = ?",
+        "status = 'ok'",
+        "time_us IS NOT NULL",
+        "time_us > 0",
+        "UPPER(CASE "
+        "WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0 THEN TRIM(COALESCE(validation, '')) "
+        "ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1, "
+        "INSTR(TRIM(COALESCE(validation, '')), ' ') - 1) END) IN ('PASSED', 'OK', 'VALID')",
+    ]
     params: list[str] = [problem_type_hash]
     protocol_hashes = list(benchmark_protocol_hashes or [])
     if protocol_hashes:

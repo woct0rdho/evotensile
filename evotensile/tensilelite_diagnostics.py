@@ -1,7 +1,6 @@
 import csv
 import importlib
 import json
-import subprocess
 import sys
 import time
 import uuid
@@ -11,10 +10,12 @@ from typing import Any
 
 import yaml
 
+from .activity import apu_activity_lock
 from .database import EvaluationInsert, EvoTensileDB
 from .profile import TargetProfile
 from .protocol import BenchmarkProtocol
 from .runner import DEFAULT_TENSILELITE_BIN, _merged_env
+from .subprocess_utils import run_logged_process
 
 
 @dataclass(frozen=True)
@@ -119,22 +120,17 @@ def run_tensilelite_diagnostics(
     start = time.perf_counter()
     timed_out = False
     returncode = 0
-    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
-        try:
-            proc = subprocess.run(
+    with apu_activity_lock(exclusive=False):
+        with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
+            returncode, timed_out = run_logged_process(
                 command,
                 stdout=stdout,
                 stderr=stderr,
-                text=True,
                 env=_merged_env(env),
-                check=False,
-                timeout=timeout_s,
+                timeout_s=timeout_s,
             )
-            returncode = proc.returncode
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            returncode = 124
-            stderr.write(f"\nTensileLite diagnostics timed out after {exc.timeout} seconds\n")
+            if timed_out:
+                stderr.write(f"\nTensileLite diagnostics timed out after {timeout_s} seconds\n")
     duration_s = time.perf_counter() - start
     records = read_diagnostic_records(results_path) if results_path.exists() else []
     result = DiagnosticRunResult(

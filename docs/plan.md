@@ -7,6 +7,7 @@ This file is the live project log and forward plan. Stable design details live i
 - `docs/search_algorithms.md`: general search loop and proposal modes.
 - `docs/gomea.md`: GOMEA proposal mechanics.
 - `docs/linkage_learning.md`: learned linkage mechanics.
+- `docs/family_aware_ea_screening.md`: planned family-aware evolutionary search and staged screening upgrades.
 - `docs/noisy_measurements.md`: adaptive timing and noisy winner-selection math.
 - `docs/tensilelite_measurement.md`: TensileLite YAML/build/runner/JSONL measurement contract.
 - `docs/outlier_repair.md`: local outlier detection and repair math.
@@ -18,10 +19,11 @@ Implemented and working:
 - `gfx1151-nt-hhs` target profile with FP16 NT HHS problem type and the 100-shape pilot grid.
 - Broad NT HHS candidate construction with explicit linked repairs and explainable invalidity rules.
 - Candidate emission through complete TensileLite `Groups`, not Cartesian-product fork parameters.
-- Structured scheduler path only: YAML + manifest generation, TensileLite build-only codegen, final-YAML mapping, external structured runner, and direct SQLite ingestion.
-- Cache-aware exact-pair batch planning keyed by problem type hash, benchmark protocol hash, shape id, and candidate hash.
-- Random, local mutation, categorical DE, GOMEA, learned-linkage GOMEA, transfer seeding, and imported hipBLASLt baseline participation.
-- Adaptive finalist top-ups with validation-gated timing-only reruns.
+- Structured scheduler path only: YAML + manifest generation, parallel build/map/diagnostic/validation preparation, a hard barrier, serial benchmark-only execution, and direct SQLite ingestion.
+- Separate correctness and timing identities: validation evidence is stored independently from benchmark samples.
+- Cache-aware exact-pair planning keyed by problem type, benchmark protocol, validation protocol, shape, and candidate.
+- Random, local mutation, categorical DE, GOMEA, learned-linkage GOMEA, family-QD proposals, transfer seeding, and imported hipBLASLt baseline participation.
+- Adaptive finalist top-ups that reuse the original compiled and correctness-verified artifacts without recompilation or revalidation.
 - `repair-outliers` neighbor-seeded second-stage search.
 - DB-driven hipBLASLt GridBased YAML update helper for HHS/HHS+AuxH/BBS/BBS+AuxB variants.
 - Installed-library verification helper using `hipblaslt-bench --verify`.
@@ -73,25 +75,28 @@ Updated checked-in GridBased YAMLs from the DB, rebuilt hipBLASLt for `gfx1151`,
 - Lightweight installed correctness via `scripts/verify_installed_hipblaslt.py` passed `6/6` curated target/off-grid cases.
 - Upstream `hipblaslt-test` validation passed when excluding known no-solution availability cases in FP16/BF16 NT edge/skinny and `k=0` families.
 
-### Structured Runner Refactor
+### Structured Runner And Phase Queues
 
-The production scheduler now uses only the structured runner path:
-- `evotensile/profile.py` and `evotensile/protocol.py` define profile/protocol objects and hashes.
-- `evotensile/structured_runner.py` maps final-YAML accepted solutions to exact `(shape_id, candidate_hash)` pairs and validates JSONL rows before DB insertion.
-- `csrc/structured_runner.cpp` implements the narrow production backend for current gfx1151 FP16 NT HHS bias + `scaleAlpha_vector` timing.
-- Tests use fake external runner scripts and fake TensileLite build outputs instead of an in-process backend.
-- Real generated-library checks passed for one-pair and small multi-pair runs, including validation of accepted/rejected mapping.
+The production scheduler uses two explicit queues:
+- Parallel preparation performs TensileLite build/codegen, final-YAML mapping and salvage, diagnostics, and correctness verification.
+- A hard worker-pool barrier completes before the serial benchmark queue starts.
+- `csrc/structured_runner.cpp` exposes strict `validate` and `benchmark` modes and enforces the machine-wide shared/exclusive APU gate itself.
+- Validation mode emits no timing. Benchmark mode requires validation disabled and performs no correctness work.
+- Adaptive top-ups benchmark subsets from the original prepared artifacts.
+- Tests assert compiler/validator completion before timing, serial benchmark execution, and no adaptive recompilation/revalidation.
+- A real generated-library check passed hipBLASLt GPU validation followed by benchmark-only timing from the same code object.
 
-## Historical One-Shape Reproduction Context
+## Blind One-Shape Evolution Result
 
-A one-shape harness under `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/evotensile_one_shape/` reproduced the documented `8192^3` winner with hindsight-directed local refinement. That operator is historical evidence only and is not part of the generic scheduler because it bakes in the known winner neighborhood.
+A cold-start four-generation `8192^3` family-QD campaign was run without imported candidates, control hashes, performance-derived priority bundles, or winner-specific test fixtures:
+- `144` unique candidates were registered across the initial generation and three evolutionary generations.
+- The campaign generated `12` candidates in the `MT128x128/TLDS0` structural family, but no candidate assembled the full external-control backbone.
+- The best hot-loop finalist reached `29.014 TFLOP/s` median and `29.212 TFLOP/s` best over `10` samples using `20` warmups and `10` enqueues per sample.
+- The external known-best aggregate is `45.253 TFLOP/s`, so the blind result reached `64.1%` and remained `35.9%` slower.
+- Post-hoc only, the nearest generated genome was Hamming distance `13` from the external control.
+- Screening and hot-loop monitoring showed high sustained GPU use. The miss is search-depth/epistasis evidence, not an idle-GPU explanation.
 
-Key retained facts:
-- Plain random/local control: `12` random + `8` local mutations did not generate `cand_4bde2d3af447f757`.
-- Best non-control generated candidate reached `34976.1 GFLOP/s` hot-loop median.
-- Documented winner reached `46698.1 GFLOP/s` hot-loop median.
-- Hindsight-directed refinement generated the documented winner after `34` benchmarked candidates in that run.
-- Cool-loop screening ranked a sibling first, while hot-loop retime restored the documented winner, reinforcing the current hot-loop protocol choice.
+Artifacts are under `out/one_shape_8192_family_qd_cold_20260710_v3/`. The initial wrapper timeout was recovered by resuming the exact `32` already-registered generation-zero hashes. No replacement candidates were generated during recovery.
 
 ## Build And Runtime Conventions
 
@@ -106,6 +111,7 @@ Runtime validation should point `HIPBLASLT_TENSILE_LIBPATH` at the installed gfx
 
 Near-term:
 - Run larger or finer NT HHS grids with the structured scheduler, adaptive sampling, and `repair-outliers` as the standard loop.
+- Add evidence-driven within-family allocation and conditional linkage. Four blind generations cover the right coarse families but do not reliably assemble high-order epistatic bundles.
 - Compare learned-linkage enabled/disabled runs on the same DB snapshots to quantify proposal value.
 - Add more audit scripts for DB-level winner sensitivity, sample-count sensitivity, and repair effectiveness.
 - Broaden installed-library correctness cases beyond the six curated verifier cases.

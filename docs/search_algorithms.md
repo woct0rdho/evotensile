@@ -20,11 +20,12 @@ Search algorithms only propose candidates. They do not select final winners dire
 - Record immediate shape-dependent rule rejections.
 - Plan missing `(shape, candidate)` observations from reusable cache status.
 - Emit TensileLite YAML and manifest files for exact rectangular batches.
-- Build with TensileLite, run the structured backend, and ingest JSONL timing/validation rows.
-- When adaptive sampling is enabled, top up statistically plausible finalists only.
+- Run all build/map/diagnostic/correctness work in a parallel prepare queue.
+- Join every prepare worker, then run benchmark-only work in one serial queue.
+- When adaptive sampling is enabled, top up plausible finalists from the original prepared artifacts only.
 - Write `schedule_metadata.json` with proposal, protocol, linkage, batching, and execution details.
 
-The scheduler rechecks the cache immediately before executing each planned batch, so resumed or parallel work can skip observations inserted by earlier batches.
+Timing begins only after the complete prepare queue drains. This hard barrier prevents benchmark overlap with compilation or correctness verification on integrated CPU/GPU systems.
 
 ## Proposal Modes
 
@@ -40,21 +41,24 @@ seed-random-de
 gomea
 seed-random-gomea
 evolutionary
+family-qd
 ```
 
 The default profile proposal is `seed-random-gomea`.
+
+`family-qd` is the first family-aware quality-diversity proposal mode. The broader staged-screening roadmap is documented in `docs/family_aware_ea_screening.md`.
 
 ### Random
 
 Random proposal samples from the target `DOMAINS`, applies linked repairs, and rejects candidates with known invalid rules. When target shapes are known, random generation also enforces shape-dependent cheap constraints before returning a candidate.
 
-The current NT HHS generator has proposal bias toward a compatible TLDS2 path and a proposal-side VALU register headroom check. These biases improve yield but are not validity rules.
+The current NT HHS generator samples the compatible TLDS0 and TLDS2 construction branches with equal probability and applies a proposal-side VALU register headroom check. Branch balance and headroom are proposal policies, not validity rules.
 
 ### Local Mutation
 
 Local mutation starts from DB elites and independently resamples each domain gene with probability `--mutation-rate` (`0.25` by default). Each child is checked through `make_candidate()`, and invalid children are discarded.
 
-This mode is simple and useful around known winners, but it does not preserve multi-field couplings as strongly as GOMEA.
+This mode is simple and useful around measured elites, but it does not preserve multi-field couplings as strongly as GOMEA.
 
 ### Categorical Differential Evolution
 
@@ -77,6 +81,18 @@ GOMEA mechanics are documented in `docs/gomea.md`. Learned linkage is documented
 ### Evolutionary
 
 `evolutionary` combines random candidates, local mutations, categorical DE, and GOMEA into one proposal set. All candidates are deduplicated by hash before scheduling.
+
+### Family QD
+
+`family-qd` adds a family-aware quality-diversity layer:
+- It computes coarse profile-specific family descriptors from candidate structure.
+- It loads a DB-derived family archive whose cells keep validation-passed leaders by shape-local rank percentile.
+- It preserves every positive family leader as a proposal parent before random restarts.
+- It uses descriptor-stratified random generation with repeated family occupancy and one retry for negative-only cells.
+- It balances shape-aspect exploitation with broad-cell exploration.
+- It applies local mutation, categorical DE, and GOMEA around family/global elites when evidence exists.
+
+Family descriptors and archive entries are proposal metadata only. They do not shrink domains, change cache identity, or create validity rules.
 
 ## Elite And Transfer Sources
 
@@ -108,13 +124,13 @@ Each batch writes:
 - `config.manifest.csv`: intended shape/candidate/solution mapping.
 - `run/` or a unique run directory for build and structured-runner outputs.
 
-The production path requires `--runner-bin` unless using `--dry-run` or `--generate-only`. Batch execution can run serially or in parallel. Parallel execution is used when `--stop-on-error` is not requested.
+The production path requires `--runner-bin` unless using `--dry-run` or `--generate-only`. `--prepare-workers` controls parallel build/map/diagnostic/validation work. After all prepare workers exit, benchmarks run serially. A shared/exclusive APU gate at `EVOTENSILE_APU_LOCK_PATH` protects this invariant across cooperating processes and direct runner invocations.
 
 The default candidate batch size is chosen by a throughput heuristic that keeps enough candidate/shape batches to saturate available workers while respecting the profile's max candidate batch size. Use `--candidate-batch-size 1` for debugging or singleton failure attribution.
 
 ## Adaptive Sampling
 
-Adaptive sampling is enabled by default. The scheduler first runs a small number of samples per pair (`--adaptive-initial-samples`, default `3`), then repeatedly tops up only unresolved plausible contenders up to `--adaptive-max-rounds`.
+Adaptive sampling is enabled by default. The scheduler prepares candidates once, runs a small initial timing budget (`--adaptive-initial-samples`, default `3`), then repeatedly benchmarks only unresolved plausible contenders from those same artifacts. Adaptive rounds do not compile or validate.
 
 Timing-noise math and validation-gated top-up rules are documented in `docs/noisy_measurements.md`.
 
@@ -131,6 +147,6 @@ Outlier detection and repair math are documented in `docs/outlier_repair.md`.
 
 ## Excluded From Current Search
 
-The implemented search stack is cache-aware random/evolutionary proposal generation plus structured measurement and adaptive sampling. Surrogate/LFBO-style proposal generation is outside the current implementation.
+The implemented search stack is cache-aware random/evolutionary/family-QD proposal generation plus structured measurement and adaptive sampling. Family-leader-specific retiming, explicit bandit allocation, and surrogate/LFBO-style proposal generation are outside the current implementation.
 
 TensileLite prediction mechanisms such as Formocast/Origami are not hard pruning gates for this target. The profile keeps `PredictionThreshold=2.0`.

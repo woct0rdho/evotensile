@@ -113,7 +113,7 @@ DOMAINS: dict[str, list[Any]] = {
     "AssertSummationElementMultiple": [16, 1],
     "StorePriorityOpt": [True, False],
     # 0 means TensileLite auto-selects the store batch size; nonzero values cap it explicitly.
-    "NumElementsPerBatchStore": [10, 0, 1, 2, 4, 6, 8, 12, 14, 16, 20, 24, 32],
+    "NumElementsPerBatchStore": [0, 1, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 32],
     "StoreSyncOpt": [0, 1, 2, 4],
     "GroupLoadStore": [False, True],
     "LdsBlockSizePerPadA": [0, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192],
@@ -142,7 +142,6 @@ NT_HHS_WMMA_V1_OUTPUT_VECTOR_WIDTH = 1
 NT_HHS_MAX_VGPR = 256
 NT_HHS_MAX_LDS_BYTES = 65536
 NT_HHS_RANDOM_VALU_VGPR_HEADROOM = 192
-NT_HHS_RANDOM_TLDS2_PROBABILITY = 0.75
 NT_HHS_WORKSPACE_SIZE_PER_ELEM_C = 4
 NT_HHS_MAX_GSU_WORKSPACE_BYTES = 128 * 1024 * 1024
 _RANDOM_TLDS2_HEADROOM_MATRIX_INSTRUCTIONS: tuple[list[int], ...] = tuple(
@@ -470,56 +469,44 @@ def _unique_choices(values: Sequence[Any]) -> tuple[Any, ...]:
     return tuple(out)
 
 
-def _with_random_headroom_matrix(params: dict[str, Any]) -> dict[str, Any] | None:
-    ranked = _ranked_valid_matrix_instructions(
-        params,
-        lambda candidate_params: _valu_vgpr_lower_bound(candidate_params) <= NT_HHS_RANDOM_VALU_VGPR_HEADROOM,
-        rng=None,
-    )
-    if not ranked:
-        return None
-    for instruction in ranked[:8]:
-        candidate_params = _repair_linked_params({**params, "MatrixInstruction": instruction})
-        if _valu_vgpr_lower_bound(candidate_params) <= NT_HHS_RANDOM_VALU_VGPR_HEADROOM:
-            return candidate_params
-    return None
-
-
 def _repair_random_valu_vgpr_headroom(params: dict[str, Any], *, rng: random.Random) -> None:
     if _valu_vgpr_lower_bound(params) <= NT_HHS_RANDOM_VALU_VGPR_HEADROOM:
         return
 
-    best_variant = dict(params)
-    best_lower_bound = _valu_vgpr_lower_bound(best_variant)
-    target_variants = []
-    for overrides in (
-        {"ClusterLocalRead": 0},
-        {"PrefetchLocalRead": 0, "ClusterLocalRead": 0},
-        {"ScheduleIterAlg": 3, "PrefetchLocalRead": 0, "ClusterLocalRead": 0, "1LDSBuffer": 0},
-        {"ScheduleIterAlg": 1, "PrefetchLocalRead": 0, "ClusterLocalRead": 0, "1LDSBuffer": 0},
-        {"DepthU": 32, "ScheduleIterAlg": 3, "PrefetchLocalRead": 0, "ClusterLocalRead": 0, "1LDSBuffer": 0},
-        {"DepthU": 16, "ScheduleIterAlg": 3, "PrefetchLocalRead": 0, "ClusterLocalRead": 0, "1LDSBuffer": 0},
-        {
-            "GlobalSplitU": 1,
-            "DepthU": 16,
-            "ScheduleIterAlg": 3,
-            "PrefetchLocalRead": 0,
-            "ClusterLocalRead": 0,
-            "1LDSBuffer": 0,
-        },
-    ):
-        variant = _repair_linked_params({**params, **overrides})
-        candidate_variant = _with_random_headroom_matrix(variant) or variant
-        lower_bound = _valu_vgpr_lower_bound(candidate_variant)
-        if lower_bound < best_lower_bound:
-            best_variant = candidate_variant
-            best_lower_bound = lower_bound
-        if lower_bound <= NT_HHS_RANDOM_VALU_VGPR_HEADROOM:
-            target_variants.append(candidate_variant)
-            if len(target_variants) >= 3:
-                break
+    repair_genes = (
+        "DepthU",
+        "ScheduleIterAlg",
+        "PrefetchLocalRead",
+        "ClusterLocalRead",
+        "TransposeLDS",
+        "VectorWidthA",
+        "VectorWidthB",
+    )
+    candidates: list[tuple[int, int, dict[str, Any]]] = []
+    for name in repair_genes:
+        for value in DOMAINS[name]:
+            if value == params[name]:
+                continue
+            variant = _repair_linked_params({**params, name: value})
+            lower_bound = _valu_vgpr_lower_bound(variant)
+            candidates.append((int(lower_bound > NT_HHS_RANDOM_VALU_VGPR_HEADROOM), lower_bound, variant))
 
-    params.update(rng.choice(target_variants) if target_variants else best_variant)
+    ranked_matrices = _ranked_valid_matrix_instructions(
+        params,
+        lambda candidate_params: _valu_vgpr_lower_bound(candidate_params) <= NT_HHS_RANDOM_VALU_VGPR_HEADROOM,
+        rng=None,
+    )
+    for instruction in ranked_matrices[:16]:
+        variant = _repair_linked_params({**params, "MatrixInstruction": instruction})
+        lower_bound = _valu_vgpr_lower_bound(variant)
+        candidates.append((int(lower_bound > NT_HHS_RANDOM_VALU_VGPR_HEADROOM), lower_bound, variant))
+
+    if not candidates:
+        return
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    best_class = candidates[0][:2]
+    tied = [variant for invalid, lower_bound, variant in candidates if (invalid, lower_bound) == best_class]
+    params.update(rng.choice(tied))
 
 
 def _repair_matrix_instruction_dependent_params(params: dict[str, Any]) -> None:
@@ -929,6 +916,19 @@ def _random_domain_overrides(rng: random.Random) -> dict[str, Any]:
     return {name: rng.choice(values) for name, values in DOMAINS.items()}
 
 
+def _random_tlds0_direct_overrides(
+    rng: random.Random, *, target_shapes: Sequence[Shape] | None = None
+) -> dict[str, Any]:
+    params = defaulted_params(_random_domain_overrides(rng))
+    params["TransposeLDS"] = 0
+    params["GlobalSplitU"] = 1 if target_shapes else rng.choice(DOMAINS["GlobalSplitU"])
+    params = _repair_linked_params(params, rng=rng)
+    if _valu_vgpr_lower_bound(params) > NT_HHS_RANDOM_VALU_VGPR_HEADROOM:
+        _repair_random_valu_vgpr_headroom(params, rng=rng)
+    params["TransposeLDS"] = 0
+    return _repair_linked_params(params, rng=rng)
+
+
 def _random_tlds2_direct_overrides(
     rng: random.Random, *, target_shapes: Sequence[Shape] | None = None
 ) -> dict[str, Any]:
@@ -955,35 +955,28 @@ def _random_tlds2_direct_overrides(
     return _repair_linked_params(params, rng=rng)
 
 
-def _prefer_random_tlds2(params: dict[str, Any], *, rng: random.Random) -> None:
-    if rng.random() >= NT_HHS_RANDOM_TLDS2_PROBABILITY:
-        return
-    _apply_tlds2_required_params(params)
-    params["1LDSBuffer"] = 1
-    _repair_tlds2_lds_pad_blocks(params)
-
-
-def _random_mechanical_overrides(rng: random.Random) -> dict[str, Any]:
-    params = _repair_linked_params(defaulted_params(_random_domain_overrides(rng)), rng=rng)
-    _prefer_random_tlds2(params, rng=rng)
-    for _ in range(3):
-        _repair_random_valu_vgpr_headroom(params, rng=rng)
-        params = _repair_linked_params(params, rng=rng)
-        if _valu_vgpr_lower_bound(params) <= NT_HHS_RANDOM_VALU_VGPR_HEADROOM:
-            break
-    return params
-
-
 def random_candidate(
-    rng: random.Random, *, source: str = "random", target_shapes: Sequence[Shape] | None = None
+    rng: random.Random,
+    *,
+    source: str = "random",
+    target_shapes: Sequence[Shape] | None = None,
+    transpose_lds: int | None = None,
 ) -> Candidate:
+    if transpose_lds not in {None, 0, 2}:
+        raise ValueError("transpose_lds must be one of: 0, 2, or None")
     for _ in range(1000):
         try:
-            params = (
-                _random_tlds2_direct_overrides(rng, target_shapes=target_shapes)
-                if rng.random() < NT_HHS_RANDOM_TLDS2_PROBABILITY
-                else _random_mechanical_overrides(rng)
-            )
+            if transpose_lds == 0:
+                params = _random_tlds0_direct_overrides(rng, target_shapes=target_shapes)
+            elif transpose_lds == 2:
+                params = _random_tlds2_direct_overrides(rng, target_shapes=target_shapes)
+            else:
+                branch = rng.choice((0, 2))
+                params = (
+                    _random_tlds0_direct_overrides(rng, target_shapes=target_shapes)
+                    if branch == 0
+                    else _random_tlds2_direct_overrides(rng, target_shapes=target_shapes)
+                )
             candidate = make_candidate(params, source=source)
             if target_shapes and not all(
                 cheap_constraints(candidate.canonical_params(), shape=shape) for shape in target_shapes

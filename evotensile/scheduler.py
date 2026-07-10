@@ -1,12 +1,13 @@
 import contextlib
 import errno
+import json
 import math
 import os
 import random
 import time
 import uuid
 from collections.abc import Iterator
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
@@ -18,8 +19,9 @@ from .database import EvaluationInsert, EvaluationSummary, EvoTensileDB
 from .manifest import write_manifest
 from .profile import DEFAULT_PROFILE, TargetProfile
 from .protocol import BenchmarkProtocol
-from .runner import DEFAULT_TENSILELITE_BIN
+from .runner import DEFAULT_TENSILELITE_BIN, RunResult, run_tensilelite
 from .search.differential_evolution import differential_evolution_candidates
+from .search.family import family_stratified_random_candidates, load_family_archive
 from .search.gomea import gomea_candidates, gomea_neighborhood_candidates
 from .search.learned_linkage import (
     DEFAULT_MAX_CLUSTERS,
@@ -34,7 +36,16 @@ from .search.local_search import mutate_elites
 from .search.random_search import initial_random_batch
 from .search_space import cheap_constraints, explain_invalid_nt_hhs, random_candidate
 from .shapes import shape_from_id
-from .structured_runner import build_then_structured_benchmark
+from .solution_mapping import find_solution_yamls
+from .structured_runner import (
+    RunnablePair,
+    StructuredRunOutput,
+    build_runnable_pairs,
+    library_dir_from_build,
+    run_structured_phase,
+    validate_benchmark_samples,
+    validate_validation_samples,
+)
 from .tensilelite_diagnostics import attribution_inserts_from_diagnostics, run_tensilelite_diagnostics
 from .yaml_writer import write_tensilelite_yaml
 
@@ -76,15 +87,32 @@ class BatchIngestResult:
 
 
 @dataclass(frozen=True)
+class PreparedBatch:
+    planned: PlannedBatch
+    yaml_path: Path
+    manifest_path: Path
+    output_dir: Path
+    build_output_dir: Path
+    build_result: RunResult
+    library_dir: Path | None
+    validated_pairs: list[RunnablePair]
+    preparation_inserts: list[EvaluationInsert]
+    validation_result: StructuredRunOutput | None = None
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ExecutedBatch:
     planned: PlannedBatch
     yaml_path: Path
     manifest_path: Path
     output_dir: Path
     build_returncode: int | None = None
+    validation_returncode: int | None = None
     runner_returncode: int | None = None
     ingest: BatchIngestResult | None = None
     build_output_dir: Path | None = None
+    phase: str = "initial"
 
 
 @dataclass(frozen=True)
@@ -126,6 +154,7 @@ PROPOSAL_MODES = (
     "gomea",
     "seed-random-gomea",
     "evolutionary",
+    "family-qd",
 )
 DEFAULT_PROPOSAL = DEFAULT_PROFILE.default_proposal
 DEFAULT_NUM_RANDOM = DEFAULT_PROFILE.default_num_random
@@ -133,7 +162,7 @@ DEFAULT_COMPILE_THREADS = 1
 _COMPILE_CACHE_LOCK_POLL_S = 0.1
 
 
-def default_batch_workers() -> int:
+def default_prepare_workers() -> int:
     if hasattr(os, "sched_getaffinity"):
         try:
             return max(1, len(os.sched_getaffinity(0)))
@@ -147,15 +176,15 @@ def production_candidate_batch_size(
     candidate_count: int,
     shape_count: int,
     shape_batch_size: int,
-    batch_workers: int,
+    prepare_workers: int,
     max_candidate_batch_size: int,
 ) -> int:
-    if candidate_count <= 0 or batch_workers <= 0:
+    if candidate_count <= 0 or prepare_workers <= 0:
         return 1
     shape_batches = max(1, math.ceil(max(1, shape_count) / shape_batch_size))
     max_size = max(1, min(candidate_count, max_candidate_batch_size))
     for candidate_batch_size in range(max_size, 0, -1):
-        if math.ceil(candidate_count / candidate_batch_size) * shape_batches >= batch_workers:
+        if math.ceil(candidate_count / candidate_batch_size) * shape_batches >= prepare_workers:
             return candidate_batch_size
     return 1
 
@@ -535,6 +564,31 @@ def _shape_aware_random_batch(num_random: int, *, seed: int, target_shapes: list
     return list(out.values())
 
 
+def _family_archive_leaders(
+    db: EvoTensileDB,
+    *,
+    problem_type_hash: str | None,
+    benchmark_protocol_hash: str | None,
+    shape_id: str | None,
+    target_shapes: list[Shape] | None,
+    elite_count: int,
+) -> list[Candidate]:
+    if elite_count <= 0:
+        return []
+    archive_shapes = target_shapes
+    if shape_id is not None and target_shapes:
+        archive_shapes = [shape for shape in target_shapes if shape.id == shape_id]
+    entries = load_family_archive(
+        db,
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+        shapes=archive_shapes,
+        min_samples=1,
+        limit=None,
+    )
+    return _dedupe_candidates([entry.leader for entry in entries])
+
+
 def propose_candidates(
     db: EvoTensileDB,
     *,
@@ -572,6 +626,7 @@ def propose_candidates(
         "seed-random-de",
         "seed-random-gomea",
         "evolutionary",
+        "family-qd",
     }
     needs_elites = proposal in {
         "local",
@@ -581,6 +636,7 @@ def propose_candidates(
         "gomea",
         "seed-random-gomea",
         "evolutionary",
+        "family-qd",
     }
     elites = (
         _ranked_elites(
@@ -610,13 +666,37 @@ def propose_candidates(
         candidates.extend(transfer_elites)
         elites = _dedupe_candidates([*elites, *transfer_elites])
 
-    if uses_random:
-        candidates.extend(_shape_aware_random_batch(num_random, seed=seed, target_shapes=target_shapes))
+    if proposal == "family-qd":
+        family_leaders = _family_archive_leaders(
+            db,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            shape_id=shape_id,
+            target_shapes=target_shapes,
+            elite_count=elite_count,
+        )
+        candidates.extend(family_leaders)
+        elites = _dedupe_candidates([*family_leaders, *elites])
 
-    if proposal in {"local", "seed-random-local", "evolutionary"} and local_count > 0:
+    if uses_random:
+        random_batch = (
+            family_stratified_random_candidates(
+                db,
+                num_random,
+                seed=seed,
+                target_shapes=target_shapes,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+            )
+            if proposal == "family-qd"
+            else _shape_aware_random_batch(num_random, seed=seed, target_shapes=target_shapes)
+        )
+        candidates.extend(random_batch)
+
+    if proposal in {"local", "seed-random-local", "evolutionary", "family-qd"} and local_count > 0:
         candidates.extend(mutate_elites(elites, count=local_count, seed=seed + 1009, mutation_rate=mutation_rate))
 
-    if proposal in {"de", "seed-random-de", "evolutionary"} and de_count > 0:
+    if proposal in {"de", "seed-random-de", "evolutionary", "family-qd"} and de_count > 0:
         parents = _dedupe_candidates(elites)
         candidates.extend(
             differential_evolution_candidates(
@@ -629,7 +709,7 @@ def propose_candidates(
             )
         )
 
-    if proposal in {"gomea", "seed-random-gomea", "evolutionary"} and gomea_count > 0:
+    if proposal in {"gomea", "seed-random-gomea", "evolutionary", "family-qd"} and gomea_count > 0:
         parents = _dedupe_candidates(elites)
         linkage_models, _ = _learned_linkage_models_for_proposal(
             db,
@@ -651,6 +731,7 @@ def propose_candidates(
                 count=neighborhood_budget,
                 max_elites=None,
                 exclude={candidate.hash for candidate in candidates},
+                seed=seed + 2903,
             )
         )
         candidates.extend(
@@ -725,6 +806,7 @@ def _missing_candidate_indices_by_shape(
     candidates: list[Candidate],
     problem_type_hash: str,
     benchmark_protocol_hash: str,
+    validation_protocol_hash: str,
     min_samples: int,
     ignore_cache: bool = False,
 ) -> dict[int, tuple[tuple[int, int, bool], ...]]:
@@ -741,7 +823,7 @@ def _missing_candidate_indices_by_shape(
         )
         validated = db.validated_cache_entries(
             problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
+            validation_protocol_hash=validation_protocol_hash,
             shape_ids=shape_ids,
             candidate_hashes=candidate_hashes,
         )
@@ -818,6 +900,7 @@ def plan_batches(
     candidates: list[Candidate],
     problem_type_hash: str,
     benchmark_protocol_hash: str,
+    validation_protocol_hash: str,
     min_samples: int = 1,
     candidate_batch_size: int = 32,
     shape_batch_size: int = 100,
@@ -834,6 +917,7 @@ def plan_batches(
                 candidates=candidate_chunk,
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
+                validation_protocol_hash=validation_protocol_hash,
                 min_samples=min_samples,
                 ignore_cache=ignore_cache,
             )
@@ -967,31 +1051,6 @@ def write_batch_inputs(
     return yaml_path, manifest_path, run_dir
 
 
-def _record_batch_status(
-    db: EvoTensileDB,
-    batch: PlannedBatch,
-    *,
-    status: str,
-    run_id: str | None,
-    problem_type_hash: str,
-    benchmark_protocol_hash: str,
-) -> int:
-    evaluations = [
-        EvaluationInsert(
-            shape_id=shape.id,
-            candidate_hash=candidate.hash,
-            run_id=run_id,
-            status=status,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-        )
-        for shape in batch.shapes
-        for candidate in batch.candidates
-    ]
-    db.insert_evaluations(evaluations)
-    return len(evaluations)
-
-
 def _ingest_result_from_inserts(
     inserts: list[EvaluationInsert], *, errors: list[str] | None = None
 ) -> BatchIngestResult:
@@ -1072,7 +1131,37 @@ def _adaptive_topup_groups(
     return groups
 
 
-def _execute_current_batch(
+def _record_structured_run(
+    db: EvoTensileDB,
+    output: StructuredRunOutput,
+    *,
+    yaml_path: Path,
+    output_dir: Path,
+    pair_count: int,
+) -> None:
+    db.insert_run(
+        output.run_id,
+        yaml_path=str(yaml_path),
+        output_dir=str(output_dir),
+        status="timeout" if output.timed_out else "ok" if output.ok else "failed",
+        returncode=output.returncode,
+        metadata_json=json.dumps(
+            {
+                "command": output.command,
+                "duration_s": output.duration_s,
+                "mode": output.mode,
+                "pair_count": pair_count,
+                "results_path": str(output.results_path),
+                "stderr_path": str(output.stderr_path),
+                "stdout_path": str(output.stdout_path),
+                "timed_out": output.timed_out,
+            },
+            sort_keys=True,
+        ),
+    )
+
+
+def _prepare_current_batch(
     db: EvoTensileDB,
     current: PlannedBatch,
     *,
@@ -1081,158 +1170,278 @@ def _execute_current_batch(
     protocol: BenchmarkProtocol,
     problem_type_hash: str,
     benchmark_protocol_hash: str,
+    validation_protocol_hash: str,
     tensilelite_bin: str | Path,
     compile_threads: int | None,
-    runner_bin: str | Path | None,
+    runner_bin: str | Path,
     build_timeout_s: float | None,
     runner_timeout_s: float | None,
-    generate_only: bool = False,
-    compile_cache_root: str | Path | None = None,
-) -> tuple[ExecutedBatch, bool]:
-    current_protocol = protocol.with_overrides(
-        num_benchmarks=current.samples_per_pair,
-        num_elements_to_validate=protocol.num_elements_to_validate if current.requires_validation else 0,
-    )
+    compile_cache_root: str | Path | None,
+) -> PreparedBatch:
+    build_protocol = protocol.with_overrides(num_benchmarks=current.samples_per_pair)
     yaml_path, manifest_path, run_dir = write_batch_inputs(
         current,
         output_root,
         target_profile=target_profile,
-        protocol=current_protocol,
-        unique_run_dir=not generate_only,
+        protocol=build_protocol,
+        unique_run_dir=True,
     )
-    if generate_only:
-        return ExecutedBatch(current, yaml_path, manifest_path, run_dir), False
-
     compile_cache_dir = _compile_cache_dir(
         compile_cache_root,
         current,
         target_profile=target_profile,
-        protocol=current_protocol,
+        protocol=build_protocol,
     )
     build_dir = compile_cache_dir or run_dir
-    if compile_cache_dir is not None:
-        with _compile_cache_lock(compile_cache_dir):
-            build_result, structured_result, inserts, structured_errors = build_then_structured_benchmark(
-                yaml_path,
-                manifest_path,
-                run_dir,
-                shapes=current.shapes,
-                candidates=current.candidates,
-                db=db,
-                tensilelite_bin=tensilelite_bin,
-                compile_threads=compile_threads,
-                target_profile=target_profile,
-                protocol=current_protocol,
-                runner_bin=runner_bin,
-                trust_prior_validation=not current.requires_validation,
-                build_timeout_s=build_timeout_s,
-                runner_timeout_s=runner_timeout_s,
-                build_dir=compile_cache_dir,
-                use_build_cache=_has_tensilelite_cache(compile_cache_dir),
-            )
-            if build_result.ok:
-                _mark_compile_cache_success(compile_cache_dir)
-    else:
-        build_result, structured_result, inserts, structured_errors = build_then_structured_benchmark(
+
+    def build() -> RunResult:
+        return run_tensilelite(
             yaml_path,
-            manifest_path,
-            run_dir,
-            shapes=current.shapes,
-            candidates=current.candidates,
-            db=db,
-            tensilelite_bin=tensilelite_bin,
-            compile_threads=compile_threads,
-            target_profile=target_profile,
-            protocol=current_protocol,
-            runner_bin=runner_bin,
-            trust_prior_validation=not current.requires_validation,
-            build_timeout_s=build_timeout_s,
-            runner_timeout_s=runner_timeout_s,
-        )
-    if build_result.timed_out and len(current.candidates) == 1:
-        recorded = _record_batch_status(
-            db,
-            current,
-            status="build_timeout",
-            run_id=build_result.run_id,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-        )
-        ingest = BatchIngestResult(inserted=0, unmapped=0, status_counts={"build_timeout": recorded})
-    elif not build_result.ok and len(current.candidates) == 1:
-        recorded = _record_batch_status(
-            db,
-            current,
-            status="build_failed",
-            run_id=build_result.run_id,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-        )
-        ingest = BatchIngestResult(inserted=0, unmapped=0, status_counts={"build_failed": recorded})
-    elif structured_errors:
-        status_counts = {}
-        if structured_result is not None and structured_result.timed_out:
-            recorded = _record_batch_status(
-                db,
-                current,
-                status="runner_timeout",
-                run_id=None,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
-            )
-            status_counts["runner_timeout"] = recorded
-        ingest = BatchIngestResult(inserted=0, unmapped=0, status_counts=status_counts, errors=structured_errors)
-    else:
-        db.insert_evaluations(inserts)
-        ingest = _ingest_result_from_inserts(inserts)
-    runner_returncode = structured_result.returncode if structured_result is not None else None
-    failed = not build_result.ok or (structured_result is not None and not structured_result.ok) or not ingest.ok
-    accepted_candidate_hashes = {item.candidate_hash for item in inserts if item.status == "ok"}
-    failed_candidate_hashes = {
-        candidate.hash for candidate in current.candidates if candidate.hash not in accepted_candidate_hashes
-    }
-    if (
-        not build_result.ok
-        and not structured_errors
-        and (structured_result is None or structured_result.ok)
-        and len(current.candidates) > 1
-        and failed_candidate_hashes
-    ):
-        diagnostics = run_tensilelite_diagnostics(
-            yaml_path,
-            manifest_path,
             build_dir,
             tensilelite_bin=tensilelite_bin,
             db=db,
-            target_profile=target_profile,
-            protocol=current_protocol,
+            build_only=True,
+            cpu_threads=compile_threads,
+            global_parameters=target_profile.global_parameter_items(build_protocol),
             timeout_s=build_timeout_s,
+            use_cache=compile_cache_dir is not None and _has_tensilelite_cache(compile_cache_dir),
         )
-        diagnostic_inserts = attribution_inserts_from_diagnostics(
-            diagnostics.records,
-            planned_shape_ids=[shape.id for shape in current.shapes],
-            failed_candidate_hashes=failed_candidate_hashes,
-            run_id=diagnostics.run_id,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            unattributed_status="build_timeout_unattributed" if build_result.timed_out else "build_failed_unattributed",
+
+    if compile_cache_dir is None:
+        build_result = build()
+    else:
+        with _compile_cache_lock(compile_cache_dir):
+            build_result = build()
+            if build_result.ok:
+                _mark_compile_cache_success(compile_cache_dir)
+
+    preparation_inserts: list[EvaluationInsert] = []
+    errors: list[str] = []
+    planned_pairs = {(shape.id, candidate.hash) for shape in current.shapes for candidate in current.candidates}
+    solution_yamls = [str(path) for path in find_solution_yamls([build_dir])]
+    runnable, missing = build_runnable_pairs(
+        manifest_path=manifest_path,
+        solution_yaml_paths=solution_yamls,
+        planned_pairs=planned_pairs,
+    )
+    library_dir = library_dir_from_build(build_dir)
+
+    if not build_result.ok and len(current.candidates) == 1 and not runnable:
+        status = "build_timeout" if build_result.timed_out else "build_failed"
+        preparation_inserts = [
+            EvaluationInsert(
+                shape_id=shape.id,
+                candidate_hash=current.candidates[0].hash,
+                run_id=build_result.run_id,
+                status=status,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+            )
+            for shape in current.shapes
+        ]
+        runnable = []
+    elif build_result.ok:
+        preparation_inserts.extend(
+            EvaluationInsert(
+                shape_id=item.shape_id,
+                candidate_hash=item.candidate_hash,
+                run_id=build_result.run_id,
+                status=item.status,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+            )
+            for item in missing
         )
-        db.insert_evaluations(diagnostic_inserts)
-        ingest = _ingest_result_from_inserts([*inserts, *diagnostic_inserts])
-        failed = (
-            failed or not diagnostics.ok or any(item.status.endswith("_unattributed") for item in diagnostic_inserts)
-        )
-    executed = ExecutedBatch(
+    elif len(current.candidates) > 1:
+        accepted_hashes = {pair.candidate_hash for pair in runnable}
+        failed_hashes = {candidate.hash for candidate in current.candidates} - accepted_hashes
+        if failed_hashes:
+            diagnostics = run_tensilelite_diagnostics(
+                yaml_path,
+                manifest_path,
+                build_dir,
+                tensilelite_bin=tensilelite_bin,
+                db=db,
+                target_profile=target_profile,
+                protocol=build_protocol,
+                timeout_s=build_timeout_s,
+            )
+            diagnostic_inserts = attribution_inserts_from_diagnostics(
+                diagnostics.records,
+                planned_shape_ids=[shape.id for shape in current.shapes],
+                failed_candidate_hashes=failed_hashes,
+                run_id=diagnostics.run_id,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                unattributed_status=(
+                    "build_timeout_unattributed" if build_result.timed_out else "build_failed_unattributed"
+                ),
+            )
+            preparation_inserts.extend(diagnostic_inserts)
+
+    validated_pairs: list[RunnablePair] = []
+    validation_result: StructuredRunOutput | None = None
+    if runnable and library_dir is None:
+        errors.append("compiled artifact has no runnable library directory")
+    elif runnable:
+        assert library_dir is not None
+        if current.requires_validation:
+            validation_protocol = protocol.with_overrides(num_benchmarks=1)
+            validation_result = run_structured_phase(
+                mode="validate",
+                run_dir=run_dir,
+                pairs=runnable,
+                shapes=current.shapes,
+                protocol=validation_protocol,
+                runner_bin=runner_bin,
+                library_dir=library_dir,
+                timeout_s=runner_timeout_s,
+            )
+            _record_structured_run(
+                db,
+                validation_result,
+                yaml_path=yaml_path,
+                output_dir=run_dir,
+                pair_count=len(runnable),
+            )
+            try:
+                outcome = validate_validation_samples(
+                    validation_result.samples,
+                    runnable_pairs=runnable,
+                    problem_type_hash=problem_type_hash,
+                    validation_protocol_hash=validation_protocol_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                    run_id=validation_result.run_id,
+                    runner_returncode=validation_result.returncode,
+                )
+            except Exception as exc:
+                errors.append(str(exc))
+            else:
+                db.insert_validations(outcome.validations)
+                preparation_inserts.extend(outcome.negative_evaluations)
+                validated_pairs = outcome.passed_pairs
+        else:
+            cached = db.validated_cache_entries(
+                problem_type_hash=problem_type_hash,
+                validation_protocol_hash=validation_protocol_hash,
+                shape_ids=[shape.id for shape in current.shapes],
+                candidate_hashes=[candidate.hash for candidate in current.candidates],
+            )
+            validated_pairs = [pair for pair in runnable if (pair.shape_id, pair.candidate_hash) in cached]
+            if len(validated_pairs) != len(runnable):
+                errors.append("prepared artifact contains pairs without cached correctness verification")
+
+    if preparation_inserts:
+        db.insert_evaluations(preparation_inserts)
+    return PreparedBatch(
         planned=current,
         yaml_path=yaml_path,
         manifest_path=manifest_path,
         output_dir=run_dir,
-        build_returncode=build_result.returncode,
-        runner_returncode=runner_returncode,
-        ingest=ingest,
         build_output_dir=build_dir,
+        build_result=build_result,
+        library_dir=library_dir,
+        validated_pairs=validated_pairs,
+        preparation_inserts=preparation_inserts,
+        validation_result=validation_result,
+        errors=errors,
     )
-    return executed, failed
+
+
+def _benchmark_prepared_pairs(
+    db: EvoTensileDB,
+    prepared: PreparedBatch,
+    *,
+    pairs: list[RunnablePair],
+    protocol: BenchmarkProtocol,
+    problem_type_hash: str,
+    benchmark_protocol_hash: str,
+    runner_bin: str | Path,
+    runner_timeout_s: float | None,
+    phase: str,
+    include_preparation: bool = False,
+) -> ExecutedBatch:
+    preparation_inserts = prepared.preparation_inserts if include_preparation else []
+    preparation_ingest = _ingest_result_from_inserts(preparation_inserts, errors=prepared.errors)
+    if not pairs or prepared.library_dir is None or prepared.errors:
+        return ExecutedBatch(
+            planned=prepared.planned,
+            yaml_path=prepared.yaml_path,
+            manifest_path=prepared.manifest_path,
+            output_dir=prepared.output_dir,
+            build_returncode=prepared.build_result.returncode,
+            validation_returncode=(
+                prepared.validation_result.returncode if prepared.validation_result is not None else None
+            ),
+            ingest=preparation_ingest,
+            build_output_dir=prepared.build_output_dir,
+            phase=phase,
+        )
+
+    benchmark_protocol = protocol.with_overrides(num_elements_to_validate=0)
+    output = run_structured_phase(
+        mode="benchmark",
+        run_dir=prepared.output_dir,
+        pairs=pairs,
+        shapes=prepared.planned.shapes,
+        protocol=benchmark_protocol,
+        runner_bin=runner_bin,
+        library_dir=prepared.library_dir,
+        timeout_s=runner_timeout_s,
+    )
+    _record_structured_run(
+        db,
+        output,
+        yaml_path=prepared.yaml_path,
+        output_dir=prepared.output_dir,
+        pair_count=len(pairs),
+    )
+    errors = list(prepared.errors)
+    if output.timed_out:
+        timing_inserts = [
+            EvaluationInsert(
+                shape_id=pair.shape_id,
+                candidate_hash=pair.candidate_hash,
+                run_id=output.run_id,
+                status="runner_timeout",
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                solution_index=pair.library_solution_index,
+            )
+            for pair in pairs
+        ]
+        errors.append(f"benchmark phase timed out after {runner_timeout_s} seconds")
+    else:
+        try:
+            timing_inserts = validate_benchmark_samples(
+                output.samples,
+                runnable_pairs=pairs,
+                protocol=benchmark_protocol,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                run_id=output.run_id,
+                runner_returncode=output.returncode,
+            )
+        except Exception as exc:
+            timing_inserts = []
+            errors.append(str(exc))
+    if timing_inserts:
+        db.insert_evaluations(timing_inserts)
+    combined = [*preparation_inserts, *timing_inserts]
+    return ExecutedBatch(
+        planned=prepared.planned,
+        yaml_path=prepared.yaml_path,
+        manifest_path=prepared.manifest_path,
+        output_dir=prepared.output_dir,
+        build_returncode=prepared.build_result.returncode,
+        validation_returncode=(
+            prepared.validation_result.returncode if prepared.validation_result is not None else None
+        ),
+        runner_returncode=output.returncode,
+        ingest=_ingest_result_from_inserts(combined, errors=errors),
+        build_output_dir=prepared.build_output_dir,
+        phase=phase,
+    )
 
 
 def execute_schedule(
@@ -1259,109 +1468,28 @@ def execute_schedule(
     adaptive_policy: AdaptivePolicy | None = None,
     adaptive_initial_samples: int = 3,
     adaptive_max_rounds: int = 4,
-    batch_workers: int | None = None,
+    prepare_workers: int | None = None,
     compile_cache_root: str | Path | None = None,
 ) -> ScheduleResult:
     if not dry_run and not generate_only and runner_bin is None:
         raise ValueError("--runner-bin is required")
+    if prepare_workers is not None and prepare_workers <= 0:
+        raise ValueError("prepare_workers must be positive")
+    if adaptive_policy is not None and adaptive_initial_samples <= 0:
+        raise ValueError("adaptive_initial_samples must be positive")
+    if adaptive_max_rounds < 0:
+        raise ValueError("adaptive_max_rounds must be non-negative")
 
     protocol = protocol or target_profile.default_protocol
-    resolved_batch_workers = default_batch_workers() if batch_workers is None else batch_workers
+    resolved_prepare_workers = default_prepare_workers() if prepare_workers is None else prepare_workers
     problem_type_hash = target_profile.problem_type_hash
     benchmark_protocol_hash = target_profile.benchmark_protocol_hash(protocol)
+    validation_protocol_hash = protocol.validation_protocol_hash()
     build_timeout_s = _resolve_timeout(build_timeout_s, target_profile.default_build_timeout_s)
     runner_timeout_s = _resolve_timeout(runner_timeout_s, target_profile.default_runner_timeout_s)
-
-    if adaptive_policy is not None:
-        if adaptive_initial_samples <= 0:
-            raise ValueError("adaptive_initial_samples must be positive")
-        if adaptive_max_rounds < 0:
-            raise ValueError("adaptive_max_rounds must be non-negative")
-        initial_protocol = protocol.with_overrides(num_benchmarks=adaptive_initial_samples)
-        initial = execute_schedule(
-            db,
-            shapes=shapes,
-            candidates=candidates,
-            output_root=output_root,
-            target_profile=target_profile,
-            protocol=initial_protocol,
-            min_samples=adaptive_initial_samples,
-            candidate_batch_size=candidate_batch_size,
-            shape_batch_size=shape_batch_size,
-            ignore_cache=ignore_cache,
-            max_batches=max_batches,
-            dry_run=dry_run,
-            generate_only=generate_only,
-            tensilelite_bin=tensilelite_bin,
-            compile_threads=compile_threads,
-            keep_going=keep_going,
-            runner_bin=runner_bin,
-            build_timeout_s=build_timeout_s,
-            runner_timeout_s=runner_timeout_s,
-            batch_workers=resolved_batch_workers,
-            compile_cache_root=compile_cache_root,
-        )
-        planned = list(initial.planned_batches)
-        executed = list(initial.executed_batches)
-        if dry_run or generate_only:
-            return ScheduleResult(planned_batches=planned, executed_batches=executed, adaptive_rounds=0)
-        completed_rounds = 0
-        for _ in range(adaptive_max_rounds):
-            groups = _adaptive_topup_groups(
-                db,
-                shapes=shapes,
-                candidates=candidates,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
-                policy=adaptive_policy,
-                min_samples=adaptive_initial_samples,
-            )
-            if not groups:
-                break
-            ran_round = False
-            for target_samples, group_shapes, group_candidates in groups:
-                topup = execute_schedule(
-                    db,
-                    shapes=group_shapes,
-                    candidates=group_candidates,
-                    output_root=output_root,
-                    target_profile=target_profile,
-                    protocol=protocol.with_overrides(num_benchmarks=target_samples),
-                    min_samples=target_samples,
-                    candidate_batch_size=candidate_batch_size,
-                    shape_batch_size=shape_batch_size,
-                    ignore_cache=False,
-                    max_batches=None,
-                    dry_run=False,
-                    generate_only=False,
-                    tensilelite_bin=tensilelite_bin,
-                    compile_threads=compile_threads,
-                    keep_going=keep_going,
-                    runner_bin=runner_bin,
-                    build_timeout_s=build_timeout_s,
-                    runner_timeout_s=runner_timeout_s,
-                    batch_workers=resolved_batch_workers,
-                    compile_cache_root=compile_cache_root,
-                )
-                planned.extend(topup.planned_batches)
-                executed.extend(topup.executed_batches)
-                if topup.executed_batches:
-                    ran_round = True
-                if topup.executed_batches and not keep_going:
-                    last_ingest = topup.executed_batches[-1].ingest
-                    if last_ingest is not None and not last_ingest.ok:
-                        return ScheduleResult(
-                            planned_batches=planned, executed_batches=executed, adaptive_rounds=completed_rounds
-                        )
-            if not ran_round:
-                break
-            completed_rounds += 1
-        return ScheduleResult(planned_batches=planned, executed_batches=executed, adaptive_rounds=completed_rounds)
-
-    if resolved_batch_workers <= 0:
-        raise ValueError("batch_workers must be positive")
-
-    target_samples = max(min_samples, protocol.num_benchmarks)
+    initial_samples = (
+        adaptive_initial_samples if adaptive_policy is not None else max(min_samples, protocol.num_benchmarks)
+    )
 
     db.init()
     db.register_candidates(candidates)
@@ -1380,7 +1508,8 @@ def execute_schedule(
         candidates=candidates,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
-        min_samples=target_samples,
+        validation_protocol_hash=validation_protocol_hash,
+        min_samples=initial_samples,
         candidate_batch_size=candidate_batch_size,
         shape_batch_size=shape_batch_size,
         ignore_cache=ignore_cache,
@@ -1388,92 +1517,140 @@ def execute_schedule(
     )
     if dry_run:
         return ScheduleResult(planned_batches=planned)
+    if generate_only:
+        generated = []
+        for batch in planned:
+            batch_protocol = protocol.with_overrides(num_benchmarks=batch.samples_per_pair)
+            yaml_path, manifest_path, run_dir = write_batch_inputs(
+                batch,
+                output_root,
+                target_profile=target_profile,
+                protocol=batch_protocol,
+            )
+            generated.append(
+                ExecutedBatch(
+                    planned=batch,
+                    yaml_path=yaml_path,
+                    manifest_path=manifest_path,
+                    output_dir=run_dir,
+                    phase="generated",
+                )
+            )
+        return ScheduleResult(planned_batches=planned, executed_batches=generated)
 
-    executed: list[ExecutedBatch] = []
-    planned_batches = list(planned)
-    batch_cursor = 0
-    pending_current_batches: list[PlannedBatch] = []
-    stop_requested = False
+    assert runner_bin is not None
 
-    def current_batches_for_planned(batch: PlannedBatch) -> list[PlannedBatch]:
-        # Recheck just before execution so a resumed run skips observations ingested by earlier batches.
-        missing_by_shape = _missing_candidate_indices_by_shape(
+    def prepare(batch: PlannedBatch) -> PreparedBatch:
+        return _prepare_current_batch(
             db,
-            shapes=batch.shapes,
-            candidates=batch.candidates,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            min_samples=target_samples,
-            ignore_cache=ignore_cache,
-        )
-        if not missing_by_shape:
-            return []
-        return _pair_exact_batches(
-            batch_index_start=batch.batch_index,
-            shapes=batch.shapes,
-            candidates=batch.candidates,
-            missing_by_shape=missing_by_shape,
-        )
-
-    def execute_current(current: PlannedBatch) -> tuple[ExecutedBatch, bool]:
-        return _execute_current_batch(
-            db,
-            current,
+            batch,
             output_root=output_root,
             target_profile=target_profile,
             protocol=protocol,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
+            validation_protocol_hash=validation_protocol_hash,
             tensilelite_bin=tensilelite_bin,
             compile_threads=compile_threads,
             runner_bin=runner_bin,
             build_timeout_s=build_timeout_s,
             runner_timeout_s=runner_timeout_s,
-            generate_only=generate_only,
             compile_cache_root=compile_cache_root,
         )
 
-    def handle_result(
-        current: PlannedBatch,
-        result: tuple[ExecutedBatch, bool],
-    ) -> None:
-        nonlocal stop_requested
-        executed_batch, failed = result
-        executed.append(executed_batch)
-        if failed and not keep_going:
-            stop_requested = True
+    # Phase 1: all compilation, mapping, diagnostics, and correctness verification.
+    # Exiting the executor is the hard barrier before any timing begins.
+    with ThreadPoolExecutor(max_workers=resolved_prepare_workers) as executor:
+        prepared = list(executor.map(prepare, planned))
 
-    effective_workers = resolved_batch_workers if keep_going and not generate_only else 1
-    if effective_workers == 1:
-        while batch_cursor < len(planned_batches) and not stop_requested:
-            batch = planned_batches[batch_cursor]
-            batch_cursor += 1
-            for current in current_batches_for_planned(batch):
-                handle_result(current, execute_current(current))
-                if stop_requested:
-                    break
-        return ScheduleResult(planned_batches=planned_batches, executed_batches=executed)
+    executed: list[ExecutedBatch] = []
+    pair_owner: dict[tuple[str, str], tuple[PreparedBatch, RunnablePair]] = {}
 
-    futures: dict[Future[tuple[ExecutedBatch, bool]], PlannedBatch] = {}
-    with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-        while (batch_cursor < len(planned_batches) or pending_current_batches or futures) and not stop_requested:
-            while len(futures) < effective_workers and not stop_requested:
-                if pending_current_batches:
-                    current = pending_current_batches.pop(0)
-                elif batch_cursor < len(planned_batches):
-                    batch = planned_batches[batch_cursor]
-                    batch_cursor += 1
-                    pending_current_batches.extend(current_batches_for_planned(batch))
-                    continue
-                else:
-                    break
-                futures[executor.submit(execute_current, current)] = current
-            if not futures:
-                continue
-            done, _ = wait(futures, return_when=FIRST_COMPLETED)
-            for future in done:
-                current = futures.pop(future)
-                handle_result(current, future.result())
-                if stop_requested:
-                    break
-    return ScheduleResult(planned_batches=planned_batches, executed_batches=executed)
+    # Phase 2: one benchmark subprocess at a time, after every prepare worker has exited.
+    for item in prepared:
+        for pair in item.validated_pairs:
+            pair_owner[(pair.shape_id, pair.candidate_hash)] = (item, pair)
+        benchmark = _benchmark_prepared_pairs(
+            db,
+            item,
+            pairs=item.validated_pairs,
+            protocol=protocol.with_overrides(num_benchmarks=item.planned.samples_per_pair),
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            runner_bin=runner_bin,
+            runner_timeout_s=runner_timeout_s,
+            phase="initial",
+            include_preparation=True,
+        )
+        executed.append(benchmark)
+        if not keep_going and benchmark.ingest is not None and not benchmark.ingest.ok:
+            return ScheduleResult(planned_batches=planned, executed_batches=executed)
+
+    if adaptive_policy is None:
+        return ScheduleResult(planned_batches=planned, executed_batches=executed)
+
+    completed_rounds = 0
+    for _ in range(adaptive_max_rounds):
+        groups = _adaptive_topup_groups(
+            db,
+            shapes=shapes,
+            candidates=candidates,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            policy=adaptive_policy,
+            min_samples=adaptive_initial_samples,
+        )
+        requests: dict[tuple[int, int], tuple[PreparedBatch, list[RunnablePair]]] = {}
+        for target_samples, group_shapes, group_candidates in groups:
+            counts = db.reusable_cache_entry_counts(
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                shape_ids=[shape.id for shape in group_shapes],
+                candidate_hashes=[candidate.hash for candidate in group_candidates],
+            )
+            for shape in group_shapes:
+                for candidate in group_candidates:
+                    owner = pair_owner.get((shape.id, candidate.hash))
+                    if owner is None:
+                        continue
+                    current_samples = counts.get((shape.id, candidate.hash), {}).get("ok", 0)
+                    remaining = target_samples - current_samples
+                    if remaining <= 0:
+                        continue
+                    prepared_batch, pair = owner
+                    key = (id(prepared_batch), remaining)
+                    request = requests.setdefault(key, (prepared_batch, []))
+                    request[1].append(pair)
+        if not requests:
+            break
+
+        ran_round = False
+        for (_, remaining), (prepared_batch, pairs) in requests.items():
+            topup = _benchmark_prepared_pairs(
+                db,
+                prepared_batch,
+                pairs=pairs,
+                protocol=protocol.with_overrides(num_benchmarks=remaining),
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                runner_bin=runner_bin,
+                runner_timeout_s=runner_timeout_s,
+                phase="adaptive",
+            )
+            executed.append(topup)
+            ran_round = True
+            if not keep_going and topup.ingest is not None and not topup.ingest.ok:
+                return ScheduleResult(
+                    planned_batches=planned,
+                    executed_batches=executed,
+                    adaptive_rounds=completed_rounds,
+                )
+        if not ran_round:
+            break
+        completed_rounds += 1
+
+    return ScheduleResult(
+        planned_batches=planned,
+        executed_batches=executed,
+        adaptive_rounds=completed_rounds,
+    )

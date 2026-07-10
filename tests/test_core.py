@@ -1,7 +1,7 @@
 from evotensile.search_space import DOMAINS
 from evotensile.shapes import pilot_100_shapes
 from evotensile.yaml_writer import tensilelite_config
-from tests.helpers import DOCUMENTED_WINNER_CANDIDATE, sample_candidates
+from tests.helpers import sample_candidates
 
 
 def test_expanded_space_contains_artifact_backed_knobs():
@@ -10,7 +10,7 @@ def test_expanded_space_contains_artifact_backed_knobs():
     assert 16 in DOMAINS["WorkGroupMapping"]
     assert 64 in DOMAINS["StaggerU"]
     assert True in DOMAINS["GroupLoadStore"]
-    assert DOCUMENTED_WINNER_CANDIDATE.canonical_params()["NumElementsPerBatchStore"] == 10
+    assert 10 in DOMAINS["NumElementsPerBatchStore"]
 
 
 def test_yaml_shape():
