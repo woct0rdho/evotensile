@@ -4,7 +4,7 @@ This document describes EvoTensile's Gene-pool Optimal Mixing Evolutionary Algor
 
 ## Role In EvoTensile
 
-GOMEA is a proposal generator used by `schedule-batches` through proposal modes such as `gomea`, `seed-random-gomea`, and `evolutionary`. It produces new complete TensileLite candidates from validation-passed parent candidates already stored in the SQLite database.
+GOMEA is a proposal generator used by `schedule-batches` through proposal modes such as `gomea`, `seed-random-gomea`, `evolutionary`, and `family-qd`. It produces new complete TensileLite candidates from validation-passed parent candidates already stored in the SQLite database.
 
 GOMEA does not rank final winners and does not change validity. Its output still goes through candidate canonicalization, rule checks, TensileLite build/codegen, structured validation, timing ingestion, and DB ranking like any other proposal source.
 
@@ -34,33 +34,34 @@ GOMEA mixes genes by Family-of-Subsets (FOS) groups instead of mutating independ
 (AssertFree0ElementMultiple, AssertFree1ElementMultiple, AssertSummationElementMultiple)
 ```
 
-These groups preserve important TensileLite couplings during mixing. Learned linkage models can add evidence-derived groups, but they do not replace these static groups.
+These groups preserve important TensileLite couplings during mixing. They are defined once in `evotensile/search/semantics.py` and are also used by semantic mutation. Learned linkage models can add evidence-derived groups, but they do not replace these static groups.
 
 ## Neighborhood Sweep Operator
 
-`gomea_neighborhood_candidates()` performs a compact deterministic sweep around ranked elites:
-- It starts from best-first parent candidates.
-- It iterates priority groups plus their singleton fields.
-- For each group, it tries domain values in an order that starts with the current value.
+`gomea_neighborhood_candidates()` samples compact one-parent neighborhoods around ranked elites:
+- It forms fair `(parent, semantic-group)` slots across the selected parent pool.
+- It shuffles those slots with the search seed so the first static group cannot consume the budget.
+- For one slot, it changes at least one gene and may change other genes in the same group.
+- Domain alternatives are randomized rather than tried in declaration order.
 - Each trial is repaired and passed through `make_candidate()`.
-- A beam of valid children is carried forward so small group changes can compose.
-- Candidate hashes are deduplicated against already planned work.
+- Candidate hashes are deduplicated against parents and already planned work.
 
-The scheduler uses this operator for roughly half of the configured GOMEA budget. It is useful for local basin refinement because it explores small, linked perturbations around known good candidates.
+The scheduler normally gives this operator part of the configured GOMEA budget. Under the adaptive portfolio it has the distinct source identity `gomea-neighborhood`, so its measured reward is separate from donor mixing.
 
 ## Mixing Operator
 
 `gomea_candidates()` is the stochastic GOMEA mixer:
 - Load ranked parents from DB evidence, ordered best-first by `rank_evaluations()`.
 - Encode parents as categorical genomes.
-- Pick a base parent and donor parent at random.
+- Pick a base parent and a different donor parent at random.
+- When family-aware adaptive search is active, prefer a donor from the base candidate's family with probability `0.8` when one exists.
 - Select static FOS groups plus learned-linkage FOS groups when available, otherwise use static groups plus a fallback FOS learned from the current elite genomes.
 - Shuffle groups and apply a small random prefix of them.
 - For each group, copy donor genes into the base genome and accept the trial only if proposal-side rule checks pass.
 - If no useful change happened, perform forced improvement by copying one group from the nearest elite.
 - Convert the final genome back to a repaired candidate and dedupe by candidate hash.
 
-A GOMEA child records parent hashes for audit, but ranking and cache identity are based on the child candidate hash.
+A GOMEA child records parent hashes for audit, but ranking and cache identity are based on the child candidate hash. Adaptive search records two-parent children as `gomea-mixing` so operator credit can distinguish them from neighborhood trials.
 
 ## Rule-Gated Proposals
 
@@ -79,7 +80,7 @@ If learned linkage is disabled or there is insufficient evidence, GOMEA falls ba
 - the static NT HHS linkage groups.
 - `fos_from_genomes()` built from current elite parent genomes.
 
-The scheduler enables learned linkage by default for GOMEA-style proposals and exposes `--no-learned-linkage` for A/B checks. The learned-linkage mechanics are documented in `docs/linkage_learning.md`.
+The scheduler enables learned linkage by default for GOMEA-style proposals and exposes `--no-learned-linkage` for A/B checks. The learned-linkage mechanics are documented in `docs/search_linkage_learning.md`.
 
 ## Scheduler Use
 
@@ -87,12 +88,15 @@ The scheduler enables learned linkage by default for GOMEA-style proposals and e
 - `gomea`
 - `seed-random-gomea`
 - `evolutionary`
+- `family-qd`
 
 For these modes, the scheduler:
 - Loads DB elites when enough ranked evidence exists.
 - Adds nearest-shape transfer elites for multi-shape proposals.
 - Optionally adds random candidates first for seeded modes.
-- Splits the GOMEA budget between neighborhood sweep and stochastic mixing.
+- Splits the GOMEA budget between neighborhood trials and stochastic mixing.
+- Optionally allocates those arms separately from queried child-versus-parent evidence.
+- Optionally uses family-local donors and an oversized surrogate-shortlisted pool.
 - Deduplicates all generated candidates before planning missing `(shape, candidate)` pairs.
 
-GOMEA is therefore one proposal source inside the broader search loop, not a standalone executor.
+GOMEA is therefore one proposal source inside the broader search loop, not a standalone executor. Adaptive allocation is documented in `docs/search_operator_portfolio.md`, and family-aware parent selection is documented in `docs/search_family_qd.md`.

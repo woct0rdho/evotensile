@@ -2,12 +2,14 @@ import pytest
 
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
+from evotensile.search.encoding import candidate_to_genome, hamming_distance
 from evotensile.search.family import (
     family_descriptor,
     family_descriptor_counts,
     family_stratified_random_candidates,
     load_family_archive,
 )
+from evotensile.search_space import DOMAINS, make_candidate
 from evotensile.shapes import pilot_100_shapes
 from tests.helpers import REFERENCE_CANDIDATE, sample_candidates
 
@@ -152,6 +154,51 @@ def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
     assert archive[0].shape_count == 2
     assert archive[0].status_counts["ok"] >= 2
     assert archive[0].status_counts["validation_fail"] == 1
+
+
+def test_load_family_archive_keeps_diverse_quality_bounded_elites_per_family(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "families.sqlite")
+    db.init()
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    candidates = []
+    for index, stagger_u in enumerate(DOMAINS["StaggerU"][:5]):
+        params = REFERENCE_CANDIDATE.canonical_params()
+        params["StaggerU"] = stagger_u
+        params["StaggerUMapping"] = index % 2
+        candidates.append(make_candidate(params, source="archive-test"))
+    db.register_candidates(candidates)
+    db.register_shapes([shape])
+    for index, candidate in enumerate(candidates):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=1.0 + index,
+            validation="PASSED",
+        )
+
+    archive = load_family_archive(
+        db,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        shapes=[shape],
+        elites_per_family=3,
+    )
+
+    assert len(archive) == 3
+    assert archive[0].leader_candidate_hash == candidates[0].hash
+    assert [entry.family_rank for entry in archive] == [1, 2, 3]
+    assert all(entry.descriptor == archive[0].descriptor for entry in archive)
+    assert all(entry.observed_candidate_count == 5 for entry in archive)
+    assert archive[1].novelty_distance > 0
+    assert len({entry.leader_candidate_hash for entry in archive}) == 3
+    selected_genomes = [candidate_to_genome(entry.leader) for entry in archive]
+    assert min(hamming_distance(selected_genomes[0], genome) for genome in selected_genomes[1:]) > 0
 
 
 def test_load_family_archive_filters_protocol_and_min_samples(tmp_path):

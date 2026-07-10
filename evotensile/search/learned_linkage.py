@@ -377,6 +377,17 @@ def learn_linkage_models(
     )
 
 
+def minimum_evidence_for_truncation(*, truncation_tau: float, min_samples: int) -> int:
+    if truncation_tau <= 0.0 or truncation_tau > 1.0:
+        raise ValueError("truncation_tau must be in (0, 1]")
+    if min_samples <= 0:
+        raise ValueError("min_samples must be positive")
+    required = max(1, math.ceil(min_samples / truncation_tau))
+    while int(required * truncation_tau) < min_samples:
+        required += 1
+    return required
+
+
 def learn_linkage_models_from_db(
     db: EvoTensileDB,
     *,
@@ -390,13 +401,18 @@ def learn_linkage_models_from_db(
     max_clusters: int = DEFAULT_MAX_CLUSTERS,
     ordinal_bins: int = DEFAULT_ORDINAL_BINS,
 ) -> tuple[list[LinkageModel], LinkageLearningSummary]:
+    evidence_limit = (
+        minimum_evidence_for_truncation(truncation_tau=truncation_tau, min_samples=min_samples)
+        if elite_per_shape is None
+        else elite_per_shape
+    )
     evidence = load_candidate_evidence(
         db,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         shapes=shapes,
         min_samples=evidence_min_samples,
-        elite_per_shape=max(1, min_samples) if elite_per_shape is None else elite_per_shape,
+        elite_per_shape=evidence_limit,
     )
     return learn_linkage_models(
         evidence_to_scored_genomes(evidence),

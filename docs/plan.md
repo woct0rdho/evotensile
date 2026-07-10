@@ -5,12 +5,16 @@ EvoTensile is a smart-search autotuner for TensileLite. The implemented pilot ta
 This file is the live project log and forward plan. Stable design details live in focused docs:
 - `docs/nt_hhs_search_space.md`: how the NT HHS candidate search space is constructed.
 - `docs/search_algorithms.md`: general search loop and proposal modes.
-- `docs/gomea.md`: GOMEA proposal mechanics.
-- `docs/linkage_learning.md`: learned linkage mechanics.
-- `docs/family_aware_ea_screening.md`: planned family-aware evolutionary search and staged screening upgrades.
+- `docs/search_family_qd.md`: family descriptors, stratified initialization, and the multi-elite archive.
+- `docs/search_gomea.md`: GOMEA proposal mechanics.
+- `docs/search_linkage_learning.md`: learned linkage mechanics.
+- `docs/search_operator_portfolio.md`: semantic mutation and adaptive operator allocation.
+- `docs/search_surrogate.md`: ExtraTrees oversized-pool shortlisting.
+- `docs/search_outlier_repair.md`: local outlier detection and repair math.
 - `docs/noisy_measurements.md`: adaptive timing and noisy winner-selection math.
 - `docs/tensilelite_measurement.md`: TensileLite YAML/build/runner/JSONL measurement contract.
-- `docs/outlier_repair.md`: local outlier detection and repair math.
+- `docs/blind_experiment_infrastructure.md`: real and simulated blind-experiment infrastructure.
+- `docs/blind_one_shape_experiment.md`: chronological blind one-shape experiment log.
 - `docs/database.md`: SQLite schema, ranking, cache, and validation semantics.
 
 ## Current Status
@@ -22,7 +26,8 @@ Implemented and working:
 - Structured scheduler path only: YAML + manifest generation, parallel build/map/diagnostic/validation preparation, a hard barrier, serial benchmark-only execution, and direct SQLite ingestion.
 - Separate correctness and timing identities: validation evidence is stored independently from benchmark samples.
 - Cache-aware exact-pair planning keyed by problem type, benchmark protocol, validation protocol, shape, and candidate.
-- Random, local mutation, categorical DE, GOMEA, learned-linkage GOMEA, family-QD proposals, transfer seeding, and imported hipBLASLt baseline participation.
+- Random, local and semantic mutation, categorical DE, GOMEA, learned-linkage GOMEA, family-QD proposals, adaptive operator allocation, transfer seeding, and imported hipBLASLt baseline participation.
+- Optional ExtraTrees shortlisting from oversized proposal pools using validation-passed DB evidence.
 - Adaptive finalist top-ups that reuse the original compiled and correctness-verified artifacts without recompilation or revalidation.
 - `repair-outliers` neighbor-seeded second-stage search.
 - DB-driven hipBLASLt GridBased YAML update helper for HHS/HHS+AuxH/BBS/BBS+AuxB variants.
@@ -86,17 +91,9 @@ The production scheduler uses two explicit queues:
 - Tests assert compiler/validator completion before timing, serial benchmark execution, and no adaptive recompilation/revalidation.
 - A real generated-library check passed hipBLASLt GPU validation followed by benchmark-only timing from the same code object.
 
-## Blind One-Shape Evolution Result
+## Blind Search Experiments
 
-A cold-start four-generation `8192^3` family-QD campaign was run without imported candidates, control hashes, performance-derived priority bundles, or winner-specific test fixtures:
-- `144` unique candidates were registered across the initial generation and three evolutionary generations.
-- The campaign generated `12` candidates in the `MT128x128/TLDS0` structural family, but no candidate assembled the full external-control backbone.
-- The best hot-loop finalist reached `29.014 TFLOP/s` median and `29.212 TFLOP/s` best over `10` samples using `20` warmups and `10` enqueues per sample.
-- The external known-best aggregate is `45.253 TFLOP/s`, so the blind result reached `64.1%` and remained `35.9%` slower.
-- Post-hoc only, the nearest generated genome was Hamming distance `13` from the external control.
-- Screening and hot-loop monitoring showed high sustained GPU use. The miss is search-depth/epistasis evidence, not an idle-GPU explanation.
-
-Artifacts are under `out/one_shape_8192_family_qd_cold_20260710_v3/`. The initial wrapper timeout was recovered by resuming the exact `32` already-registered generation-zero hashes. No replacement candidates were generated during recovery.
+Blind one-shape baselines, simulated policy selection, real 20-minute campaigns, unsuccessful seeds, utilization evidence, and follow-up hypotheses are recorded in `docs/blind_one_shape_experiment.md`.
 
 ## Build And Runtime Conventions
 
@@ -110,9 +107,10 @@ Runtime validation should point `HIPBLASLT_TENSILE_LIBPATH` at the installed gfx
 ## Future Plan
 
 Near-term:
-- Run larger or finer NT HHS grids with the structured scheduler, adaptive sampling, and `repair-outliers` as the standard loop.
-- Add evidence-driven within-family allocation and conditional linkage. Four blind generations cover the right coarse families but do not reliably assemble high-order epistatic bundles.
-- Compare learned-linkage enabled/disabled runs on the same DB snapshots to quantify proposal value.
+- Run larger or finer NT HHS grids with the structured scheduler, adaptive sampling, surrogate shortlisting, and `repair-outliers` as the standard loop.
+- Add noise-aware top-ups for provisional archive/global leaders before they strongly affect operator credit or surrogate training.
+- Evaluate two-island cold starts with later family-local migration for seed robustness.
+- Compare learned-linkage and surrogate/operator features with fixed DB snapshots and equal wall-time budgets.
 - Add more audit scripts for DB-level winner sensitivity, sample-count sensitivity, and repair effectiveness.
 - Broaden installed-library correctness cases beyond the six curated verifier cases.
 
@@ -123,7 +121,7 @@ Medium-term:
 - Add explicit migration/version handling if the SQLite schema grows beyond additive changes.
 
 Longer-term:
-- Implement surrogate/LFBO-style proposal ranking once enough validated DB evidence exists.
+- Evaluate LFBO or persistent transfer surrogates beyond the current per-campaign ExtraTrees model.
 - Add cross-grid transfer workflows for production-size shape sets.
 - Evaluate cold-loop or first-request latency separately if that becomes a product requirement.
 - Decide whether generalized structured-runner support should move closer to TensileLite upstream APIs.

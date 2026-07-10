@@ -10,7 +10,9 @@ from evotensile.search.encoding import (
     hamming_distance,
     ordered_domain_values,
 )
+from evotensile.search.family import family_descriptor
 from evotensile.search.learned_linkage import LinkageModel, fos_from_genomes, nearest_linkage_model
+from evotensile.search.semantics import NT_HHS_SEMANTIC_GROUPS, semantic_group_names
 from evotensile.search_space import (
     NT_HHS_RANDOM_VALU_VGPR_HEADROOM,
     _valu_vgpr_lower_bound,
@@ -30,25 +32,11 @@ def _nearest_elite(genome: tuple[int, ...], elites: Sequence[tuple[int, ...]]) -
     return min(elites, key=lambda elite: hamming_distance(genome, elite))
 
 
-NT_HHS_LINKAGE_GROUPS = (
-    ("MatrixInstruction", "WorkGroup", "DepthU", "GlobalSplitU"),
-    ("TransposeLDS", "LdsBlockSizePerPadA", "LdsBlockSizePerPadB", "LdsPadA", "LdsPadB"),
-    ("PrefetchGlobalRead", "PrefetchLocalRead", "1LDSBuffer", "ClusterLocalRead", "VectorWidthB"),
-    ("GlobalReadVectorWidthA", "GlobalReadVectorWidthB", "VectorWidthA", "VectorWidthB"),
-    ("ScheduleIterAlg", "WorkGroupMapping", "StaggerU", "StaggerUStride", "StaggerUMapping", "SourceSwap"),
-    ("StorePriorityOpt", "NumElementsPerBatchStore", "StoreSyncOpt", "GroupLoadStore", "StoreVectorWidth"),
-    ("ExpandPointerSwap",),
-    ("AssertFree0ElementMultiple", "AssertFree1ElementMultiple", "AssertSummationElementMultiple"),
-)
+NT_HHS_LINKAGE_GROUPS = NT_HHS_SEMANTIC_GROUPS
 
 
 def neighborhood_group_names() -> tuple[tuple[str, ...], ...]:
-    groups = [*NT_HHS_LINKAGE_GROUPS, *tuple((name,) for name in PARAM_NAMES)]
-    seen_groups: list[tuple[str, ...]] = []
-    for group in groups:
-        if group not in seen_groups:
-            seen_groups.append(group)
-    return tuple(seen_groups)
+    return semantic_group_names()
 
 
 def _random_group_trial(
@@ -77,6 +65,7 @@ def gomea_neighborhood_candidates(
     exclude: set[str] | None = None,
     beam_width: int = 16,
     seed: int = 0,
+    source: str = "gomea",
 ) -> list[Candidate]:
     """Sample static and univariate neighborhoods fairly across ranked elites."""
     if count <= 0:
@@ -93,7 +82,7 @@ def gomea_neighborhood_candidates(
         for _ in range(max_attempts_per_slot):
             trial = _random_group_trial(group, base, rng=rng)
             try:
-                candidate = make_candidate(trial, source="gomea", parents=[parent.hash])
+                candidate = make_candidate(trial, source=source, parents=[parent.hash])
             except ValueError:
                 continue
             if candidate.hash in seen_hashes:
@@ -146,6 +135,8 @@ def gomea_candidates(
     exclude: set[str] | None = None,
     target_shapes: Sequence[Shape] | None = None,
     linkage_models: Sequence[LinkageModel] | None = None,
+    family_local_probability: float = 0.0,
+    source: str = "gomea",
 ) -> list[Candidate]:
     """Generate linkage-aware categorical candidates from ranked parents.
 
@@ -167,7 +158,15 @@ def gomea_candidates(
     while len(out) < count and attempts < max_attempts:
         attempts += 1
         base_candidate, base_genome = rng.choice(ranked)
-        donor_candidate, donor_genome = rng.choice(ranked)
+        donor_pool = [item for item in ranked if item[0].hash != base_candidate.hash]
+        if family_local_probability > 0.0 and rng.random() < family_local_probability:
+            base_family = family_descriptor(base_candidate)
+            local_pool = [item for item in donor_pool if family_descriptor(item[0]) == base_family]
+            if local_pool:
+                donor_pool = local_pool
+        if not donor_pool:
+            continue
+        donor_candidate, donor_genome = rng.choice(donor_pool)
         genes = base_genome
         model = nearest_linkage_model(base_genome, linkage_models or [])
         model_groups = list(model.fos_groups) if model is not None else []
@@ -195,7 +194,7 @@ def gomea_candidates(
             out.append(
                 _rule_valid_candidate(
                     genes,
-                    source="gomea",
+                    source=source,
                     parents=(base_candidate.hash, donor_candidate.hash),
                     target_shapes=target_shapes,
                 )

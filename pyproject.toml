@@ -12,6 +12,7 @@ authors = [{name = "woctordho", email = "woctordho@outlook.com"}]
 requires-python = ">=3.10"
 dependencies = [
   "PyYAML>=6.0",
+  "scikit-learn>=1.4",
 ]
 
 [project.optional-dependencies]

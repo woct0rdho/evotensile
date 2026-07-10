@@ -1,6 +1,6 @@
 # Search Algorithms Design
 
-This document describes EvoTensile's general search loop and proposal sources. Candidate-space construction, GOMEA internals, learned linkage, noisy measurement handling, TensileLite communication, outlier repair, and database semantics have separate design docs.
+This document describes EvoTensile's general search loop and proposal sources. Candidate-space construction, family-QD, GOMEA, learned linkage, adaptive operator allocation, surrogate shortlisting, noisy measurement handling, TensileLite communication, outlier repair, and database semantics have separate design docs.
 
 ## Search Unit
 
@@ -15,7 +15,7 @@ Search algorithms only propose candidates. They do not select final winners dire
 
 `schedule-batches` is the main search entry point:
 - Resolve the target profile, shapes, benchmark protocol, and SQLite DB.
-- Propose candidates with the selected proposal mode.
+- Propose candidates with the selected proposal mode, optional adaptive operator portfolio, and optional oversized surrogate pool.
 - Register candidates and shapes in the DB.
 - Record immediate shape-dependent rule rejections.
 - Plan missing `(shape, candidate)` observations from reusable cache status.
@@ -46,7 +46,7 @@ family-qd
 
 The default profile proposal is `seed-random-gomea`.
 
-`family-qd` is the first family-aware quality-diversity proposal mode. The broader staged-screening roadmap is documented in `docs/family_aware_ea_screening.md`.
+`family-qd` is the family-aware quality-diversity proposal mode. Its descriptors, archive, and stratified initialization are documented in `docs/search_family_qd.md`.
 
 ### Random
 
@@ -59,6 +59,8 @@ The current NT HHS generator samples the compatible TLDS0 and TLDS2 construction
 Local mutation starts from DB elites and independently resamples each domain gene with probability `--mutation-rate` (`0.25` by default). Each child is checked through `make_candidate()`, and invalid children are discarded.
 
 This mode is simple and useful around measured elites, but it does not preserve multi-field couplings as strongly as GOMEA.
+
+When `family-qd` uses `--adaptive-operators`, the broad mutation arm is replaced by semantic mutation. Semantic mutation changes one mechanical group and only one or two genes before linked repair, producing much smaller local steps. It is documented in `docs/search_operator_portfolio.md`.
 
 ### Categorical Differential Evolution
 
@@ -76,7 +78,7 @@ GOMEA mixes linked groups of genes from elite candidates. The scheduler splits t
 - a compact neighborhood sweep around ranked elites.
 - stochastic GOMEA mixing using static and, when available, learned FOS groups.
 
-GOMEA mechanics are documented in `docs/gomea.md`. Learned linkage is documented in `docs/linkage_learning.md`.
+GOMEA mechanics are documented in `docs/search_gomea.md`. Learned linkage is documented in `docs/search_linkage_learning.md`.
 
 ### Evolutionary
 
@@ -86,13 +88,37 @@ GOMEA mechanics are documented in `docs/gomea.md`. Learned linkage is documented
 
 `family-qd` adds a family-aware quality-diversity layer:
 - It computes coarse profile-specific family descriptors from candidate structure.
-- It loads a DB-derived family archive whose cells keep validation-passed leaders by shape-local rank percentile.
-- It preserves every positive family leader as a proposal parent before random restarts.
 - It uses descriptor-stratified random generation with repeated family occupancy and one retry for negative-only cells.
-- It balances shape-aspect exploitation with broad-cell exploration.
-- It applies local mutation, categorical DE, and GOMEA around family/global elites when evidence exists.
+- It loads a DB-derived archive scored by validation-passed shape-local rank percentiles.
+- It retains up to four quality-bounded, Hamming-diverse elites per family.
+- It preserves positive family elites as parents even when they are not global leaders.
+- It applies mutation, categorical DE, GOMEA neighborhoods, and donor mixing around family/global elites when evidence exists.
+- With adaptive operators, GOMEA prefers within-family donors when compatible donors are available.
 
-Family descriptors and archive entries are proposal metadata only. They do not shrink domains, change cache identity, or create validity rules.
+Family descriptors and archive entries are proposal metadata only. They do not shrink domains, change cache identity, or create validity rules. Detailed behavior is documented in `docs/search_family_qd.md`.
+
+## Adaptive Operator Portfolio
+
+`--adaptive-operators` is currently used with `family-qd`. It separates variation into four measured arms:
+
+```text
+semantic-mutation
+de
+gomea-neighborhood
+gomea-mixing
+```
+
+The scheduler loads compatible child-versus-parent timing outcomes and allocates the variation budget with a UCB-style score. Every arm retains minimum exploration when budget permits. Candidate source and parent hashes make allocation evidence auditable.
+
+The portfolio changes proposal counts only. It does not change validity, measurement, or ranking. See `docs/search_operator_portfolio.md`.
+
+## Surrogate-Guided Oversized Pools
+
+`--surrogate-pool-multiplier N` generates `N` times the configured random and variation budget, then shortlists the original requested measurement count.
+
+After at least `--surrogate-min-evidence` compatible positive rows, an ExtraTrees model predicts log median time and ensemble uncertainty from candidate, shape, tile, vectorization, and resource features. The shortlist mixes exploitation, uncertainty, family diversity, and random exploration. Before enough evidence exists, selection falls back to family-diverse round-robin sampling.
+
+Archive and transfer parents are preserved outside the generated-candidate shortlist. The default multiplier is `1`, so the feature is opt-in. See `docs/search_surrogate.md`.
 
 ## Elite And Transfer Sources
 
@@ -145,10 +171,18 @@ Use `--fixed-sampling` for deterministic fixed-budget utility runs or debugging.
 - nearest-shape winners and near-winners.
 - the selected proposal mode.
 
-Outlier detection and repair math are documented in `docs/outlier_repair.md`.
+Outlier detection and repair math are documented in `docs/search_outlier_repair.md`.
 
 ## Excluded From Current Search
 
-The implemented search stack is cache-aware random/evolutionary/family-QD proposal generation plus structured measurement and adaptive sampling. Family-leader-specific retiming, explicit bandit allocation, and surrogate/LFBO-style proposal generation are outside the current implementation.
+The implemented search stack is cache-aware random/evolutionary/family-QD generation, optional adaptive operator allocation, optional ExtraTrees shortlisting, structured measurement, and adaptive sampling.
+
+Not currently implemented:
+- family-level measurement bandits.
+- family-leader-specific fidelity stages.
+- automatic family descriptor splitting or merging.
+- multi-island migration.
+- LFBO or a persistent cross-campaign surrogate.
+- cost-aware operator reward.
 
 TensileLite prediction mechanisms such as Formocast/Origami are not hard pruning gates for this target. The profile keeps `PredictionThreshold=2.0`.

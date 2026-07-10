@@ -1,6 +1,6 @@
 # Linkage Design
 
-This document describes EvoTensile's linkage learning: how validated evidence is converted into FOS groups for GOMEA-style proposal mixing. It does not describe the broader search loop or GOMEA execution details. Those live in `docs/search_algorithms.md` and `docs/gomea.md`.
+This document describes EvoTensile's linkage learning: how validated evidence is converted into FOS groups for GOMEA-style proposal mixing. It does not describe the broader search loop or GOMEA execution details. Those live in `docs/search_algorithms.md` and `docs/search_gomea.md`.
 
 ## Purpose
 
@@ -43,6 +43,8 @@ This makes linkage evidence shape-aware without letting large shapes dominate be
 - The selected count is `max(1, int(n * truncation_tau))`.
 - At least `min_samples` selected genomes are required. The default is `8`.
 - If there is insufficient evidence, model learning returns no models and reports `insufficient_validated_evidence`.
+
+The DB loader requests enough pre-truncation evidence to preserve this floor. `minimum_evidence_for_truncation()` computes at least `ceil(min_samples / truncation_tau)` and adjusts for integer truncation. For example, `tau=0.5` and `min_samples=8` load `16` candidates so the selected pool still contains `8`. This prevents an evidence cap from silently disabling learned linkage.
 
 This positive truncation pool is the only input to learned linkage. Rejected, invalid, unvalidated, and low-performing generated candidates do not teach positive linkage.
 
@@ -112,7 +114,7 @@ The model summary written to schedule metadata includes leader hash, cluster siz
 - source-backed static NT HHS groups.
 - the assigned model's learned FOS groups.
 
-If there is no model, GOMEA falls back to static groups plus a FOS built from current elite parent genomes. `docs/gomea.md` describes this mixing path.
+If there is no model, GOMEA falls back to static groups plus a FOS built from current elite parent genomes. `docs/search_gomea.md` describes this mixing path.
 
 ## CLI Controls And Metadata
 

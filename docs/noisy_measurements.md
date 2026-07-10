@@ -175,3 +175,22 @@ Probe and main timing have different benchmark-protocol hashes. Production ranki
 - `median_gflops` and `best_gflops`, computed from shape FLOPs.
 
 Search and update tools use median statistics for winner selection. Best-sample statistics are retained for inspection, not as the primary selection criterion.
+
+## Screening Versus Final Confirmation
+
+Short main-protocol screening is intended for search feedback, not final performance claims. Family archives, learned linkage, operator credit, and the surrogate can consume compatible positive screening rows, so screening must remain validation-gated and protocol-specific.
+
+A small screening sample can still overstate a provisional leader. Blind one-shape campaigns observed a `45.762 TFLOP/s` two-sample screening leader that confirmed at `44.331 TFLOP/s` under the hot-loop protocol.
+
+Finalists should therefore be rerun with the production confirmation protocol:
+
+```text
+NumWarmups=20
+NumBenchmarks=10
+EnqueuesPerSync=10
+SyncsPerBenchmark=1
+```
+
+`hot_confirm_topk()` reuses generated libraries and prior compatible validation evidence. It does not recompile or revalidate finalists. Confirmation rows are reported separately from broad screening so expensive launches are reserved for a small candidate set.
+
+The current search does not automatically top up provisional archive leaders before they influence operator credit or surrogate training. Noise-aware leader top-ups are a planned improvement. Blind experiment procedures and time-budget accounting are documented in `docs/blind_experiment_infrastructure.md`.
