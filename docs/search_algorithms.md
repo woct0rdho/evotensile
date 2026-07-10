@@ -130,7 +130,9 @@ The default candidate batch size is chosen by a throughput heuristic that keeps 
 
 ## Adaptive Sampling
 
-Adaptive sampling is enabled by default. The scheduler prepares candidates once, runs a small initial timing budget (`--adaptive-initial-samples`, default `3`), then repeatedly benchmarks only unresolved plausible contenders from those same artifacts. Adaptive rounds do not compile or validate.
+Adaptive sampling is enabled by default. After parallel compilation and one-time validation, every pair receives a separate `3×1` probe. Candidates confidently slower than the shape reference by more than the default `4×` factor stop there. Survivors receive the main `--num-benchmarks` budget and existing confidence-based top-ups. Probe, main, and adaptive rounds reuse the same prepared artifacts and never recompile or revalidate.
+
+Probe timing has a distinct protocol identity, so it cannot enter production ranking, family archives, transfer, or learned linkage. `--fixed-sampling` disables both probe racing and adaptive top-ups.
 
 Timing-noise math and validation-gated top-up rules are documented in `docs/noisy_measurements.md`.
 

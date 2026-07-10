@@ -11,6 +11,7 @@ Implemented:
 - `family-qd` proposal mode with minimum family occupancy, one retry for negative-only cells, all positive family leaders as parents, and balanced TLDS branch sampling.
 - Fair static/univariate GOMEA neighborhood coverage without performance-derived priority bundles.
 - Parallel build/map/diagnostic/validation preparation followed by a hard barrier and serial benchmark-only execution.
+- A separate three-launch probe that stops confidently catastrophic candidates before main timing.
 - Family coverage in `proposal-coverage` and `schedule_metadata.json`.
 - `summarize-families` CLI reporting for existing DB evidence.
 
@@ -142,7 +143,9 @@ Use a staged funnel so broad exploration remains fast while final claims remain 
 
 - Validate each `(shape, candidate)` once before timed benchmarking.
 - Use the default GPU oracle validation backend for throughput.
-- Use a small number of timing samples for first-pass family ranking.
+- Give every validation-passed pair a separate three-launch probe.
+- Stop only candidates confidently slower than a conservative coarse threshold. Incomplete probe evidence fails open.
+- Run main-protocol timing and family ranking only for probe survivors.
 - Rank family cells by robust median log-time summaries, not by best sample.
 
 ### Stage 2: Family Leader Retiming

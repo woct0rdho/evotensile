@@ -4,7 +4,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .adaptive_retime import AdaptivePolicy
+from .adaptive_retime import AdaptivePolicy, ProbePolicy
 from .candidate import Candidate, Shape
 from .database import EvoTensileDB
 from .profile import DEFAULT_PROFILE, PROFILES, TargetProfile, get_profile
@@ -70,17 +70,26 @@ def _parse_shapes(args: argparse.Namespace, profile: TargetProfile) -> list[Shap
     return shapes
 
 
-def _adaptive_policy(args: argparse.Namespace) -> AdaptivePolicy | None:
+def _timing_policies(args: argparse.Namespace) -> tuple[AdaptivePolicy | None, ProbePolicy | None]:
     if getattr(args, "fixed_sampling", False):
-        return None
-    return AdaptivePolicy(
-        epsilon_pct=args.adaptive_epsilon_pct,
-        confidence=args.adaptive_confidence,
-        min_retime_samples=args.adaptive_min_samples,
-        max_retime_samples=args.adaptive_max_samples,
-        sample_step=args.adaptive_sample_step,
-        max_k=args.adaptive_max_k,
-        min_effect_pct=args.adaptive_min_effect_pct,
+        return None, None
+    return (
+        AdaptivePolicy(
+            epsilon_pct=args.adaptive_epsilon_pct,
+            confidence=args.adaptive_confidence,
+            min_retime_samples=args.adaptive_min_samples,
+            max_retime_samples=args.adaptive_max_samples,
+            sample_step=args.adaptive_sample_step,
+            max_k=args.adaptive_max_k,
+            min_effect_pct=args.adaptive_min_effect_pct,
+        ),
+        ProbePolicy(
+            samples=args.adaptive_probe_samples,
+            max_slowdown_factor=args.adaptive_probe_max_slowdown_factor,
+            confidence=args.adaptive_probe_confidence,
+            noise_floor_pct=args.adaptive_probe_noise_floor_pct,
+            min_survivors=args.adaptive_probe_min_survivors,
+        ),
     )
 
 
@@ -119,9 +128,19 @@ def _add_cache_identity_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_protocol_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--num-warmups", type=int, default=None)
-    parser.add_argument("--num-benchmarks", type=int, default=None)
-    parser.add_argument("--enqueues-per-sync", type=int, default=None)
+    parser.add_argument("--num-warmups", type=int, default=None, help="Main timing warmup launches")
+    parser.add_argument(
+        "--num-benchmarks",
+        type=int,
+        default=None,
+        help="Initial main timing samples per probe survivor",
+    )
+    parser.add_argument(
+        "--enqueues-per-sync",
+        type=int,
+        default=None,
+        help="Main timing launches per sample; probes always use one",
+    )
     parser.add_argument("--syncs-per-benchmark", type=int, default=None)
     parser.add_argument("--num-elements-to-validate", type=int, default=None)
     parser.add_argument(
@@ -159,6 +178,7 @@ class ScheduleCliContext:
     build_timeout: float | None
     runner_timeout: float | None
     adaptive_policy: AdaptivePolicy | None
+    probe_policy: ProbePolicy | None
 
 
 def _resolve_candidate_batch_size(
@@ -186,7 +206,6 @@ def _validate_schedule_args(args: argparse.Namespace) -> None:
     positive_ints = (
         "shape_batch_size",
         "min_samples",
-        "adaptive_initial_samples",
         "prepare_workers",
     )
     for name in positive_ints:
@@ -224,6 +243,7 @@ def _schedule_context(args: argparse.Namespace) -> ScheduleCliContext:
     protocol = _protocol(args, profile)
     db = EvoTensileDB.connect(args.db)
     db.init()
+    adaptive_policy, probe_policy = _timing_policies(args)
     return ScheduleCliContext(
         profile=profile,
         protocol=protocol,
@@ -234,7 +254,8 @@ def _schedule_context(args: argparse.Namespace) -> ScheduleCliContext:
         runner_bin=args.runner_bin or profile.default_runner_bin,
         build_timeout=_timeout_arg(args.build_timeout, profile.default_build_timeout_s),
         runner_timeout=_timeout_arg(args.runner_timeout, profile.default_runner_timeout_s),
-        adaptive_policy=_adaptive_policy(args),
+        adaptive_policy=adaptive_policy,
+        probe_policy=probe_policy,
     )
 
 
@@ -308,7 +329,7 @@ def _execute_schedule_from_args(
         build_timeout_s=context.build_timeout,
         runner_timeout_s=context.runner_timeout,
         adaptive_policy=context.adaptive_policy,
-        adaptive_initial_samples=args.adaptive_initial_samples,
+        probe_policy=context.probe_policy,
         adaptive_max_rounds=args.adaptive_max_rounds,
         prepare_workers=args.prepare_workers,
         compile_cache_root=None
@@ -415,10 +436,13 @@ def _schedule_metadata_common(
         "build_timeout_s": context.build_timeout,
         "runner_timeout_s": context.runner_timeout,
         "adaptive_sampling": context.adaptive_policy is not None,
-        "adaptive_initial_samples": args.adaptive_initial_samples,
         "adaptive_max_rounds": args.adaptive_max_rounds,
         "adaptive_rounds": result.adaptive_rounds,
         "adaptive_policy": None if context.adaptive_policy is None else context.adaptive_policy.__dict__,
+        "probe_policy": None if context.probe_policy is None else context.probe_policy.__dict__,
+        "probe_protocol_hash": result.probe_protocol_hash,
+        "probe_survivor_pairs": result.probe_survivor_pairs,
+        "probe_screened_pairs": result.probe_screened_pairs,
         **_learned_linkage_metadata(args, context, shapes),
         "planned_batches": len(result.planned_batches),
         "planned_missing_pairs": result.missing_pairs,
@@ -512,8 +536,12 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_adaptive_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--fixed-sampling", action="store_true", help="Disable default adaptive finalist top-ups")
-    parser.add_argument("--adaptive-initial-samples", type=int, default=3)
+    parser.add_argument("--fixed-sampling", action="store_true", help="Disable probing and adaptive top-ups")
+    parser.add_argument("--adaptive-probe-samples", type=int, default=3)
+    parser.add_argument("--adaptive-probe-max-slowdown-factor", type=float, default=4.0)
+    parser.add_argument("--adaptive-probe-confidence", type=float, default=0.90)
+    parser.add_argument("--adaptive-probe-noise-floor-pct", type=float, default=5.0)
+    parser.add_argument("--adaptive-probe-min-survivors", type=int, default=8)
     parser.add_argument("--adaptive-max-rounds", type=int, default=4)
     parser.add_argument("--adaptive-epsilon-pct", type=float, default=2.0)
     parser.add_argument("--adaptive-confidence", type=float, default=0.90)

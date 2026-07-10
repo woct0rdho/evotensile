@@ -87,7 +87,7 @@ The cache key includes:
 
 Timing budgets and validation extent are excluded when they do not affect code generation. A success marker and TensileLite cache files are required before reuse. A cache-specific lock prevents duplicate population by prepare workers.
 
-Validation and benchmark modes always use the same prepared library directory. Adaptive top-ups also use that directory and never invoke TensileLite again.
+Validation, probe, main benchmark, and adaptive top-up modes always use the same prepared library directory. None of the timing stages invoke TensileLite again.
 
 ## Accepted-Solution Mapping
 
@@ -143,7 +143,7 @@ Correctness evidence has its own validation-protocol hash. It includes:
 - Input initialization settings.
 - `CEqualD` behavior.
 
-Timing compatibility uses the benchmark-protocol hash. `NumBenchmarks` remains an execution budget rather than a compatibility field.
+Timing compatibility uses the benchmark-protocol hash. `NumBenchmarks` remains an execution budget rather than a compatibility field. `BenchmarkRole` distinguishes low-fidelity probe timing from main timing even if their launch settings are configured identically.
 
 A timing row can be produced only for a pair present in the prepared batch's validation-passed set or in compatible cached validation evidence.
 
@@ -157,14 +157,15 @@ There is no public `none` validation backend and no trusted-validation bypass. S
 
 ## Adaptive Timing
 
-Adaptive sampling prepares the initial candidate set once. The scheduler then:
-1. Runs initial serial timing samples.
-2. Loads timing statistics.
-3. Selects plausible validation-passed contenders.
-4. Runs benchmark-only subsets from the original prepared-artifact index.
-5. Repeats up to the configured adaptive-round limit.
+Adaptive sampling prepares the candidate set once. The scheduler then:
+1. Runs a separate three-sample, one-enqueue, zero-warmup probe for every validation-passed pair.
+2. Screens only candidates confidently slower than the best compatible shape reference by more than the configured coarse factor.
+3. Runs the main timing protocol for probe survivors.
+4. Loads main-protocol timing statistics and selects plausible contenders within the final indifference zone.
+5. Runs benchmark-only top-up subsets from the original prepared-artifact index.
+6. Repeats up to the configured adaptive-round limit.
 
-Adaptive rounds do not compile, remap, diagnose, or validate candidates. A contender without a successfully prepared artifact is ineligible for top-up.
+Probe evidence has a separate protocol hash and cannot enter main ranking. Missing probe evidence fails open. Probe, main, and adaptive rounds do not compile, remap, diagnose, or validate candidates. A contender without a successfully prepared artifact is ineligible for timing.
 
 ## Diagnostic Attribution
 
@@ -174,4 +175,4 @@ Attributed failures become reusable `build_failed` rows. Unattributed failures b
 
 ## Run Records
 
-Build, diagnostic, validation, and benchmark invocations insert separate `runs` rows with command, mode, paths, return code, duration, and timeout status. CLI metadata records phase-specific return codes and whether an executed batch belongs to initial timing or an adaptive top-up.
+Build, diagnostic, validation, and benchmark invocations insert separate `runs` rows with command, mode, paths, return code, duration, and timeout status. CLI metadata records the probe policy/hash, survivor and screened pair counts, and whether an executed batch belongs to probe, initial main timing, or an adaptive top-up.

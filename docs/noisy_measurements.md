@@ -44,9 +44,42 @@ The coefficient is `sqrt(pi / 2)`, the asymptotic ratio between the standard err
 
 `timing_stats_from_times()` also records mean log time, standard deviation, MAD, IQR, `p10`, `p90`, and high-side outlier count for audit output.
 
+## Three-Launch Probe
+
+Adaptive schedules first run a low-fidelity probe for every validation-passed pair:
+
+```text
+NumWarmups=0
+NumBenchmarks=3
+EnqueuesPerSync=1
+SyncsPerBenchmark=1
+```
+
+The default probe therefore spends exactly three timed launches per candidate. Probe timing has a distinct `BenchmarkRole=probe` protocol identity and is never pooled with main timing.
+
+Let `r` be the fastest compatible reference: the current probe leader or a faster existing main-protocol incumbent for the same shape. A probe candidate `c` is screened out only when the lower confidence bound on its log-time gap exceeds the coarse slowdown threshold:
+
+$$
+\mathrm{CI}_{c,\mathrm{low}} > \log(F)
+$$
+
+The default factor is `F=4`. The probe also applies a `5%` minimum log-noise floor because two or three observations cannot provide a reliable zero-noise estimate. At least eight probe candidates per shape survive regardless of the threshold, or all candidates when fewer than eight are available.
+
+Probe screening is a timing-allocation decision, not invalidity or reusable negative cache evidence. Missing/incomplete probe evidence fails open: the pair remains eligible for main timing.
+
+The probe controls are:
+
+```text
+--adaptive-probe-samples 3
+--adaptive-probe-max-slowdown-factor 4.0
+--adaptive-probe-confidence 0.90
+--adaptive-probe-noise-floor-pct 5.0
+--adaptive-probe-min-survivors 8
+```
+
 ## Pairwise Plausibility
 
-Let `b` be the current best candidate by lowest median log time. For another candidate `c`, the log-time gap is:
+After probe survivors receive main-protocol samples, let `b` be the current best candidate by lowest median log time. For another candidate `c`, the log-time gap is:
 
 $$
 g_c = s_c - s_b.
@@ -106,17 +139,21 @@ The scheduled target is:
 
 ## Adaptive Execution
 
-`schedule-batches` uses adaptive sampling unless `--fixed-sampling` is passed.
+`schedule-batches` uses probe racing and adaptive sampling unless `--fixed-sampling` is passed.
 
 The execution sequence is:
-- Prepare all initial batches in parallel: compile, map/salvage, diagnose, and validate.
+- Prepare all batches in parallel: compile, map/salvage, diagnose, and validate.
 - Join every prepare worker before timing starts.
-- Run the initial serial benchmark queue with `--adaptive-initial-samples` samples per pair. Default `3`.
-- Load timing stats and decide retime groups for unresolved shapes.
-- Run only missing benchmark samples for plausible contenders from the original prepared-artifact index.
+- Run the serial three-launch probe queue for every validation-passed pair.
+- Compare complete probe evidence by shape and screen only confidently catastrophic candidates.
+- Run the main timing protocol only for probe survivors. `--num-benchmarks` is the initial main sample budget.
+- Load main-protocol timing stats and decide retime groups for unresolved shapes.
+- Run only missing main-protocol samples for plausible contenders from the original prepared-artifact index.
 - Repeat for up to `--adaptive-max-rounds`. Default `4`.
 
-Adaptive rounds never compile or validate. A pair without a successful prepared artifact is ineligible for top-up. Top-ups use the same benchmark-protocol identity because `NumBenchmarks` is an execution budget, not a timing-compatibility field.
+Probe, main, and adaptive rounds never recompile or revalidate. A pair without a successful prepared artifact is ineligible for timing. Main top-ups use the same main benchmark-protocol identity because `NumBenchmarks` is an execution budget, not a timing-compatibility field.
+
+`--fixed-sampling` bypasses both probe racing and adaptive top-ups and gives every validation-passed pair the requested main timing budget.
 
 ## Validation Gate
 
@@ -130,7 +167,9 @@ This keeps adaptive retiming fast without recompiling or revalidating contenders
 
 ## Ranking Semantics
 
-`rank_evaluations()` ranks only `status='ok'` rows and summarizes per `(shape_id, candidate_hash)`:
+Probe and main timing have different benchmark-protocol hashes. Production ranking, family archives, transfer, and learned linkage request the main protocol hash, so probe rows cannot become winners or training evidence accidentally.
+
+`rank_evaluations()` ranks only `status='ok'` rows for the requested protocol and summarizes per `(shape_id, candidate_hash)`:
 - `samples`: positive timing sample count.
 - `median_time_us` and `best_time_us`.
 - `median_gflops` and `best_gflops`, computed from shape FLOPs.

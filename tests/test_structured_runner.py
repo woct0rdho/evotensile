@@ -4,8 +4,9 @@ import time
 from pathlib import Path
 from textwrap import dedent
 
-from evotensile.adaptive_retime import AdaptivePolicy
+from evotensile.adaptive_retime import AdaptivePolicy, ProbePolicy
 from evotensile.database import EvoTensileDB
+from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.scheduler import execute_schedule
 from evotensile.shapes import pilot_100_shapes
@@ -90,6 +91,7 @@ def _fake_structured_runner(path: Path) -> Path:
                     active_path.with_suffix(".overlap").write_text("overlap\\n")
                 time.sleep(0.2)
 
+            time_multipliers = json.loads(os.environ.get("EVOTENSILE_TEST_TIME_MULTIPLIERS", "{}"))
             with open(args.pairs) as src, open(args.output, "w") as out:
                 for line in src:
                     pair = json.loads(line)
@@ -112,7 +114,8 @@ def _fake_structured_runner(path: Path) -> Path:
                         )
                     else:
                         for sample_index in range(pair.get("num_benchmarks", 1)):
-                            time_us = max(1.0, flops / 1.0e9) * (1.0 + sample_index * 0.001)
+                            multiplier = float(time_multipliers.get(pair["candidate_hash"], 1.0))
+                            time_us = max(1.0, flops / 1.0e9) * multiplier * (1.0 + sample_index * 0.001)
                             out.write(
                                 json.dumps(
                                     {
@@ -384,6 +387,7 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
     shape = pilot_100_shapes()[0]
     events_path = tmp_path / "adaptive-events.log"
     monkeypatch.setenv("EVOTENSILE_APU_LOCK_PATH", str(tmp_path / "apu.lock"))
+    monkeypatch.setenv("EVOTENSILE_TEST_GPU_ACTIVE_DIR", str(tmp_path / "gpu-active"))
     monkeypatch.setenv("EVOTENSILE_TEST_PHASE_EVENTS", str(events_path))
     decision_calls = 0
 
@@ -399,7 +403,7 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
         shapes=[shape],
         candidates=candidates,
         output_root=tmp_path / "batches",
-        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=3),
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=2,
         shape_batch_size=1,
         tensilelite_bin=fake_tensile,
@@ -407,17 +411,139 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
         keep_going=True,
         prepare_workers=2,
         adaptive_policy=AdaptivePolicy(),
-        adaptive_initial_samples=1,
+        probe_policy=ProbePolicy(samples=2, min_survivors=2),
         adaptive_max_rounds=2,
     )
 
     events = events_path.read_text(encoding="utf-8").splitlines()
     assert events.count("compile_start") == 1
     assert events.count("validate_start") == 1
-    assert events.count("benchmark_start") == 2
+    assert events.count("benchmark_start") == 3
     assert result.adaptive_rounds == 1
-    assert [batch.phase for batch in result.executed_batches] == ["initial", "adaptive"]
-    assert db.cache_summary() == {"ok": 6}
+    assert [batch.phase for batch in result.executed_batches] == ["probe", "initial", "adaptive"]
+    assert not (tmp_path / "gpu-active.overlap").exists()
+    assert not (tmp_path / "gpu-active").exists()
+    assert db.cache_summary() == {"ok": 10}
+
+
+def test_adaptive_probe_limits_slow_candidates_to_three_launches(tmp_path: Path, monkeypatch):
+    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = sample_candidates(2)
+    shape = pilot_100_shapes()[0]
+    main_protocol = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(
+        num_warmups=1,
+        num_benchmarks=2,
+        enqueues_per_sync=10,
+    )
+    probe_policy = ProbePolicy(samples=3, max_slowdown_factor=4.0, min_survivors=1)
+    monkeypatch.setenv(
+        "EVOTENSILE_TEST_TIME_MULTIPLIERS",
+        json.dumps({candidates[1].hash: 10.0}),
+    )
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "batches",
+        protocol=main_protocol,
+        candidate_batch_size=2,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        adaptive_policy=AdaptivePolicy(),
+        probe_policy=probe_policy,
+        adaptive_max_rounds=0,
+    )
+
+    probe_protocol = main_protocol.with_overrides(
+        role="probe",
+        num_warmups=0,
+        num_benchmarks=3,
+        enqueues_per_sync=1,
+        syncs_per_benchmark=1,
+        num_elements_to_validate=0,
+    )
+    probe_rank = db.rank_evaluations(
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=probe_protocol.protocol_hash(),
+        shape_id=shape.id,
+    )
+    main_rank = db.rank_evaluations(
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=main_protocol.protocol_hash(),
+        shape_id=shape.id,
+    )
+
+    assert result.probe_survivor_pairs == 1
+    assert result.probe_screened_pairs == 1
+    assert [summary.samples for summary in probe_rank] == [3, 3]
+    assert [(summary.candidate_hash, summary.samples) for summary in main_rank] == [(candidates[0].hash, 2)]
+    assert [batch.phase for batch in result.executed_batches] == ["probe", "initial"]
+
+    pair_files = list((tmp_path / "batches").rglob("benchmark_*.pairs.jsonl"))
+    pair_groups = [[json.loads(line) for line in path.read_text().splitlines()] for path in pair_files]
+    probe_pairs = next(rows for rows in pair_groups if rows[0]["enqueues_per_sync"] == 1)
+    main_pairs = next(rows for rows in pair_groups if rows[0]["enqueues_per_sync"] == 10)
+    assert len(probe_pairs) == 2
+    assert all(row["num_benchmarks"] == 3 and row["num_warmups"] == 0 for row in probe_pairs)
+    assert len(main_pairs) == 1
+    assert main_pairs[0]["candidate_hash"] == candidates[0].hash
+    assert main_pairs[0]["num_benchmarks"] == 2
+
+
+def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch):
+    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = sample_candidates(2)
+    shape = pilot_100_shapes()[0]
+    main_protocol = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2)
+    db.register_shapes([shape])
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash="incumbent",
+        run_id="prior",
+        status="ok",
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=main_protocol.protocol_hash(),
+        time_us=max(1.0, 2.0 * shape.m * shape.n * shape.batch * shape.k / 1.0e9),
+        validation="PASSED prior_validation",
+    )
+    monkeypatch.setenv(
+        "EVOTENSILE_TEST_TIME_MULTIPLIERS",
+        json.dumps({candidates[0].hash: 4.5, candidates[1].hash: 6.0}),
+    )
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "batches",
+        protocol=main_protocol,
+        candidate_batch_size=2,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        adaptive_policy=AdaptivePolicy(),
+        probe_policy=ProbePolicy(samples=3, max_slowdown_factor=4.0, min_survivors=1),
+        adaptive_max_rounds=0,
+    )
+
+    main_rank = db.rank_evaluations(
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=main_protocol.protocol_hash(),
+        shape_id=shape.id,
+    )
+    by_hash = {summary.candidate_hash: summary.samples for summary in main_rank}
+    assert result.probe_survivor_pairs == 1
+    assert result.probe_screened_pairs == 1
+    assert by_hash == {"incumbent": 1, candidates[0].hash: 2}
 
 
 def test_singleton_nonzero_build_salvages_runnable_artifact(tmp_path: Path, monkeypatch):
