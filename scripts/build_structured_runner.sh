@@ -30,10 +30,12 @@ if [[ ${EVOTENSILE_USE_OPENBLAS:-1} != 0 ]]; then
 fi
 
 COMMON_A=$TENSILELITE_BUILD/tensilelite/client/libtensilelite-client-common.a
+TENSILELITE_HOST_A=$TENSILELITE_BUILD/tensilelite/libtensilelite-host.a
 ORIGAMI_A=$TENSILELITE_BUILD/origami/liborigami.a
 MXDATAGEN_A=$TENSILELITE_BUILD/clients/common/libhipblaslt-mxdatagen.a
+TENSILELITEHOST_EXPORT=$TENSILELITE_BUILD/tensilelite/include/tensilelitehost/export.h
 
-for path in "$CXX" "$COMMON_A" "$ORIGAMI_A" "$MXDATAGEN_A"; do
+for path in "$CXX" "$COMMON_A" "$TENSILELITE_HOST_A" "$ORIGAMI_A" "$MXDATAGEN_A" "$TENSILELITEHOST_EXPORT"; do
   if [[ ! -e "$path" ]]; then
     echo "missing required build artifact: $path" >&2
     echo "build TensileLite client first, e.g. ~/rocm-libraries/build_tensilelite_client.sh" >&2
@@ -54,6 +56,7 @@ COMMON_FLAGS=(
   -D__HIP_PLATFORM_AMD__=1
   -I"$HIPBLASLT_ROOT/tensilelite/client/include"
   -I"$HIPBLASLT_ROOT/tensilelite/include"
+  -I"$TENSILELITE_BUILD/tensilelite/include"
   -I"$HIPBLASLT_ROOT/tensilelite/rocisa"
   -I"$HIPBLASLT_ROOT/../../shared/origami/include"
   -I"$TENSILELITE_BUILD/origami/include"
@@ -75,6 +78,7 @@ COMMON_FLAGS=(
   -L"$ROCM_PATH/lib/hipblaslt" \
   -Wl,-rpath,"$ROCM_PATH/lib:$ROCM_PATH/lib/llvm/lib:$ROCM_PATH/lib/hipblaslt" \
   "$COMMON_A" \
+  "$TENSILELITE_HOST_A" \
   -lLLVM-23git \
   "$ORIGAMI_A" \
   -lamd_smi \
