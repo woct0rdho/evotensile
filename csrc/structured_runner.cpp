@@ -265,7 +265,6 @@ namespace
         std::vector<Half>  hostA;
         std::vector<Half>  hostB;
         std::vector<Half>  hostC;
-        std::vector<Half>  hostD;
         std::vector<Half>  hostBias;
         std::vector<float> hostScaleAlphaVec;
         std::vector<Half>  resultD;
@@ -290,6 +289,37 @@ namespace
         unsigned long long maxAbsDiffBits;
         unsigned long long checked;
     };
+
+    __host__ __device__ uint32_t mix32(uint64_t x)
+    {
+        x ^= x >> 33;
+        x *= 0xff51afd7ed558ccdULL;
+        x ^= x >> 33;
+        x *= 0xc4ceb9fe1a85ec53ULL;
+        x ^= x >> 33;
+        return static_cast<uint32_t>(x >> 32);
+    }
+
+    __host__ __device__ float deterministicValue(uint64_t index, uint64_t salt)
+    {
+        uint32_t v      = mix32(index + 0x9e3779b97f4a7c15ULL * (salt + 1));
+        int      bucket = static_cast<int>(v % 17u) - 8;
+        return static_cast<float>(bucket) / 8.0f;
+    }
+
+    __global__ void fillDeterministicHalfKernel(Half* output, size_t count, uint64_t salt)
+    {
+        size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx < count)
+            output[idx] = static_cast<Half>(deterministicValue(idx, salt));
+    }
+
+    __global__ void fillDeterministicFloatKernel(float* output, size_t count, uint64_t salt)
+    {
+        size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx < count)
+            output[idx] = deterministicValue(idx, salt);
+    }
 
     __device__ unsigned long long floatAsOrderedBits(float value)
     {
@@ -811,23 +841,6 @@ namespace
         return value;
     }
 
-    uint32_t mix32(uint64_t x)
-    {
-        x ^= x >> 33;
-        x *= 0xff51afd7ed558ccdULL;
-        x ^= x >> 33;
-        x *= 0xc4ceb9fe1a85ec53ULL;
-        x ^= x >> 33;
-        return static_cast<uint32_t>(x >> 32);
-    }
-
-    float deterministicValue(uint64_t index, uint64_t salt)
-    {
-        uint32_t v      = mix32(index + 0x9e3779b97f4a7c15ULL * (salt + 1));
-        int      bucket = static_cast<int>(v % 17u) - 8;
-        return static_cast<float>(bucket) / 8.0f;
-    }
-
     bool almostEqualHalf(float reference, float result)
     {
         float absDiff = std::fabs(reference - result);
@@ -902,79 +915,99 @@ namespace
         return problem;
     }
 
-    Buffers makeBuffers(Pair const& pair, size_t workspaceSize)
+    Buffers makeBuffers(Pair const& pair,
+                        size_t workspaceSize,
+                        RunMode mode,
+                        ValidationBackend validationBackend,
+                        hipStream_t stream)
     {
-        size_t m     = static_cast<size_t>(pair.m);
-        size_t n     = static_cast<size_t>(pair.n);
-        size_t k     = static_cast<size_t>(pair.k);
-        size_t batch = static_cast<size_t>(pair.batch);
+        size_t m           = static_cast<size_t>(pair.m);
+        size_t n           = static_cast<size_t>(pair.n);
+        size_t k           = static_cast<size_t>(pair.k);
+        size_t batch       = static_cast<size_t>(pair.batch);
+        size_t elementsA   = m * k * batch;
+        size_t elementsB   = n * k * batch;
+        size_t elementsD   = m * n * batch;
+        bool cpuReference  = mode == RunMode::Validate && validationBackend == ValidationBackend::Cpu;
+        bool gpuReference  = mode == RunMode::Validate && validationBackend == ValidationBackend::Hipblaslt;
 
         Buffers buffers;
-        buffers.hostA.resize(m * k * batch);
-        buffers.hostB.resize(n * k * batch);
-        buffers.hostC.resize(m * n * batch);
-        buffers.hostD.resize(m * n * batch, static_cast<Half>(0.0f));
-        buffers.hostBias.resize(m);
-        buffers.hostScaleAlphaVec.resize(m);
-        buffers.resultD.resize(m * n * batch);
-
-        for(size_t i = 0; i < buffers.hostA.size(); ++i)
-            buffers.hostA[i] = static_cast<Half>(deterministicValue(i, 1));
-        for(size_t i = 0; i < buffers.hostB.size(); ++i)
-            buffers.hostB[i] = static_cast<Half>(deterministicValue(i, 2));
-        for(size_t i = 0; i < buffers.hostC.size(); ++i)
-            buffers.hostC[i] = static_cast<Half>(deterministicValue(i, 3));
-        for(size_t i = 0; i < buffers.hostBias.size(); ++i)
-            buffers.hostBias[i] = static_cast<Half>(deterministicValue(i, 4));
-        for(size_t i = 0; i < buffers.hostScaleAlphaVec.size(); ++i)
-            buffers.hostScaleAlphaVec[i] = deterministicValue(i, 5);
-
-        buffers.devA.reset(buffers.hostA.size());
-        buffers.devB.reset(buffers.hostB.size());
-        buffers.devC.reset(buffers.hostC.size());
-        buffers.devD.reset(buffers.hostD.size());
-        buffers.devBias.reset(buffers.hostBias.size());
-        buffers.devScaleAlphaVec.reset(buffers.hostScaleAlphaVec.size());
-        buffers.devHipblasltScaleAlphaVec.reset(buffers.hostScaleAlphaVec.size());
-        buffers.devReferenceD.reset(buffers.hostD.size());
-        buffers.devCompareSummary.reset(4);
+        buffers.devA.reset(elementsA);
+        buffers.devB.reset(elementsB);
+        buffers.devC.reset(elementsD);
+        buffers.devD.reset(elementsD);
+        buffers.devBias.reset(m);
+        buffers.devScaleAlphaVec.reset(m);
+        if(gpuReference)
+        {
+            buffers.devHipblasltScaleAlphaVec.reset(m);
+            buffers.devReferenceD.reset(elementsD);
+            buffers.devCompareSummary.reset(4);
+        }
         buffers.devWorkspace.reset(workspaceSize);
         buffers.devSynchronizer.reset(SYNCHRONIZER_ELEMENTS);
 
-        HIP_CHECK_EXC(hipMemcpy(buffers.devA.get(),
-                                buffers.hostA.data(),
-                                buffers.hostA.size() * sizeof(Half),
-                                hipMemcpyHostToDevice));
-        HIP_CHECK_EXC(hipMemcpy(buffers.devB.get(),
-                                buffers.hostB.data(),
-                                buffers.hostB.size() * sizeof(Half),
-                                hipMemcpyHostToDevice));
-        HIP_CHECK_EXC(hipMemcpy(buffers.devC.get(),
-                                buffers.hostC.data(),
-                                buffers.hostC.size() * sizeof(Half),
-                                hipMemcpyHostToDevice));
-        HIP_CHECK_EXC(hipMemcpy(buffers.devD.get(),
-                                buffers.hostD.data(),
-                                buffers.hostD.size() * sizeof(Half),
-                                hipMemcpyHostToDevice));
-        HIP_CHECK_EXC(hipMemcpy(buffers.devBias.get(),
-                                buffers.hostBias.data(),
-                                buffers.hostBias.size() * sizeof(Half),
-                                hipMemcpyHostToDevice));
-        HIP_CHECK_EXC(hipMemcpy(buffers.devScaleAlphaVec.get(),
-                                buffers.hostScaleAlphaVec.data(),
-                                buffers.hostScaleAlphaVec.size() * sizeof(float),
-                                hipMemcpyHostToDevice));
-        HIP_CHECK_EXC(hipMemcpy(buffers.devReferenceD.get(),
-                                buffers.hostD.data(),
-                                buffers.hostD.size() * sizeof(Half),
-                                hipMemcpyHostToDevice));
-        size_t scaleBlocks = (buffers.hostScaleAlphaVec.size() + 255) / 256;
-        prepareScaleAlphaVecKernel<<<scaleBlocks, 256>>>(
-            buffers.devScaleAlphaVec.get(), buffers.devHipblasltScaleAlphaVec.get(), buffers.hostScaleAlphaVec.size());
-        HIP_CHECK_EXC(hipGetLastError());
-        HIP_CHECK_EXC(hipMemset(buffers.devWorkspace.get(), 0, workspaceSize));
-        HIP_CHECK_EXC(hipMemset(buffers.devSynchronizer.get(), 0, SYNCHRONIZER_ELEMENTS * sizeof(float)));
+        if(cpuReference)
+        {
+            buffers.hostA.resize(elementsA);
+            buffers.hostB.resize(elementsB);
+            buffers.hostC.resize(elementsD);
+            buffers.hostBias.resize(m);
+            buffers.hostScaleAlphaVec.resize(m);
+            buffers.resultD.resize(elementsD);
+
+            for(size_t i = 0; i < buffers.hostA.size(); ++i)
+                buffers.hostA[i] = static_cast<Half>(deterministicValue(i, 1));
+            for(size_t i = 0; i < buffers.hostB.size(); ++i)
+                buffers.hostB[i] = static_cast<Half>(deterministicValue(i, 2));
+            for(size_t i = 0; i < buffers.hostC.size(); ++i)
+                buffers.hostC[i] = static_cast<Half>(deterministicValue(i, 3));
+            for(size_t i = 0; i < buffers.hostBias.size(); ++i)
+                buffers.hostBias[i] = static_cast<Half>(deterministicValue(i, 4));
+            for(size_t i = 0; i < buffers.hostScaleAlphaVec.size(); ++i)
+                buffers.hostScaleAlphaVec[i] = deterministicValue(i, 5);
+
+            HIP_CHECK_EXC(hipMemcpy(
+                buffers.devA.get(), buffers.hostA.data(), elementsA * sizeof(Half), hipMemcpyHostToDevice));
+            HIP_CHECK_EXC(hipMemcpy(
+                buffers.devB.get(), buffers.hostB.data(), elementsB * sizeof(Half), hipMemcpyHostToDevice));
+            HIP_CHECK_EXC(hipMemcpy(
+                buffers.devC.get(), buffers.hostC.data(), elementsD * sizeof(Half), hipMemcpyHostToDevice));
+            HIP_CHECK_EXC(hipMemcpy(
+                buffers.devBias.get(), buffers.hostBias.data(), m * sizeof(Half), hipMemcpyHostToDevice));
+            HIP_CHECK_EXC(hipMemcpy(buffers.devScaleAlphaVec.get(),
+                                    buffers.hostScaleAlphaVec.data(),
+                                    m * sizeof(float),
+                                    hipMemcpyHostToDevice));
+        }
+        else
+        {
+            constexpr size_t threads = 256;
+            fillDeterministicHalfKernel<<<(elementsA + threads - 1) / threads, threads, 0, stream>>>(
+                buffers.devA.get(), elementsA, 1);
+            fillDeterministicHalfKernel<<<(elementsB + threads - 1) / threads, threads, 0, stream>>>(
+                buffers.devB.get(), elementsB, 2);
+            fillDeterministicHalfKernel<<<(elementsD + threads - 1) / threads, threads, 0, stream>>>(
+                buffers.devC.get(), elementsD, 3);
+            fillDeterministicHalfKernel<<<(m + threads - 1) / threads, threads, 0, stream>>>(
+                buffers.devBias.get(), m, 4);
+            fillDeterministicFloatKernel<<<(m + threads - 1) / threads, threads, 0, stream>>>(
+                buffers.devScaleAlphaVec.get(), m, 5);
+            HIP_CHECK_EXC(hipGetLastError());
+        }
+
+        HIP_CHECK_EXC(hipMemsetAsync(buffers.devD.get(), 0, elementsD * sizeof(Half), stream));
+        if(gpuReference)
+        {
+            size_t scaleBlocks = (m + 255) / 256;
+            prepareScaleAlphaVecKernel<<<scaleBlocks, 256, 0, stream>>>(
+                buffers.devScaleAlphaVec.get(), buffers.devHipblasltScaleAlphaVec.get(), m);
+            HIP_CHECK_EXC(hipGetLastError());
+        }
+        HIP_CHECK_EXC(hipMemsetAsync(buffers.devWorkspace.get(), 0, workspaceSize, stream));
+        HIP_CHECK_EXC(
+            hipMemsetAsync(buffers.devSynchronizer.get(), 0, SYNCHRONIZER_ELEMENTS * sizeof(float), stream));
+        HIP_CHECK_EXC(hipStreamSynchronize(stream));
         return buffers;
     }
 
@@ -1138,11 +1171,7 @@ namespace
             stride = nextPrime(total / static_cast<size_t>(pair.numElementsToValidate));
         size_t checkedTarget = (total + stride - 1) / stride;
 
-        HIP_CHECK_EXC(hipMemcpyAsync(buffers.devReferenceD.get(),
-                                     buffers.hostD.data(),
-                                     buffers.hostD.size() * sizeof(Half),
-                                     hipMemcpyHostToDevice,
-                                     stream));
+        HIP_CHECK_EXC(hipMemsetAsync(buffers.devReferenceD.get(), 0, total * sizeof(Half), stream));
 
         HipblasltHandle handle;
         int64_t         m     = pair.m;
@@ -1454,7 +1483,7 @@ namespace
                 return;
             }
 
-            auto buffers = makeBuffers(pair, workspaceSize);
+            auto buffers = makeBuffers(pair, workspaceSize, mode, validationBackend, stream);
             auto inputs  = makeInputs(buffers, problem);
             std::vector<TensileLite::KernelInvocation> kernels;
             void* dUA     = nullptr;

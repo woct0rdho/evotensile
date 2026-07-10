@@ -150,8 +150,14 @@ A timing row can be produced only for a pair present in the prepared batch's val
 ## Validation Backends
 
 Supported validation backends are:
-- `hipblaslt`: GPU-oracle validation, used by default.
+- `hipblaslt`: GPU-oracle validation, used by default for production tuning.
 - `cpu`: CPU/OpenBLAS-style audit validation when supported.
+
+CPU validation is not feasible as a production tuning backend. OpenBLAS otherwise creates a large thread pool per concurrent validator, so audit runs must explicitly limit `OPENBLAS_NUM_THREADS`. Even with that limit, the CPU reference is substantially slower and retains additional host tensors. EvoTensile deliberately does not distribute validation work across both CPU and GPU: the expected throughput gain does not justify separate resource pools, backend-aware dispatch, evidence reconciliation, and the additional failure modes that mixed scheduling would introduce.
+
+Benchmark mode and hipBLASLt validation initialize deterministic A, B, C, bias, and scale tensors directly in `hipMalloc` storage. They do not retain full host tensor copies. HipBLASLt validation additionally allocates only the device reference output and comparison summary required by the GPU oracle. CPU validation retains host A, B, C, bias, scale, and result tensors because its reference calculation consumes them.
+
+On the `8192,8192,1,8192` shape, the device-initialized hipBLASLt path reduced observed structured-runner RSS from roughly `891 MiB` to `235 MiB`. The measured GTT increase was about `947 MiB`, including tensors, the fixed workspace, loaded code objects, and runtime overhead.
 
 There is no public `none` validation backend and no trusted-validation bypass. Skipping correctness is represented only by benchmark mode after compatible validation evidence already exists.
 
