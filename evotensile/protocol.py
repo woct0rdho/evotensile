@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Literal
 
 from .candidate import stable_hash
 
@@ -32,6 +32,7 @@ BENCHMARK_PROTOCOL_KEYS = (
 
 @dataclass(frozen=True)
 class BenchmarkProtocol:
+    role: Literal["main", "probe"] = "main"
     kernel_time: bool = True
     precise_kernel_time: bool = True
     num_warmups: int = 10
@@ -57,6 +58,8 @@ class BenchmarkProtocol:
     validation_backend: str = "hipblaslt"
 
     def __post_init__(self) -> None:
+        if self.role not in {"main", "probe"}:
+            raise ValueError("role must be one of: main, probe")
         if self.num_warmups < 0:
             raise ValueError("num_warmups must be non-negative")
         if self.num_benchmarks <= 0:
@@ -73,14 +76,6 @@ class BenchmarkProtocol:
             raise ValueError("ParallelGpuExecution must be 1 for serial structured benchmarking")
         if self.validation_backend not in {"cpu", "hipblaslt"}:
             raise ValueError("validation_backend must be one of: cpu, hipblaslt")
-
-    @property
-    def samples_per_pair(self) -> int:
-        return self.num_benchmarks
-
-    @property
-    def launches_per_sample(self) -> int:
-        return self.enqueues_per_sync * self.syncs_per_benchmark
 
     def with_overrides(self, **overrides: Any) -> "BenchmarkProtocol":
         clean = {key: value for key, value in overrides.items() if value is not None}
@@ -116,7 +111,10 @@ class BenchmarkProtocol:
         return {"ValidationBackend": self.validation_backend}
 
     def identity_parameters(self) -> dict[str, Any]:
-        return {key: value for key, value in self.global_parameters().items() if key in BENCHMARK_PROTOCOL_KEYS}
+        return {
+            "BenchmarkRole": self.role,
+            **{key: value for key, value in self.global_parameters().items() if key in BENCHMARK_PROTOCOL_KEYS},
+        }
 
     def validation_identity_parameters(self) -> dict[str, Any]:
         return {

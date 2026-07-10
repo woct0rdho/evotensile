@@ -1,8 +1,61 @@
-from evotensile.adaptive_retime import AdaptivePolicy, decide_shape_retime, timing_stats_from_times
+from evotensile.adaptive_retime import (
+    AdaptivePolicy,
+    ProbePolicy,
+    decide_shape_probe,
+    decide_shape_retime,
+    timing_stats_from_times,
+)
 
 
 def _stats(candidate_hash: str, samples: list[float]):
     return timing_stats_from_times("m1_n1_b1_k1", candidate_hash, samples)
+
+
+def test_probe_screens_only_confidently_slow_candidates():
+    decision = decide_shape_probe(
+        "m1_n1_b1_k1",
+        [
+            _stats("best", [100.0, 101.0, 99.0]),
+            _stats("near", [350.0, 352.0, 348.0]),
+            _stats("slow", [500.0, 505.0, 495.0]),
+        ],
+        policy=ProbePolicy(max_slowdown_factor=4.0, min_survivors=1),
+    )
+
+    assert decision.reference_hash == "best"
+    assert decision.survivor_hashes == ("best", "near")
+    assert decision.screened_hashes == ("slow",)
+
+
+def test_probe_minimum_survivors_fail_open_for_exploration():
+    decision = decide_shape_probe(
+        "m1_n1_b1_k1",
+        [
+            _stats("best", [100.0, 100.0, 100.0]),
+            _stats("second", [500.0, 500.0, 500.0]),
+            _stats("third", [600.0, 600.0, 600.0]),
+        ],
+        policy=ProbePolicy(max_slowdown_factor=2.0, min_survivors=2),
+    )
+
+    assert decision.survivor_hashes == ("best", "second")
+    assert decision.screened_hashes == ("third",)
+
+
+def test_probe_can_use_existing_main_protocol_incumbent():
+    decision = decide_shape_probe(
+        "m1_n1_b1_k1",
+        [
+            _stats("new", [450.0, 451.0, 449.0]),
+            _stats("slower", [600.0, 601.0, 599.0]),
+        ],
+        reference_stats=[_stats("incumbent", [100.0, 100.5, 99.5])],
+        policy=ProbePolicy(max_slowdown_factor=4.0, min_survivors=1),
+    )
+
+    assert decision.reference_hash == "incumbent"
+    assert decision.survivor_hashes == ("new",)
+    assert decision.screened_hashes == ("slower",)
 
 
 def test_adaptive_retime_resolves_clear_winner():

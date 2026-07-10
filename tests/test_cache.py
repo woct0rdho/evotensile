@@ -28,16 +28,19 @@ def test_protocol_hash_ignores_sampling_budget_and_validation_execution():
     gpu_only_topup = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_elements_to_validate=0))
     cpu_validation = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(validation_backend="cpu"))
     changed_warmups = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=5))
+    probe = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(role="probe"))
     assert base == more_samples
     assert base == gpu_only_topup
     assert base == cpu_validation
     assert base != changed_warmups
+    assert base != probe
 
 
 def test_validation_protocol_hash_tracks_correctness_compatibility():
     base = DEFAULT_BENCHMARK_PROTOCOL.validation_protocol_hash()
     assert base == DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=120).validation_protocol_hash()
     assert base == DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=1).validation_protocol_hash()
+    assert base == DEFAULT_BENCHMARK_PROTOCOL.with_overrides(role="probe").validation_protocol_hash()
     assert base != DEFAULT_BENCHMARK_PROTOCOL.with_overrides(validation_backend="cpu").validation_protocol_hash()
     assert base != DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_elements_to_validate=128).validation_protocol_hash()
     assert base != DEFAULT_BENCHMARK_PROTOCOL.with_overrides(data_init_type_a=2).validation_protocol_hash()

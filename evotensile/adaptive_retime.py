@@ -96,6 +96,47 @@ class ShapeRetimingDecision:
 
 
 @dataclass(frozen=True)
+class ShapeProbeDecision:
+    shape_id: str
+    reference_hash: str
+    survivor_hashes: tuple[str, ...]
+    screened_hashes: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ProbePolicy:
+    samples: int = 3
+    max_slowdown_factor: float = 4.0
+    confidence: float = 0.90
+    noise_floor_pct: float = 5.0
+    min_survivors: int = 8
+
+    def __post_init__(self) -> None:
+        if self.samples < 2:
+            raise ValueError("probe samples must be at least 2")
+        if self.max_slowdown_factor < 1.0:
+            raise ValueError("probe max slowdown factor must be at least 1")
+        if not 0.0 < self.confidence < 1.0:
+            raise ValueError("probe confidence must be in (0, 1)")
+        if self.noise_floor_pct < 0.0:
+            raise ValueError("probe noise floor must be non-negative")
+        if self.min_survivors <= 0:
+            raise ValueError("probe minimum survivors must be positive")
+
+    @property
+    def max_slowdown_log(self) -> float:
+        return math.log(self.max_slowdown_factor)
+
+    @property
+    def noise_floor_log(self) -> float:
+        return math.log1p(self.noise_floor_pct / 100.0)
+
+    @property
+    def z_value(self) -> float:
+        return statistics.NormalDist().inv_cdf(0.5 + self.confidence / 2.0)
+
+
+@dataclass(frozen=True)
 class AdaptivePolicy:
     epsilon_pct: float = 2.0
     confidence: float = 0.95
@@ -104,6 +145,22 @@ class AdaptivePolicy:
     sample_step: int = 10
     max_k: int = 8
     min_effect_pct: float = 0.5
+
+    def __post_init__(self) -> None:
+        if self.epsilon_pct < 0.0:
+            raise ValueError("adaptive epsilon must be non-negative")
+        if not 0.0 < self.confidence < 1.0:
+            raise ValueError("adaptive confidence must be in (0, 1)")
+        if self.min_retime_samples <= 0:
+            raise ValueError("adaptive minimum samples must be positive")
+        if self.max_retime_samples < self.min_retime_samples:
+            raise ValueError("adaptive maximum samples must be at least the minimum")
+        if self.sample_step <= 0:
+            raise ValueError("adaptive sample step must be positive")
+        if self.max_k <= 0:
+            raise ValueError("adaptive max-k must be positive")
+        if self.min_effect_pct <= 0.0:
+            raise ValueError("adaptive minimum effect must be positive")
 
     @property
     def epsilon_log(self) -> float:
@@ -167,14 +224,57 @@ def _gap_ci(
     right: CandidateTimingStats,
     *,
     z_value: float,
+    sigma_floor_log: float = 0.0,
 ) -> tuple[float, float, float]:
     gap = left.score_log_time - right.score_log_time
-    se = math.sqrt(left.stderr_median_log**2 + right.stderr_median_log**2)
+    left_se = max(
+        left.stderr_median_log,
+        MEDIAN_SE_FACTOR * sigma_floor_log / math.sqrt(left.samples),
+    )
+    right_se = max(
+        right.stderr_median_log,
+        MEDIAN_SE_FACTOR * sigma_floor_log / math.sqrt(right.samples),
+    )
+    se = math.sqrt(left_se**2 + right_se**2)
     return gap, gap - z_value * se, gap + z_value * se
 
 
 def _gap_pct(gap_log: float) -> float:
     return (math.exp(gap_log) - 1.0) * 100.0
+
+
+def decide_shape_probe(
+    shape_id: str,
+    probe_stats: Sequence[CandidateTimingStats],
+    *,
+    policy: ProbePolicy,
+    reference_stats: Sequence[CandidateTimingStats] = (),
+) -> ShapeProbeDecision:
+    ranked = sorted(probe_stats, key=lambda item: (item.score_log_time, item.candidate_hash))
+    if not ranked:
+        raise ValueError(f"no probe timing stats for {shape_id}")
+    reference = min(
+        (*ranked, *reference_stats),
+        key=lambda item: (item.score_log_time, item.candidate_hash),
+    )
+    forced_survivors = {item.candidate_hash for item in ranked[: policy.min_survivors]}
+    survivors: list[str] = []
+    screened: list[str] = []
+    for contender in ranked:
+        _, ci_low, _ = _gap_ci(
+            contender,
+            reference,
+            z_value=policy.z_value,
+            sigma_floor_log=policy.noise_floor_log,
+        )
+        survives = ci_low <= policy.max_slowdown_log or contender.candidate_hash in forced_survivors
+        (survivors if survives else screened).append(contender.candidate_hash)
+    return ShapeProbeDecision(
+        shape_id=shape_id,
+        reference_hash=reference.candidate_hash,
+        survivor_hashes=tuple(survivors),
+        screened_hashes=tuple(screened),
+    )
 
 
 def _pairwise_equivalent(stats: Sequence[CandidateTimingStats], *, policy: AdaptivePolicy) -> bool:

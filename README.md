@@ -94,7 +94,7 @@ Supported protocol overrides include `--num-benchmarks`, `--num-warmups`, `--enq
 
 Validation is a hard gate stored independently from timing. Adaptive top-ups reuse the original compiled and correctness-verified artifacts. They perform no recompilation or repeated verification.
 
-Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches` uses adaptive sampling by default: it prepares all candidates once, runs a small serial timing budget, then appends only missing benchmark samples for plausible contenders from the prepared-artifact index. Use `--fixed-sampling` only for debugging or fixed-budget utility runs.
+Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches` uses adaptive sampling by default: it prepares all candidates once, gives each validation-passed pair a separate three-launch probe, runs the main timing protocol only for probe survivors, then appends missing main-protocol samples for plausible contenders from the prepared-artifact index. Use `--fixed-sampling` only for debugging or fixed-budget utility runs.
 
 Structured scheduler runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
 
-from .adaptive_retime import AdaptivePolicy, decide_retime_by_shape, load_timing_stats
+from .adaptive_retime import AdaptivePolicy, ProbePolicy, decide_retime_by_shape, decide_shape_probe, load_timing_stats
 from .cache import POSITIVE_CACHE_STATUSES
 from .candidate import Candidate, Shape, stable_hash
 from .database import EvaluationInsert, EvaluationSummary, EvoTensileDB
@@ -120,6 +120,9 @@ class ScheduleResult:
     planned_batches: list[PlannedBatch]
     executed_batches: list[ExecutedBatch] = field(default_factory=list)
     adaptive_rounds: int = 0
+    probe_protocol_hash: str | None = None
+    probe_survivor_pairs: int = 0
+    probe_screened_pairs: int = 0
 
     @property
     def missing_pairs(self) -> int:
@@ -1075,6 +1078,49 @@ def _ingest_result_from_inserts(
     )
 
 
+def _probe_survivor_keys(
+    db: EvoTensileDB,
+    *,
+    shapes: list[Shape],
+    candidates: list[Candidate],
+    available_pairs: set[tuple[str, str]],
+    problem_type_hash: str,
+    probe_protocol_hash: str,
+    benchmark_protocol_hash: str,
+    policy: ProbePolicy,
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    shape_ids = {shape.id for shape in shapes}
+    candidate_hashes = {candidate.hash for candidate in candidates}
+    probe_stats = load_timing_stats(
+        db,
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hashes=[probe_protocol_hash],
+        min_samples=policy.samples,
+        shape_ids=shape_ids,
+        candidate_hashes=candidate_hashes,
+    )
+    reference_stats = load_timing_stats(
+        db,
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hashes=[benchmark_protocol_hash],
+        min_samples=1,
+        shape_ids=shape_ids,
+    )
+    screened: set[tuple[str, str]] = set()
+    for shape_id, stats in probe_stats.items():
+        eligible = [stats_item for stats_item in stats if (shape_id, stats_item.candidate_hash) in available_pairs]
+        if not eligible:
+            continue
+        decision = decide_shape_probe(
+            shape_id,
+            eligible,
+            policy=policy,
+            reference_stats=reference_stats.get(shape_id, ()),
+        )
+        screened.update((shape_id, candidate_hash) for candidate_hash in decision.screened_hashes)
+    return available_pairs - screened, screened
+
+
 def _adaptive_topup_groups(
     db: EvoTensileDB,
     *,
@@ -1466,7 +1512,7 @@ def execute_schedule(
     build_timeout_s: float | None = None,
     runner_timeout_s: float | None = None,
     adaptive_policy: AdaptivePolicy | None = None,
-    adaptive_initial_samples: int = 3,
+    probe_policy: ProbePolicy | None = None,
     adaptive_max_rounds: int = 4,
     prepare_workers: int | None = None,
     compile_cache_root: str | Path | None = None,
@@ -1475,21 +1521,21 @@ def execute_schedule(
         raise ValueError("--runner-bin is required")
     if prepare_workers is not None and prepare_workers <= 0:
         raise ValueError("prepare_workers must be positive")
-    if adaptive_policy is not None and adaptive_initial_samples <= 0:
-        raise ValueError("adaptive_initial_samples must be positive")
+    if adaptive_policy is not None and probe_policy is None:
+        raise ValueError("probe_policy is required when adaptive sampling is enabled")
     if adaptive_max_rounds < 0:
         raise ValueError("adaptive_max_rounds must be non-negative")
 
     protocol = protocol or target_profile.default_protocol
+    if protocol.role != "main":
+        raise ValueError("execute_schedule requires a main benchmark protocol")
     resolved_prepare_workers = default_prepare_workers() if prepare_workers is None else prepare_workers
     problem_type_hash = target_profile.problem_type_hash
     benchmark_protocol_hash = target_profile.benchmark_protocol_hash(protocol)
     validation_protocol_hash = protocol.validation_protocol_hash()
     build_timeout_s = _resolve_timeout(build_timeout_s, target_profile.default_build_timeout_s)
     runner_timeout_s = _resolve_timeout(runner_timeout_s, target_profile.default_runner_timeout_s)
-    initial_samples = (
-        adaptive_initial_samples if adaptive_policy is not None else max(min_samples, protocol.num_benchmarks)
-    )
+    initial_samples = max(min_samples, protocol.num_benchmarks)
 
     db.init()
     db.register_candidates(candidates)
@@ -1565,15 +1611,94 @@ def execute_schedule(
 
     executed: list[ExecutedBatch] = []
     pair_owner: dict[tuple[str, str], tuple[PreparedBatch, RunnablePair]] = {}
-
-    # Phase 2: one benchmark subprocess at a time, after every prepare worker has exited.
     for item in prepared:
         for pair in item.validated_pairs:
             pair_owner[(pair.shape_id, pair.candidate_hash)] = (item, pair)
+
+    if adaptive_policy is None:
+        for item in prepared:
+            benchmark = _benchmark_prepared_pairs(
+                db,
+                item,
+                pairs=item.validated_pairs,
+                protocol=protocol.with_overrides(num_benchmarks=item.planned.samples_per_pair),
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                runner_bin=runner_bin,
+                runner_timeout_s=runner_timeout_s,
+                phase="initial",
+                include_preparation=True,
+            )
+            executed.append(benchmark)
+            if not keep_going and benchmark.ingest is not None and not benchmark.ingest.ok:
+                return ScheduleResult(planned_batches=planned, executed_batches=executed)
+        return ScheduleResult(planned_batches=planned, executed_batches=executed)
+
+    assert probe_policy is not None
+    probe_protocol = protocol.with_overrides(
+        role="probe",
+        num_warmups=0,
+        num_benchmarks=probe_policy.samples,
+        enqueues_per_sync=1,
+        syncs_per_benchmark=1,
+        num_elements_to_validate=0,
+    )
+    probe_protocol_hash = target_profile.benchmark_protocol_hash(probe_protocol)
+
+    # Phase 2: give every validated pair only the missing part of its three-launch probe budget.
+    for item in prepared:
+        if not item.validated_pairs:
+            continue
+        counts = db.reusable_cache_entry_counts(
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=probe_protocol_hash,
+            shape_ids=[shape.id for shape in item.planned.shapes],
+            candidate_hashes=[candidate.hash for candidate in item.planned.candidates],
+        )
+        pairs_by_remaining: dict[int, list[RunnablePair]] = {}
+        for pair in item.validated_pairs:
+            current_samples = counts.get((pair.shape_id, pair.candidate_hash), {}).get("ok", 0)
+            remaining = probe_policy.samples - current_samples
+            if remaining > 0:
+                pairs_by_remaining.setdefault(remaining, []).append(pair)
+        for remaining, pairs in sorted(pairs_by_remaining.items()):
+            probe = _benchmark_prepared_pairs(
+                db,
+                item,
+                pairs=pairs,
+                protocol=probe_protocol.with_overrides(num_benchmarks=remaining),
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=probe_protocol_hash,
+                runner_bin=runner_bin,
+                runner_timeout_s=runner_timeout_s,
+                phase="probe",
+            )
+            executed.append(probe)
+            if not keep_going and probe.ingest is not None and not probe.ingest.ok:
+                return ScheduleResult(
+                    planned_batches=planned,
+                    executed_batches=executed,
+                    probe_protocol_hash=probe_protocol_hash,
+                )
+
+    survivor_keys, screened_keys = _probe_survivor_keys(
+        db,
+        shapes=shapes,
+        candidates=candidates,
+        available_pairs=set(pair_owner),
+        problem_type_hash=problem_type_hash,
+        probe_protocol_hash=probe_protocol_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+        policy=probe_policy,
+    )
+
+    # Phase 3: run the main timing protocol only for probe survivors.
+    for item in prepared:
+        main_pairs = [pair for pair in item.validated_pairs if (pair.shape_id, pair.candidate_hash) in survivor_keys]
         benchmark = _benchmark_prepared_pairs(
             db,
             item,
-            pairs=item.validated_pairs,
+            pairs=main_pairs,
             protocol=protocol.with_overrides(num_benchmarks=item.planned.samples_per_pair),
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
@@ -1584,10 +1709,13 @@ def execute_schedule(
         )
         executed.append(benchmark)
         if not keep_going and benchmark.ingest is not None and not benchmark.ingest.ok:
-            return ScheduleResult(planned_batches=planned, executed_batches=executed)
-
-    if adaptive_policy is None:
-        return ScheduleResult(planned_batches=planned, executed_batches=executed)
+            return ScheduleResult(
+                planned_batches=planned,
+                executed_batches=executed,
+                probe_protocol_hash=probe_protocol_hash,
+                probe_survivor_pairs=len(survivor_keys),
+                probe_screened_pairs=len(screened_keys),
+            )
 
     completed_rounds = 0
     for _ in range(adaptive_max_rounds):
@@ -1598,7 +1726,7 @@ def execute_schedule(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
             policy=adaptive_policy,
-            min_samples=adaptive_initial_samples,
+            min_samples=initial_samples,
         )
         requests: dict[tuple[int, int], tuple[PreparedBatch, list[RunnablePair]]] = {}
         for target_samples, group_shapes, group_candidates in groups:
@@ -1644,6 +1772,9 @@ def execute_schedule(
                     planned_batches=planned,
                     executed_batches=executed,
                     adaptive_rounds=completed_rounds,
+                    probe_protocol_hash=probe_protocol_hash,
+                    probe_survivor_pairs=len(survivor_keys),
+                    probe_screened_pairs=len(screened_keys),
                 )
         if not ran_round:
             break
@@ -1653,4 +1784,7 @@ def execute_schedule(
         planned_batches=planned,
         executed_batches=executed,
         adaptive_rounds=completed_rounds,
+        probe_protocol_hash=probe_protocol_hash,
+        probe_survivor_pairs=len(survivor_keys),
+        probe_screened_pairs=len(screened_keys),
     )
