@@ -124,7 +124,7 @@ Shape-dependent failures are recorded as rejected observations for that `(shape,
 
 ## Sampling Helpers
 
-The search-space module exposes deterministic construction helpers for callers that need fresh candidates. These helpers sample broad domain values, apply linked repairs, and retry until `cheap_constraints()` passes. The helper path currently biases toward the higher-yield TLDS2 construction path and enforces proposal-side VALU headroom for generated random candidates, but explicit candidates from imports or DB parents can still use any valid domain path.
+The search-space module exposes deterministic construction helpers for callers that need fresh candidates. These helpers sample broad domain values, apply linked repairs, and retry until `cheap_constraints()` passes. Generated random candidates balance the compatible TLDS0 and TLDS2 construction branches and enforce proposal-side VALU headroom, but explicit candidates from imports or DB parents can still use any valid domain path.
 
 Search algorithms decide how many candidates to request, which parents to use, and how generated candidates are ranked. Those policies are documented separately in `docs/search_algorithms.md`, `docs/gomea.md`, and `docs/linkage_learning.md`.
 

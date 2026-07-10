@@ -34,6 +34,15 @@ def test_protocol_hash_ignores_sampling_budget_and_validation_execution():
     assert base != changed_warmups
 
 
+def test_validation_protocol_hash_tracks_correctness_compatibility():
+    base = DEFAULT_BENCHMARK_PROTOCOL.validation_protocol_hash()
+    assert base == DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=120).validation_protocol_hash()
+    assert base == DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=1).validation_protocol_hash()
+    assert base != DEFAULT_BENCHMARK_PROTOCOL.with_overrides(validation_backend="cpu").validation_protocol_hash()
+    assert base != DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_elements_to_validate=128).validation_protocol_hash()
+    assert base != DEFAULT_BENCHMARK_PROTOCOL.with_overrides(data_init_type_a=2).validation_protocol_hash()
+
+
 def test_db_cache_key_lookup(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
     db.init()
@@ -57,6 +66,7 @@ def test_db_cache_key_lookup(tmp_path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=123.0,
+        validation="PASSED prior_validation",
     )
     assert db.has_cached_evaluation(key)
     assert db.has_reusable_cache_entry(key)

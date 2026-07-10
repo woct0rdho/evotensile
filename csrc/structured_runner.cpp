@@ -46,6 +46,10 @@
 #include <string_view>
 #include <vector>
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
 namespace fs = std::filesystem;
 
 namespace
@@ -62,7 +66,12 @@ namespace
     {
         Cpu,
         Hipblaslt,
-        None,
+    };
+
+    enum class RunMode
+    {
+        Validate,
+        Benchmark,
     };
 
     struct Args
@@ -74,10 +83,46 @@ namespace
         std::string codeObject;
         int         device        = 0;
         bool        useUserArgs    = false;
-        bool        validateOnly   = false;
         int         primeEnqueues  = 0;
         size_t      workspaceSize  = DEFAULT_WORKSPACE_BYTES;
+        std::optional<RunMode> mode;
         ValidationBackend validationBackend = ValidationBackend::Hipblaslt;
+    };
+
+    class ActivityLock
+    {
+    public:
+        explicit ActivityLock(RunMode mode)
+        {
+            char const* configured = std::getenv("EVOTENSILE_APU_LOCK_PATH");
+            m_path = configured && *configured ? configured : "/tmp/evotensile-apu.lock";
+            m_fd   = ::open(m_path.c_str(), O_CREAT | O_RDWR, 0666);
+            if(m_fd < 0)
+                throw std::runtime_error("failed to open APU lock: " + m_path);
+            int operation = mode == RunMode::Benchmark ? LOCK_EX : LOCK_SH;
+            if(::flock(m_fd, operation) != 0)
+            {
+                ::close(m_fd);
+                m_fd = -1;
+                throw std::runtime_error("failed to acquire APU lock: " + m_path);
+            }
+        }
+
+        ActivityLock(ActivityLock const&)            = delete;
+        ActivityLock& operator=(ActivityLock const&) = delete;
+
+        ~ActivityLock()
+        {
+            if(m_fd >= 0)
+            {
+                ::flock(m_fd, LOCK_UN);
+                ::close(m_fd);
+            }
+        }
+
+    private:
+        int         m_fd = -1;
+        std::string m_path;
     };
 
     struct Pair
@@ -429,10 +474,20 @@ namespace
 
     [[noreturn]] void usage(std::ostream& os, int code)
     {
-        os << "usage: evotensile-structured-runner --pairs pairs.jsonl --output results.jsonl "
-              "--library-dir DIR [--library-file FILE] [--code-object FILE] [--device IDX] "
-              "[--validation-backend cpu|hipblaslt|none] [--prime-enqueues N]\n";
+        os << "usage: evotensile-structured-runner --mode validate|benchmark "
+              "--pairs pairs.jsonl --output results.jsonl --library-dir DIR "
+              "[--library-file FILE] [--code-object FILE] [--device IDX] "
+              "[--validation-backend cpu|hipblaslt] [--prime-enqueues N]\n";
         std::exit(code);
+    }
+
+    RunMode parseRunMode(std::string const& value)
+    {
+        if(value == "validate")
+            return RunMode::Validate;
+        if(value == "benchmark")
+            return RunMode::Benchmark;
+        throw std::runtime_error("unknown run mode: " + value);
     }
 
     ValidationBackend parseValidationBackend(std::string const& value)
@@ -441,8 +496,6 @@ namespace
             return ValidationBackend::Cpu;
         if(value == "hipblaslt")
             return ValidationBackend::Hipblaslt;
-        if(value == "none")
-            return ValidationBackend::None;
         throw std::runtime_error("unknown validation backend: " + value);
     }
 
@@ -454,8 +507,6 @@ namespace
             return "cpu";
         case ValidationBackend::Hipblaslt:
             return "hipblaslt";
-        case ValidationBackend::None:
-            return "none";
         }
         return "unknown";
     }
@@ -472,7 +523,9 @@ namespace
                 return std::string(argv[++i]);
             };
 
-            if(key == "--pairs")
+            if(key == "--mode")
+                args.mode = parseRunMode(needValue(key));
+            else if(key == "--pairs")
                 args.pairs = needValue(key);
             else if(key == "--output")
                 args.output = needValue(key);
@@ -490,8 +543,6 @@ namespace
                 args.primeEnqueues = std::stoi(needValue(key));
             else if(key == "--use-user-args")
                 args.useUserArgs = true;
-            else if(key == "--validate-only")
-                args.validateOnly = true;
             else if(key == "--validation-backend")
                 args.validationBackend = parseValidationBackend(needValue(key));
             else if(key == "--help" || key == "-h")
@@ -499,6 +550,8 @@ namespace
             else
                 throw std::runtime_error("unknown argument: " + key);
         }
+        if(!args.mode)
+            throw std::runtime_error("--mode is required");
         if(args.pairs.empty() || args.output.empty())
             throw std::runtime_error("--pairs and --output are required");
         if(args.libraryDir.empty() && args.libraryFile.empty())
@@ -1239,7 +1292,7 @@ namespace
                         ValidationBackend backend,
                         std::string& message)
     {
-        if(pair.numElementsToValidate == 0 || backend == ValidationBackend::None)
+        if(pair.numElementsToValidate == 0)
         {
             message = "NO_CHECK";
             return true;
@@ -1364,7 +1417,7 @@ namespace
                  hipStream_t stream,
                  size_t workspaceSize,
                  bool useUserArgs,
-                 bool validateOnly,
+                 RunMode mode,
                  int primeEnqueues,
                  ValidationBackend validationBackend)
     {
@@ -1419,58 +1472,37 @@ namespace
             if(primeEnqueues > 0)
                 HIP_CHECK_EXC(hipStreamSynchronize(stream));
 
-            std::string validationDetail = pair.numElementsToValidate == 0 ? "NO_CHECK" : "PASSED";
-            bool        validationOk     = true;
-            for(int i = 0; i < pair.numWarmups; ++i)
+            if(mode == RunMode::Validate)
             {
-                HIP_CHECK_EXC(adapter.launchKernels(kernels, stream, nullptr, nullptr));
-                if(i == 0 && pair.numElementsToValidate != 0)
-                {
-                    HIP_CHECK_EXC(hipStreamSynchronize(stream));
-                    validationOk = validateResult(
-                        pair, buffers, stream, workspaceSize, validationBackend, validationDetail);
-                    if(!validationOk)
-                        break;
-                }
-            }
-            if(pair.numWarmups == 0 && pair.numElementsToValidate != 0)
-            {
+                if(pair.numElementsToValidate == 0)
+                    throw std::runtime_error("validate mode requires correctness verification");
                 HIP_CHECK_EXC(adapter.launchKernels(kernels, stream, nullptr, nullptr));
                 HIP_CHECK_EXC(hipStreamSynchronize(stream));
-                validationOk = validateResult(
-                    pair, buffers, stream, workspaceSize, validationBackend, validationDetail);
+                std::string validationDetail = "PASSED";
+                bool validationOk
+                    = validateResult(pair, buffers, stream, workspaceSize, validationBackend, validationDetail);
+                if(useUserArgs)
+                    solution->relaseDeviceUserArgs(dUA, dUAHost);
+                emitRow(out,
+                        pair,
+                        validationOk ? "ok" : "validation_fail",
+                        0,
+                        std::nullopt,
+                        std::nullopt,
+                        validationOk ? validationToken(validationDetail) : "FAILED",
+                        validationDetail,
+                        pair.librarySolutionIndex);
+                return;
             }
+
+            if(pair.numElementsToValidate != 0)
+                throw std::runtime_error("benchmark mode requires num_elements_to_validate=0");
+            for(int i = 0; i < pair.numWarmups; ++i)
+                HIP_CHECK_EXC(adapter.launchKernels(kernels, stream, nullptr, nullptr));
             HIP_CHECK_EXC(hipStreamSynchronize(stream));
 
             if(useUserArgs)
                 solution->relaseDeviceUserArgs(dUA, dUAHost);
-
-            if(!validationOk)
-            {
-                emitRow(out,
-                        pair,
-                        "validation_fail",
-                        0,
-                        std::nullopt,
-                        std::nullopt,
-                        "FAILED",
-                        validationDetail,
-                        pair.librarySolutionIndex);
-                return;
-            }
-            if(validateOnly)
-            {
-                emitRow(out,
-                        pair,
-                        "ok",
-                        0,
-                        std::nullopt,
-                        std::nullopt,
-                        validationToken(validationDetail),
-                        validationDetail,
-                        pair.librarySolutionIndex);
-                return;
-            }
 
             double flopCount = static_cast<double>(problem.flopCount());
             int    launches  = pair.enqueuesPerSync * pair.syncsPerBenchmark;
@@ -1494,8 +1526,8 @@ namespace
                         sample,
                         timeUs,
                         gflops,
-                        validationToken(validationDetail),
-                        validationDetail,
+                        "NO_CHECK",
+                        "NO_CHECK",
                         pair.librarySolutionIndex);
             }
         }
@@ -1519,6 +1551,7 @@ int main(int argc, char** argv)
     try
     {
         Args args = parseArgs(argc, argv);
+        ActivityLock activityLock(*args.mode);
         auto pairs = readPairs(args.pairs);
         if(pairs.empty())
             throw std::runtime_error("pairs file contains no runnable pairs");
@@ -1562,6 +1595,7 @@ int main(int argc, char** argv)
 
         std::cerr << "evotensile structured runner: " << pairs.size() << " pair(s), arch=" << arch
                   << ", library=" << libraryFile << ", codeObject=" << codeObject
+                  << ", mode=" << (*args.mode == RunMode::Validate ? "validate" : "benchmark")
                   << ", validation_backend=" << validationBackendName(args.validationBackend) << "\n";
         for(auto const& pair : pairs)
             runPair(out,
@@ -1572,7 +1606,7 @@ int main(int argc, char** argv)
                     stream,
                     args.workspaceSize,
                     args.useUserArgs,
-                    args.validateOnly,
+                    *args.mode,
                     args.primeEnqueues,
                     args.validationBackend);
         out.flush();

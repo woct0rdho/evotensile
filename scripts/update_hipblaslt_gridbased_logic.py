@@ -186,6 +186,14 @@ def _run_solution_dirs(
             WHERE e.problem_type_hash = ?
               AND e.benchmark_protocol_hash = ?
               AND e.status = 'ok'
+              AND e.time_us IS NOT NULL
+              AND e.time_us > 0
+              AND UPPER(CASE
+                WHEN INSTR(TRIM(COALESCE(e.validation, '')), ' ') = 0
+                  THEN TRIM(COALESCE(e.validation, ''))
+                ELSE SUBSTR(TRIM(COALESCE(e.validation, '')), 1,
+                            INSTR(TRIM(COALESCE(e.validation, '')), ' ') - 1)
+              END) IN ('PASSED', 'OK', 'VALID')
               AND e.candidate_hash IN ({placeholders})
               AND r.output_dir IS NOT NULL
             """,

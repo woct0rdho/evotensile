@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from evotensile.activity import apu_activity_lock
 from evotensile.candidate import Candidate
 from evotensile.database import EvoTensileDB
 from evotensile.profile import PROFILES, get_profile
@@ -292,7 +293,8 @@ def query_baselines(args: argparse.Namespace, shapes: list[Shape], env: dict[str
         stdout_path = logs_dir / f"{shape.id}.stdout.log"
         stderr_path = logs_dir / f"{shape.id}.stderr.log"
         print(f"[{index}/{len(shapes)}] query {shape.id}", flush=True)
-        proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=args.timeout, check=False)
+        with apu_activity_lock(exclusive=True):
+            proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=args.timeout, check=False)
         stdout_path.write_text(proc.stdout, encoding="utf-8", errors="replace")
         stderr_path.write_text(proc.stderr, encoding="utf-8", errors="replace")
         try:

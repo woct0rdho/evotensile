@@ -30,7 +30,7 @@ from .scheduler import (
     DEFAULT_TRANSFER_SHAPES,
     PROPOSAL_MODES,
     ScheduleResult,
-    default_batch_workers,
+    default_prepare_workers,
     detect_underperforming_shapes,
     execute_schedule,
     production_candidate_batch_size,
@@ -38,6 +38,7 @@ from .scheduler import (
     repair_seed_candidates,
 )
 from .search.coverage import candidate_coverage
+from .search.family import family_descriptor_counts, load_family_archive
 from .search.learned_linkage import learn_linkage_models_from_db
 from .search.random_search import initial_random_batch
 from .search_space import DOMAINS, MATRIX_INSTRUCTIONS, macro_tile
@@ -125,7 +126,7 @@ def _add_protocol_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--num-elements-to-validate", type=int, default=None)
     parser.add_argument(
         "--validation-backend",
-        choices=("cpu", "hipblaslt", "none"),
+        choices=("cpu", "hipblaslt"),
         default=None,
         help="Structured-runner validation backend; defaults to hipblaslt GPU oracle",
     )
@@ -173,7 +174,7 @@ def _resolve_candidate_batch_size(
         candidate_count=len(candidates),
         shape_count=len(shapes),
         shape_batch_size=args.shape_batch_size,
-        batch_workers=args.batch_workers,
+        prepare_workers=args.prepare_workers,
         max_candidate_batch_size=profile.default_candidate_batch_size,
     )
 
@@ -186,7 +187,7 @@ def _validate_schedule_args(args: argparse.Namespace) -> None:
         "shape_batch_size",
         "min_samples",
         "adaptive_initial_samples",
-        "batch_workers",
+        "prepare_workers",
     )
     for name in positive_ints:
         if getattr(args, name) <= 0:
@@ -309,7 +310,7 @@ def _execute_schedule_from_args(
         adaptive_policy=context.adaptive_policy,
         adaptive_initial_samples=args.adaptive_initial_samples,
         adaptive_max_rounds=args.adaptive_max_rounds,
-        batch_workers=args.batch_workers,
+        prepare_workers=args.prepare_workers,
         compile_cache_root=None
         if args.no_compile_cache
         else args.compile_cache_dir or Path(args.output_dir) / "compile_cache",
@@ -352,6 +353,31 @@ def _learned_linkage_metadata(
     }
 
 
+def _family_metadata(
+    context: ScheduleCliContext,
+    *,
+    candidates: list[Candidate],
+    shapes: list[Shape],
+) -> dict[str, object]:
+    descriptor_counts = family_descriptor_counts(candidates, profile=context.profile.name)
+    archive = load_family_archive(
+        context.db,
+        problem_type_hash=context.problem_hash,
+        benchmark_protocol_hash=context.protocol_hash,
+        shapes=shapes,
+        min_samples=1,
+        profile=context.profile.name,
+        limit=16,
+    )
+    return {
+        "family_descriptor_version": archive[0].descriptor.version if archive else None,
+        "candidate_family_count": len(descriptor_counts),
+        "candidate_family_counts": dict(sorted(descriptor_counts.items())),
+        "archive_family_count": len(archive),
+        "archive_families": [entry.summary() for entry in archive],
+    }
+
+
 def _schedule_metadata_common(
     args: argparse.Namespace,
     context: ScheduleCliContext,
@@ -366,6 +392,7 @@ def _schedule_metadata_common(
         "profile": context.profile.name,
         "problem_type_hash": context.problem_hash,
         "benchmark_protocol_hash": context.protocol_hash,
+        "validation_protocol_hash": context.protocol.validation_protocol_hash(),
         "protocol": context.protocol.global_parameters(),
         "runner_protocol": context.protocol.runner_parameters(),
         "validation_backend": context.protocol.validation_backend,
@@ -374,7 +401,7 @@ def _schedule_metadata_common(
         "shapes": len(shapes),
         "candidate_batch_size": args.candidate_batch_size,
         "shape_batch_size": args.shape_batch_size,
-        "batch_workers": args.batch_workers,
+        "prepare_workers": args.prepare_workers,
         "compile_cache_root": None
         if args.no_compile_cache
         else str(args.compile_cache_dir or Path(args.output_dir) / "compile_cache"),
@@ -398,6 +425,7 @@ def _schedule_metadata_common(
         "planned_nominal_pairs": result.nominal_pairs,
         "planned_missing_samples": sum(batch.missing_samples for batch in result.planned_batches),
         "planned_nominal_samples": sum(batch.nominal_samples for batch in result.planned_batches),
+        **_family_metadata(context, candidates=candidates, shapes=shapes),
     }
 
 
@@ -452,10 +480,10 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--shape-batch-size", type=int, default=DEFAULT_PROFILE.default_shape_batch_size)
     parser.add_argument(
-        "--batch-workers",
+        "--prepare-workers",
         type=int,
-        default=default_batch_workers(),
-        help="Parallel TensileLite batches to run; defaults to available CPU cores",
+        default=default_prepare_workers(),
+        help="Parallel build/map/diagnostic/validation workers; timing always runs serially",
     )
     parser.add_argument("--min-samples", type=int, default=1)
     parser.add_argument("--ignore-cache", action="store_true")
@@ -520,6 +548,7 @@ def cmd_proposal_coverage(args: argparse.Namespace) -> int:
         proposal_shape_id=args.proposal_shape_id,
     )
     coverage = candidate_coverage(candidates)
+    descriptor_counts = family_descriptor_counts(candidates, profile=profile.name)
     payload = {
         **coverage,
         "profile": profile.name,
@@ -528,6 +557,36 @@ def cmd_proposal_coverage(args: argparse.Namespace) -> int:
         "gomea_count": args.gomea_count,
         "de_count": args.de_count,
         "local_count": args.local_count,
+        "candidate_family_count": len(descriptor_counts),
+        "candidate_family_counts": dict(sorted(descriptor_counts.items())),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_summarize_families(args: argparse.Namespace) -> int:
+    profile = _profile(args)
+    protocol = _protocol(args, profile)
+    db = EvoTensileDB.connect(args.db)
+    db.init()
+    shapes = (
+        _parse_shapes(args, profile) if getattr(args, "shapes", None) or getattr(args, "limit_shapes", None) else None
+    )
+    archive = load_family_archive(
+        db,
+        problem_type_hash=profile.problem_type_hash,
+        benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
+        shapes=shapes,
+        min_samples=args.min_samples,
+        profile=profile.name,
+        limit=args.limit,
+    )
+    payload = {
+        "profile": profile.name,
+        "problem_type_hash": profile.problem_type_hash,
+        "benchmark_protocol_hash": profile.benchmark_protocol_hash(protocol),
+        "families": len(archive),
+        "entries": [entry.summary() for entry in archive],
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
@@ -620,7 +679,7 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
     print(f"candidates: {len(candidates)}")
     print(f"candidate_batch_size: {args.candidate_batch_size}")
     print(f"shape_batch_size: {args.shape_batch_size}")
-    print(f"batch_workers: {args.batch_workers}")
+    print(f"prepare_workers: {args.prepare_workers}")
     if context.runner_bin:
         print(f"runner_bin: {context.runner_bin}")
     print(f"planned batches: {len(result.planned_batches)}")
@@ -648,7 +707,9 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
             {
                 "batch_index": executed.planned.batch_index,
                 "build_returncode": executed.build_returncode,
+                "validation_returncode": executed.validation_returncode,
                 "runner_returncode": executed.runner_returncode,
+                "phase": executed.phase,
                 "requires_validation": executed.planned.requires_validation,
                 "yaml_path": str(executed.yaml_path),
                 "manifest_path": str(executed.manifest_path),
@@ -698,8 +759,9 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         rejected = ingest.rejected if ingest is not None else 0
         unmapped = ingest.unmapped if ingest is not None else 0
         print(
-            f"executed {executed.planned.batch_index:04d}: build={executed.build_returncode} "
-            f"runner={executed.runner_returncode} inserted={inserted} rejected={rejected} unmapped={unmapped} "
+            f"executed {executed.planned.batch_index:04d}: phase={executed.phase} build={executed.build_returncode} "
+            f"validation={executed.validation_returncode} runner={executed.runner_returncode} "
+            f"inserted={inserted} rejected={rejected} unmapped={unmapped} "
             f"yaml={executed.yaml_path}"
         )
     return 0
@@ -778,7 +840,9 @@ def cmd_repair_outliers(args: argparse.Namespace) -> int:
             {
                 "batch_index": executed.planned.batch_index,
                 "build_returncode": executed.build_returncode,
+                "validation_returncode": executed.validation_returncode,
                 "runner_returncode": executed.runner_returncode,
+                "phase": executed.phase,
                 "requires_validation": executed.planned.requires_validation,
                 "yaml_path": str(executed.yaml_path),
                 "manifest_path": str(executed.manifest_path),
@@ -874,6 +938,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cache_identity_args(cmd)
     _add_protocol_args(cmd)
     cmd.set_defaults(func=cmd_summarize_cache)
+
+    cmd = sub.add_parser("summarize-families", help="Summarize family archive cells from cached evaluations")
+    cmd.add_argument("--db", required=True)
+    _add_candidate_shape_args(cmd)
+    _add_cache_identity_args(cmd)
+    _add_protocol_args(cmd)
+    cmd.add_argument("--min-samples", type=int, default=1)
+    cmd.add_argument("--limit", type=int, default=20)
+    cmd.set_defaults(func=cmd_summarize_families)
 
     cmd = sub.add_parser("rank-evals", help="Rank only validation-passed cached evaluations")
     cmd.add_argument("--db", required=True)

@@ -17,7 +17,7 @@ from evotensile.tensilelite_keys import (
     STORE_VECTOR_WIDTH_KEY,
     WORK_GROUP_KEY,
 )
-from tests.helpers import DOCUMENTED_WINNER_CANDIDATE
+from tests.helpers import REFERENCE_CANDIDATE
 
 
 def _final_solution_from_candidate(candidate: Candidate, *, solution_index: int = 0) -> dict:
@@ -56,7 +56,7 @@ def _write_solution_yaml(path: Path, shape: Shape, solution: dict) -> None:
 
 
 def test_solution_mapping_uses_final_yaml_not_group_order(tmp_path: Path):
-    base = DOCUMENTED_WINNER_CANDIDATE
+    base = REFERENCE_CANDIDATE
     deduped = Candidate({**base.canonical_params(), STORE_VECTOR_WIDTH_KEY: 1}, source="dedup_equivalent")
     rejected = Candidate({**base.canonical_params(), "DepthU": 32}, source="rejected_or_different")
     shape = Shape(512, 128, 1, 256)
@@ -78,7 +78,7 @@ def test_solution_mapping_uses_final_yaml_not_group_order(tmp_path: Path):
 
 
 def test_solution_mapping_ignores_derived_expand_pointer_swap():
-    candidate = DOCUMENTED_WINNER_CANDIDATE
+    candidate = REFERENCE_CANDIDATE
     solution = _final_solution_from_candidate(candidate)
     solution["ExpandPointerSwap"] = True
 
@@ -89,7 +89,7 @@ def test_solution_mapping_ignores_derived_expand_pointer_swap():
 def test_solution_mapping_ignores_tlds2_derived_buffer_and_local_read_fields():
     candidate = Candidate(
         {
-            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            **REFERENCE_CANDIDATE.canonical_params(),
             "1LDSBuffer": 0,
             "PrefetchGlobalRead": 2,
             "PrefetchLocalRead": 0,
@@ -114,7 +114,7 @@ def test_solution_mapping_ignores_tlds2_derived_buffer_and_local_read_fields():
 def test_solution_mapping_ignores_inactive_stagger_derived_fields():
     candidate = Candidate(
         {
-            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            **REFERENCE_CANDIDATE.canonical_params(),
             "StaggerU": 0,
             "StaggerUMapping": 1,
             "StaggerUStride": 256,
@@ -131,7 +131,7 @@ def test_solution_mapping_ignores_inactive_stagger_derived_fields():
 def test_solution_mapping_ignores_inactive_lds_pad_block_size_fields():
     candidate = Candidate(
         {
-            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            **REFERENCE_CANDIDATE.canonical_params(),
             "LdsPadA": 0,
             "LdsBlockSizePerPadA": 4096,
             "LdsPadB": 4,
@@ -148,7 +148,7 @@ def test_solution_mapping_ignores_inactive_lds_pad_block_size_fields():
 def test_solution_mapping_keeps_active_lds_pad_block_size_strict():
     candidate = Candidate(
         {
-            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            **REFERENCE_CANDIDATE.canonical_params(),
             "LdsPadA": 4,
             "LdsBlockSizePerPadA": 4096,
         },
@@ -163,7 +163,7 @@ def test_solution_mapping_keeps_active_lds_pad_block_size_strict():
 def test_solution_mapping_ignores_normalized_cluster_local_read_when_plr_covers_loop():
     candidate = Candidate(
         {
-            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            **REFERENCE_CANDIDATE.canonical_params(),
             "MatrixInstruction": [16, 16, 16, 1, 1, 7, 2, 1, 1],
             "WorkGroup": [32, 4, 1],
             "DepthU": 16,
@@ -188,7 +188,7 @@ def test_solution_mapping_ignores_normalized_cluster_local_read_when_plr_covers_
 def test_solution_mapping_keeps_cluster_local_read_strict_without_normalization_condition():
     candidate = Candidate(
         {
-            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            **REFERENCE_CANDIDATE.canonical_params(),
             "MatrixInstruction": [16, 16, 16, 1, 1, 7, 2, 1, 1],
             "WorkGroup": [32, 4, 1],
             "DepthU": 64,
@@ -210,7 +210,7 @@ def test_solution_mapping_keeps_cluster_local_read_strict_without_normalization_
 def test_solution_mapping_keeps_active_stagger_fields_strict():
     candidate = Candidate(
         {
-            **DOCUMENTED_WINNER_CANDIDATE.canonical_params(),
+            **REFERENCE_CANDIDATE.canonical_params(),
             "StaggerU": 8,
             "StaggerUMapping": 1,
             "StaggerUStride": 256,

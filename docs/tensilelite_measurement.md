@@ -1,34 +1,23 @@
 # TensileLite Measurement Design
 
-This document describes how EvoTensile communicates with TensileLite when measuring candidate speed.
+This document describes how EvoTensile builds, validates, and times candidates with TensileLite.
 
 ## Boundary
 
 EvoTensile orchestrates TensileLite externally:
-- It writes TensileLite YAML configs.
+- It writes TensileLite YAML and manifest files.
 - It invokes TensileLite build/codegen in build-only mode.
-- It maps accepted final-YAML solutions back to EvoTensile candidate hashes.
-- It runs an external structured HIP/TensileLite backend for exact `(shape, candidate)` timing.
-- It ingests structured JSONL rows into SQLite.
+- It maps accepted final-YAML solutions back to exact EvoTensile candidates.
+- It runs correctness verification and timing as separate structured-runner modes.
+- It stores correctness evidence separately from timing samples.
 
-The old TensileLite `LibraryClient` CSV/log ingestion path has been removed from the production scheduler.
+The old TensileLite `LibraryClient` CSV/log ingestion path and the combined validation-plus-timing runner path are not used by the production scheduler.
 
-## YAML Contract
+## YAML And Manifest
 
-`write_tensilelite_yaml()` writes a config with:
-- Profile global parameters from `TargetProfile.global_parameters(protocol)`.
-- One `BenchmarkProblems` entry for the profile problem type.
-- Candidate solution dictionaries emitted as a single `Groups` list under `ForkParameters`.
-- Exact shape problem sizes under `BenchmarkFinalParameters`.
-- Target `LibraryLogic` for GridBased gfx1151 output.
+`write_tensilelite_yaml()` writes one complete candidate dictionary per `Groups` entry and exact shapes under `BenchmarkFinalParameters`. The active profile supplies problem type, global parameters, and target library logic.
 
-Candidates are complete solution dictionaries. EvoTensile does not emit independent multi-valued fork parameters unless a caller intentionally constructs such a candidate dictionary.
-
-The active `gfx1151-nt-hhs` problem type includes FP16 NT HHS, bias from `D`, `scaleAlpha_vector`, activation support, and `UseE=False`.
-
-## Manifest Contract
-
-For every generated YAML, EvoTensile writes `config.manifest.csv` with:
+Every YAML has a `config.manifest.csv` containing:
 
 ```text
 candidate_hash
@@ -39,159 +28,150 @@ solution_index
 params_json
 ```
 
-The manifest records the intended candidate order for each shape. Because each candidate is one `Groups` entry, the requested manifest `solution_index` follows candidate index before TensileLite filtering.
+The manifest records intended ordering. Final accepted mapping remains authoritative and comes from TensileLite-generated solution YAMLs.
 
-The manifest is audit data and the initial mapping hint. Final accepted mapping still comes from TensileLite-generated solution YAMLs.
+## Prepare Queue
 
-## TensileLite Build Phase
+One scheduler wave has two phases separated by a hard barrier.
 
-`build_then_structured_benchmark()` invokes `run_tensilelite()` with:
-- `build_only=True`.
-- The generated YAML path.
-- Profile global parameter items.
-- The selected TensileLite executable.
-- Optional `CpuThreads` through `--compile-threads`.
-- Optional timeout from the profile or CLI.
-- Optional stable compile-cache directory.
+The parallel prepare queue performs, for every batch:
+1. TensileLite build/codegen.
+2. Final-YAML mapping and positive salvage.
+3. Structured diagnostics for unattributed mixed-build failures.
+4. Correctness verification for accepted pairs that lack compatible cached validation.
 
-Build output can come from either full-client layout or build-only cache layout. EvoTensile searches for library artifacts under:
+`--prepare-workers` controls this queue and defaults to available CPU cores. `--compile-threads` controls CPU threads inside one TensileLite build and defaults to `1`.
 
-```text
-4_LibraryClient/library/gfx*
-1_BenchmarkProblems/**/source/library/gfx*
-**/source/library/gfx*
-```
+Compilation, diagnostics, CPU validation, and GPU validation may overlap each other. After all prepare futures finish, the worker pool is shut down. No timing starts until every prepare subprocess has exited.
+
+Timeouts kill the complete subprocess process group before a prepare future completes. Compiler descendants therefore cannot survive the phase barrier.
+
+## Serial Benchmark Queue
+
+After the prepare pool has fully drained, the scheduler benchmarks prepared batches one at a time. Benchmark mode:
+- Reuses the exact generated library and code object produced during preparation.
+- Accepts only pairs that compiled, mapped, and passed correctness verification.
+- Requires `num_elements_to_validate=0`.
+- Runs warmups and timed samples only.
+- Emits `NO_CHECK` from the runner. Python stores timing rows as backed by prior validation.
+
+No compilation, diagnostics, or correctness verification is launched from the benchmark queue.
+
+## APU Activity Gate
+
+The scheduler barrier is the primary ordering mechanism. A machine-wide shared/exclusive filesystem gate provides cross-process protection:
+- TensileLite builds and diagnostics acquire shared access.
+- The structured runner acquires shared access in `validate` mode.
+- The structured runner acquires exclusive access in `benchmark` mode.
+- Repository-owned standalone hipBLASLt benchmark/verification utilities acquire exclusive access.
+
+The default path is `/tmp/evotensile-apu.lock`. `EVOTENSILE_APU_LOCK_PATH` overrides it.
+
+Consequences:
+- Two benchmarks cannot overlap.
+- A benchmark cannot overlap compilation, diagnostics, CPU validation, or GPU validation.
+- Compilation and correctness verification may run concurrently.
+- Direct invocation of `evotensile-structured-runner` still honors the gate because locking is enforced in the binary.
+
+External GPU programs that do not participate in this gate remain outside EvoTensile's control.
 
 ## Compile Cache
 
 The scheduler can reuse a stable TensileLite build cache under `OUTPUT_DIR/compile_cache` unless `--no-compile-cache` is passed.
 
-The compile-cache key includes:
+The cache key includes:
 - Candidate hashes in the batch.
 - Compile-relevant global parameters.
 - Library logic.
 - Problem type hash.
 
-Timing execution parameters such as `NumBenchmarks` and validation count are excluded when they are not compile-relevant. A success marker plus TensileLite cache files are required before reuse. A filesystem lock prevents multiple workers from populating the same cache directory concurrently.
+Timing budgets and validation extent are excluded when they do not affect code generation. A success marker and TensileLite cache files are required before reuse. A cache-specific lock prevents duplicate population by prepare workers.
+
+Validation and benchmark modes always use the same prepared library directory. Adaptive top-ups also use that directory and never invoke TensileLite again.
 
 ## Accepted-Solution Mapping
 
-After build/codegen, EvoTensile finds final solution YAMLs and calls `build_runnable_pairs()`:
-- Read the manifest.
-- Build a solution-to-candidate mapper from final YAML solution dictionaries.
-- Emit `RunnablePair` records for accepted planned pairs.
-- Emit `rejected` rows for planned manifest pairs that did not survive final mapping.
-- Emit `unmapped` rows for planned pairs missing from the manifest.
+After build/codegen, `build_runnable_pairs()`:
+- Reads the manifest.
+- Maps generated solution dictionaries to candidate hashes.
+- Emits `RunnablePair` records for accepted planned pairs.
+- Emits `rejected` for planned manifest pairs absent from final mapping.
+- Emits `unmapped` for planned pairs absent from the manifest.
 
-Rejected and unmapped pairs are persisted as negative evidence under the active problem/protocol/shape/candidate key.
+If a mixed build returns nonzero but contains accepted final-YAML solutions, those accepted candidates continue through validation and timing. Missing candidates are attributed through structured diagnostics. They are not inferred rejected from absence alone.
 
-## Structured Runner Input
+## Structured Runner Modes
 
-`run_structured_backend()` writes a JSONL pairs file. Each row contains:
-
-```text
-shape_id
-candidate_hash
-m
-n
-batch
-k
-problem_index
-requested_solution_index
-library_solution_index
-manifest_solution_index
-num_warmups
-num_benchmarks
-enqueues_per_sync
-syncs_per_benchmark
-num_elements_to_validate
-```
-
-The external runner receives:
+The runner receives:
 
 ```text
+--mode validate|benchmark
 --pairs <pairs.jsonl>
 --output <results.jsonl>
---validation-backend <cpu|hipblaslt|none>
+--validation-backend <cpu|hipblaslt>
 --library-dir <generated-library-dir>
 ```
 
-`--runner-bin` defaults to the profile's `./build/evotensile-structured-runner` path. The production scheduler requires a runner binary unless the command is `--dry-run` or `--generate-only`.
+Each pair row contains exact shape identity, candidate identity, mapped solution index, warmup/timing counts, and validation extent.
 
-## Structured Runner Output
+### Validate
 
-The runner emits one JSON object per sample or negative result. EvoTensile reads fields including:
+`--mode validate`:
+- Requires nonzero validation extent.
+- Launches the candidate once.
+- Runs the selected CPU or hipBLASLt GPU oracle.
+- Emits exactly one result row per pair.
+- Emits no timing value.
 
-```text
-shape_id
-candidate_hash
-status
-sample_index
-time_us
-validation or validation_detail
-solution_index
-```
+### Benchmark
 
-`validate_structured_samples()` enforces:
-- Every emitted pair must be expected.
-- The emitted `solution_index` must match the mapped library solution index.
-- Positive samples must cover exactly `0..NumBenchmarks-1` with no duplicates.
-- Positive samples must have finite positive `time_us`.
-- Positive samples must have passing validation unless a timing-only top-up is explicitly allowed.
-- A nonzero runner return code cannot be combined with positive rows.
+`--mode benchmark`:
+- Requires `num_elements_to_validate=0`.
+- Performs no correctness verification.
+- Runs requested warmups and timed launches.
+- Emits exactly `NumBenchmarks` finite positive samples per pair.
+- Emits `NO_CHECK` to make accidental combined validation detectable.
 
-Rows are normalized before DB insertion:
-- Passing positive rows become `status='ok'`.
-- Unknown validation becomes `validation_unknown`.
-- Failed validation becomes `validation_fail`.
-- Missing or non-positive time becomes `invalid`.
-- Runner timeout rows can be recorded as `runner_timeout` for the whole batch.
+Python validates pair identity, solution index, row count, sample indices, mode-specific timing fields, and return-code consistency before insertion.
+
+## Correctness Identity
+
+Correctness evidence has its own validation-protocol hash. It includes:
+- Validator protocol version.
+- Validation backend.
+- Validation extent.
+- Input initialization settings.
+- `CEqualD` behavior.
+
+Timing compatibility uses the benchmark-protocol hash. `NumBenchmarks` remains an execution budget rather than a compatibility field.
+
+A timing row can be produced only for a pair present in the prepared batch's validation-passed set or in compatible cached validation evidence.
 
 ## Validation Backends
 
-`BenchmarkProtocol.validation_backend` is passed only to the structured runner. Valid values are:
+Supported validation backends are:
 - `hipblaslt`: GPU-oracle validation, used by default.
-- `cpu`: CPU/OpenBLAS-style audit validation when supported by the backend.
-- `none`: no validation. Accepted only for trusted timing-only top-ups with prior validation evidence.
+- `cpu`: CPU/OpenBLAS-style audit validation when supported.
 
-`NumElementsToValidate` controls validation execution count in TensileLite/runner parameters. It is not part of benchmark-protocol identity because it does not change timing compatibility.
+There is no public `none` validation backend and no trusted-validation bypass. Skipping correctness is represented only by benchmark mode after compatible validation evidence already exists.
 
-## Benchmark Protocol Parameters
+## Adaptive Timing
 
-`BenchmarkProtocol` writes hot-loop steady-state defaults:
+Adaptive sampling prepares the initial candidate set once. The scheduler then:
+1. Runs initial serial timing samples.
+2. Loads timing statistics.
+3. Selects plausible validation-passed contenders.
+4. Runs benchmark-only subsets from the original prepared-artifact index.
+5. Repeats up to the configured adaptive-round limit.
 
-```yaml
-KernelTime: True
-PreciseKernelTime: True
-NumWarmups: 10
-NumBenchmarks: 10
-EnqueuesPerSync: 10
-SyncsPerBenchmark: 1
-SleepPercent: 0
-HardwareMonitor: False
-NumElementsToValidate: -1
-PredictionThreshold: 2.0
-SkipSlowSolutionRatio: 0.0
-ParallelGpuExecution: 1
-```
-
-The structured runner currently requires `SleepPercent=0`, `HardwareMonitor=False`, and `ParallelGpuExecution=1`.
-
-Cold-loop behavior is intentionally outside the tuning loop because it increases wall time and optimizes for first-request or bursty-idle latency instead of sustained throughput.
+Adaptive rounds do not compile, remap, diagnose, or validate candidates. A contender without a successfully prepared artifact is ineligible for top-up.
 
 ## Diagnostic Attribution
 
-If a multi-candidate build fails and some candidates cannot be attributed through normal final-YAML mapping, EvoTensile runs structured TensileLite diagnostics:
-- The diagnostics module imports TensileLite Python internals.
-- It reconstructs fork permutations from the YAML.
-- It captures `SolutionStructs` rejection reasons.
-- It runs KernelWriter source processing for candidate-level failures.
-- It emits diagnostic JSONL records keyed by candidate hash and phase.
+If a multi-candidate build fails and final mapping cannot attribute every candidate, structured diagnostics reconstruct TensileLite solution permutations and KernelWriter processing.
 
-Attributed failures become reusable `build_failed` rows. Unattributed failures become `build_failed_unattributed` or `build_timeout_unattributed`. Those are audit evidence and are not reusable negative cache statuses.
+Attributed failures become reusable `build_failed` rows. Unattributed failures become `build_failed_unattributed` or `build_timeout_unattributed`, which remain audit-only. Diagnostic failure does not suppress successfully built and validated candidates from the same mixed batch.
 
 ## Run Records
 
-Both build and structured-run phases insert `runs` rows with command, paths, return code, duration, timeout status, and other metadata. Evaluation rows reference `run_id` when a specific run produced them.
-
-This DB-backed contract keeps measurement reproducible without scraping stdout order, kernel names, or client CSV files.
+Build, diagnostic, validation, and benchmark invocations insert separate `runs` rows with command, mode, paths, return code, duration, and timeout status. CLI metadata records phase-specific return codes and whether an executed batch belongs to initial timing or an adaptive top-up.

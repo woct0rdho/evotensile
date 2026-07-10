@@ -1,20 +1,21 @@
 import json
 import math
-import subprocess
 import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from .candidate import Candidate, Shape
-from .database import EvaluationInsert, EvoTensileDB, validation_token
+from .candidate import Shape
+from .database import EvaluationInsert, ValidationInsert, validation_token
 from .manifest import manifest_by_shape_candidate, read_manifest
-from .profile import TargetProfile
 from .protocol import BenchmarkProtocol
-from .runner import RunResult, _merged_env, run_tensilelite
-from .solution_mapping import build_solution_candidate_mapper, find_solution_yamls
+from .runner import _merged_env
+from .solution_mapping import build_solution_candidate_mapper
+from .subprocess_utils import run_logged_process
+
+RunMode = Literal["validate", "benchmark"]
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,8 @@ class StructuredSample:
 
 @dataclass(frozen=True)
 class StructuredRunOutput:
+    mode: RunMode
+    run_id: str
     returncode: int
     samples: list[StructuredSample]
     stdout_path: Path
@@ -55,35 +58,36 @@ class StructuredRunOutput:
         return self.returncode == 0 and not self.timed_out
 
 
+@dataclass(frozen=True)
+class ValidationOutcome:
+    passed_pairs: list[RunnablePair]
+    validations: list[ValidationInsert]
+    negative_evaluations: list[EvaluationInsert]
+
+
 def _finite_positive(value: Any) -> bool:
     if value is None:
         return False
     try:
-        f = float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return False
-    return math.isfinite(f) and f > 0.0
+    return math.isfinite(number) and number > 0.0
 
 
 def _sample_from_json(value: dict[str, Any]) -> StructuredSample:
-    shape_id = str(value["shape_id"])
-    candidate_hash = str(value["candidate_hash"])
-    status = str(value.get("status") or "ok")
-    time_us = float(value["time_us"]) if value.get("time_us") not in (None, "") else None
     validation = value.get("validation")
-    if validation is not None:
-        validation = str(validation)
-    validation_detail = value.get("validation_detail")
-    if validation_detail not in (None, ""):
-        validation = str(validation_detail)
+    detail = value.get("validation_detail")
+    if detail not in (None, ""):
+        validation = detail
     solution_index = value.get("solution_index")
     return StructuredSample(
-        shape_id=shape_id,
-        candidate_hash=candidate_hash,
-        status=status,
+        shape_id=str(value["shape_id"]),
+        candidate_hash=str(value["candidate_hash"]),
+        status=str(value.get("status") or "ok"),
         sample_index=int(value["sample_index"]) if value.get("sample_index") not in (None, "") else None,
-        time_us=time_us,
-        validation=validation,
+        time_us=float(value["time_us"]) if value.get("time_us") not in (None, "") else None,
+        validation=str(validation) if validation is not None else None,
         solution_index=int(solution_index) if solution_index not in (None, "") else None,
         raw=value,
     )
@@ -134,7 +138,7 @@ def _write_pairs(path: Path, pairs: list[RunnablePair], shapes: dict[str, Shape]
             )
 
 
-def _library_dir_from_build(build_dir: Path) -> Path | None:
+def library_dir_from_build(build_dir: Path) -> Path | None:
     patterns = (
         "4_LibraryClient/library/gfx*",
         "1_BenchmarkProblems/**/source/library/gfx*",
@@ -176,51 +180,24 @@ def build_runnable_pairs(
             )
             accepted_pairs.add(key)
 
-    negative: list[EvaluationInsert] = []
-    for key in sorted(planned_pairs):
-        if key in accepted_pairs:
-            continue
-        entry = by_shape_candidate.get(key)
-        negative.append(
-            EvaluationInsert(
-                shape_id=key[0],
-                candidate_hash=key[1],
-                run_id=None,
-                status="rejected" if entry is not None else "unmapped",
-            )
+    negative = [
+        EvaluationInsert(
+            shape_id=shape_id,
+            candidate_hash=candidate_hash,
+            run_id=None,
+            status="rejected" if (shape_id, candidate_hash) in by_shape_candidate else "unmapped",
         )
+        for shape_id, candidate_hash in sorted(planned_pairs - accepted_pairs)
+    ]
     runnable.sort(key=lambda item: (item.shape_id, item.candidate_hash, item.requested_solution_index))
     return runnable, negative
 
 
-def _normalized_sample_status(sample: StructuredSample, *, allow_no_check: bool = False) -> str:
-    status = sample.status
-    if status == "ok":
-        if sample.validation is None:
-            return "validation_unknown"
-        validation = validation_token(sample.validation)
-        if validation == "NO_CHECK":
-            if not allow_no_check:
-                return "validation_unknown"
-        elif validation not in {"PASSED", "OK", "VALID"}:
-            return "validation_fail"
-        if not _finite_positive(sample.time_us):
-            return "invalid"
-    return status
-
-
-def validate_structured_samples(
-    samples: list[StructuredSample],
-    *,
-    runnable_pairs: list[RunnablePair],
-    protocol: BenchmarkProtocol,
-    runner_returncode: int = 0,
-    allow_no_check: bool = False,
-) -> list[EvaluationInsert]:
+def _group_samples(
+    samples: list[StructuredSample], runnable_pairs: list[RunnablePair]
+) -> tuple[dict[tuple[str, str], RunnablePair], dict[tuple[str, str], list[StructuredSample]]]:
     allowed = {(pair.shape_id, pair.candidate_hash): pair for pair in runnable_pairs}
     grouped: dict[tuple[str, str], list[StructuredSample]] = {key: [] for key in allowed}
-    expected_indices = set(range(protocol.num_benchmarks))
-
     for sample in samples:
         key = (sample.shape_id, sample.candidate_hash)
         pair = allowed.get(key)
@@ -231,258 +208,201 @@ def validate_structured_samples(
                 "structured runner emitted wrong solution_index for "
                 f"{key}: expected {pair.library_solution_index}, got {sample.solution_index}"
             )
-        status = _normalized_sample_status(sample, allow_no_check=allow_no_check)
-        if status != "ok" and sample.sample_index is None:
-            grouped[key].append(sample)
-            continue
-        if sample.sample_index is None:
-            raise ValueError(f"structured runner emitted missing sample_index for {key}")
-        if sample.sample_index not in expected_indices:
-            raise ValueError(
-                f"structured runner emitted out-of-range sample_index for {key}: "
-                f"expected 0..{protocol.num_benchmarks - 1}, got {sample.sample_index}"
-            )
         grouped[key].append(sample)
+    return allowed, grouped
 
-    inserts: list[EvaluationInsert] = []
-    positive_status_seen = False
+
+def validate_validation_samples(
+    samples: list[StructuredSample],
+    *,
+    runnable_pairs: list[RunnablePair],
+    problem_type_hash: str,
+    validation_protocol_hash: str,
+    benchmark_protocol_hash: str,
+    run_id: str,
+    runner_returncode: int = 0,
+) -> ValidationOutcome:
+    allowed, grouped = _group_samples(samples, runnable_pairs)
+    passed_pairs: list[RunnablePair] = []
+    validations: list[ValidationInsert] = []
+    negative: list[EvaluationInsert] = []
+    positive_seen = False
+
     for key, pair_samples in grouped.items():
-        negative_samples = [
-            sample
-            for sample in pair_samples
-            if _normalized_sample_status(sample, allow_no_check=allow_no_check) != "ok"
-        ]
-        if negative_samples:
-            if len(pair_samples) != len(negative_samples):
-                raise ValueError(f"structured runner emitted mixed positive and negative samples for {key}")
-        else:
-            actual_indices = [sample.sample_index for sample in pair_samples]
-            if len(actual_indices) != len(set(actual_indices)):
-                raise ValueError(f"structured runner emitted duplicate sample_index for {key}: {actual_indices}")
-            if set(actual_indices) != expected_indices:
-                raise ValueError(
-                    f"structured runner emitted incomplete sample set for {key}: "
-                    f"expected {sorted(expected_indices)}, got {sorted(actual_indices)}"
-                )
-        for sample in sorted(pair_samples, key=lambda item: item.sample_index if item.sample_index is not None else -1):
-            status = _normalized_sample_status(sample, allow_no_check=allow_no_check)
-            if status == "ok":
-                positive_status_seen = True
+        if len(pair_samples) != 1:
+            raise ValueError(f"validation runner emitted {len(pair_samples)} rows for {key}; expected 1")
+        sample = pair_samples[0]
+        if sample.time_us is not None:
+            raise ValueError(f"validation runner emitted timing for {key}")
+        token = validation_token(sample.validation)
+        passed = sample.status == "ok" and token in {"PASSED", "OK", "VALID"}
+        validations.append(
+            ValidationInsert(
+                shape_id=sample.shape_id,
+                candidate_hash=sample.candidate_hash,
+                run_id=run_id,
+                status="passed" if passed else "failed",
+                problem_type_hash=problem_type_hash,
+                validation_protocol_hash=validation_protocol_hash,
+                detail=sample.validation,
+                solution_index=sample.solution_index,
+            )
+        )
+        if passed:
+            positive_seen = True
+            passed_pairs.append(allowed[key])
+            continue
+        status = sample.status if sample.status not in {"ok", "invalid"} else "validation_fail"
+        negative.append(
+            EvaluationInsert(
+                shape_id=sample.shape_id,
+                candidate_hash=sample.candidate_hash,
+                run_id=run_id,
+                status=status,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                validation=sample.validation,
+                solution_index=sample.solution_index,
+            )
+        )
+
+    if runner_returncode != 0 and positive_seen:
+        raise ValueError(f"validation runner returned {runner_returncode} with positive result rows")
+    return ValidationOutcome(passed_pairs=passed_pairs, validations=validations, negative_evaluations=negative)
+
+
+def validate_benchmark_samples(
+    samples: list[StructuredSample],
+    *,
+    runnable_pairs: list[RunnablePair],
+    protocol: BenchmarkProtocol,
+    problem_type_hash: str,
+    benchmark_protocol_hash: str,
+    run_id: str,
+    runner_returncode: int = 0,
+) -> list[EvaluationInsert]:
+    _, grouped = _group_samples(samples, runnable_pairs)
+    expected_indices = set(range(protocol.num_benchmarks))
+    inserts: list[EvaluationInsert] = []
+    positive_seen = False
+
+    for key, pair_samples in grouped.items():
+        negative = [sample for sample in pair_samples if sample.status != "ok"]
+        if negative:
+            if len(negative) != len(pair_samples):
+                raise ValueError(f"benchmark runner emitted mixed positive and negative rows for {key}")
+            sample = negative[0]
             inserts.append(
                 EvaluationInsert(
                     shape_id=sample.shape_id,
                     candidate_hash=sample.candidate_hash,
-                    run_id=None,
-                    status=status,
-                    time_us=sample.time_us,
+                    run_id=run_id,
+                    status=sample.status,
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
                     validation=sample.validation,
                     solution_index=sample.solution_index,
                 )
             )
+            continue
 
-    if runner_returncode != 0 and positive_status_seen:
-        raise ValueError(f"structured runner returned {runner_returncode} with positive result rows")
+        indices = [sample.sample_index for sample in pair_samples]
+        if any(index is None for index in indices):
+            raise ValueError(f"benchmark runner emitted missing sample_index for {key}")
+        if len(indices) != len(set(indices)):
+            raise ValueError(f"benchmark runner emitted duplicate sample_index for {key}: {indices}")
+        if set(indices) != expected_indices:
+            raise ValueError(
+                f"benchmark runner emitted incomplete sample set for {key}: "
+                f"expected {sorted(expected_indices)}, got {sorted(indices)}"
+            )
+        for sample in sorted(pair_samples, key=lambda item: item.sample_index or 0):
+            if validation_token(sample.validation) != "NO_CHECK":
+                raise ValueError(f"benchmark runner performed validation for {key}")
+            if not _finite_positive(sample.time_us):
+                raise ValueError(f"benchmark runner emitted invalid time for {key}: {sample.time_us}")
+            positive_seen = True
+            inserts.append(
+                EvaluationInsert(
+                    shape_id=sample.shape_id,
+                    candidate_hash=sample.candidate_hash,
+                    run_id=run_id,
+                    status="ok",
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                    time_us=sample.time_us,
+                    validation="PASSED prior_validation",
+                    solution_index=sample.solution_index,
+                )
+            )
+
+    if runner_returncode != 0 and positive_seen:
+        raise ValueError(f"benchmark runner returned {runner_returncode} with positive result rows")
     return inserts
 
 
-def run_structured_backend(
+def run_structured_phase(
     *,
+    mode: RunMode,
     run_dir: Path,
     pairs: list[RunnablePair],
     shapes: list[Shape],
     protocol: BenchmarkProtocol,
-    runner_bin: str | Path | None = None,
+    runner_bin: str | Path,
+    library_dir: str | Path,
     env: dict[str, str] | None = None,
     timeout_s: float | None = None,
-    library_dir: str | Path | None = None,
 ) -> StructuredRunOutput:
+    if mode == "validate":
+        if protocol.num_elements_to_validate == 0:
+            raise ValueError("validate mode requires correctness verification")
+    elif protocol.num_elements_to_validate != 0:
+        raise ValueError("benchmark mode requires num_elements_to_validate=0")
+
     run_dir.mkdir(parents=True, exist_ok=True)
-    run_id = f"structured_{uuid.uuid4().hex[:12]}"
+    run_id = f"{mode}_{uuid.uuid4().hex[:12]}"
     stdout_path = run_dir / f"{run_id}.stdout.log"
     stderr_path = run_dir / f"{run_id}.stderr.log"
     pairs_path = run_dir / f"{run_id}.pairs.jsonl"
     results_path = run_dir / f"{run_id}.results.jsonl"
-    shape_map = {shape.id: shape for shape in shapes}
-    _write_pairs(pairs_path, pairs, shape_map, protocol)
-    if runner_bin is None:
-        raise ValueError("runner_bin is required for the structured runner")
-
-    start = time.perf_counter()
-    resolved_library_dir = Path(library_dir) if library_dir is not None else _library_dir_from_build(run_dir)
+    _write_pairs(pairs_path, pairs, {shape.id: shape for shape in shapes}, protocol)
     command = [
         str(runner_bin),
+        "--mode",
+        mode,
         "--pairs",
         str(pairs_path),
         "--output",
         str(results_path),
         "--validation-backend",
         protocol.validation_backend,
+        "--library-dir",
+        str(library_dir),
     ]
-    if resolved_library_dir is not None:
-        command.extend(["--library-dir", str(resolved_library_dir)])
+
+    start = time.perf_counter()
     timed_out = False
     returncode = 0
     with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
-        try:
-            proc = subprocess.run(
-                command,
-                text=True,
-                stdout=stdout,
-                stderr=stderr,
-                env=_merged_env(env),
-                check=False,
-                timeout=timeout_s,
-            )
-            returncode = proc.returncode
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            returncode = 124
-            stderr.write(f"\nStructured runner timed out after {exc.timeout} seconds\n")
+        returncode, timed_out = run_logged_process(
+            command,
+            stdout=stdout,
+            stderr=stderr,
+            env=_merged_env(env),
+            timeout_s=timeout_s,
+        )
+        if timed_out:
+            stderr.write(f"\nStructured {mode} phase timed out after {timeout_s} seconds\n")
 
-    duration_s = time.perf_counter() - start
-    samples = read_structured_results(results_path) if results_path.exists() else []
     return StructuredRunOutput(
+        mode=mode,
+        run_id=run_id,
         returncode=returncode,
-        samples=samples,
+        samples=read_structured_results(results_path) if results_path.exists() else [],
         stdout_path=stdout_path,
         stderr_path=stderr_path,
         results_path=results_path,
-        duration_s=duration_s,
+        duration_s=time.perf_counter() - start,
         command=command,
         timed_out=timed_out,
     )
-
-
-def build_then_structured_benchmark(
-    yaml_path: str | Path,
-    manifest_path: str | Path,
-    run_dir: str | Path,
-    *,
-    shapes: list[Shape],
-    candidates: list[Candidate],
-    db: EvoTensileDB,
-    tensilelite_bin: str | Path,
-    compile_threads: int | None,
-    target_profile: TargetProfile,
-    protocol: BenchmarkProtocol,
-    runner_bin: str | Path | None = None,
-    env: dict[str, str] | None = None,
-    trust_prior_validation: bool = False,
-    build_timeout_s: float | None = None,
-    runner_timeout_s: float | None = None,
-    build_dir: str | Path | None = None,
-    use_build_cache: bool = False,
-) -> tuple[RunResult, StructuredRunOutput | None, list[EvaluationInsert], list[str]]:
-    run_dir = Path(run_dir)
-    build_output_dir = Path(build_dir) if build_dir is not None else run_dir
-    problem_type_hash = target_profile.problem_type_hash
-    benchmark_protocol_hash = target_profile.benchmark_protocol_hash(protocol)
-    build_globals = target_profile.global_parameter_items(protocol)
-    build_result = run_tensilelite(
-        yaml_path,
-        build_output_dir,
-        tensilelite_bin=tensilelite_bin,
-        db=db,
-        build_only=True,
-        cpu_threads=compile_threads,
-        global_parameters=build_globals,
-        env=env,
-        timeout_s=build_timeout_s,
-        use_cache=use_build_cache,
-    )
-    planned_pairs = {(shape.id, candidate.hash) for shape in shapes for candidate in candidates}
-    if not build_result.ok and not build_result.output_dir.exists():
-        return build_result, None, [], []
-
-    solution_yamls = [str(path) for path in find_solution_yamls([build_output_dir])]
-    runnable, negative = build_runnable_pairs(
-        manifest_path=manifest_path,
-        solution_yaml_paths=solution_yamls,
-        planned_pairs=planned_pairs,
-    )
-    if not build_result.ok and runnable:
-        accepted_keys = {(item.shape_id, item.candidate_hash) for item in runnable}
-        negative = [item for item in negative if (item.shape_id, item.candidate_hash) in accepted_keys]
-    if not runnable:
-        if not build_result.ok:
-            return build_result, None, [], []
-        for idx, item in enumerate(negative):
-            negative[idx] = EvaluationInsert(
-                shape_id=item.shape_id,
-                candidate_hash=item.candidate_hash,
-                run_id=build_result.run_id,
-                status=item.status,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
-            )
-        return build_result, None, negative, []
-    for idx, item in enumerate(negative):
-        negative[idx] = EvaluationInsert(
-            shape_id=item.shape_id,
-            candidate_hash=item.candidate_hash,
-            run_id=build_result.run_id,
-            status=item.status,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-        )
-
-    structured = run_structured_backend(
-        run_dir=run_dir,
-        pairs=runnable,
-        shapes=shapes,
-        protocol=protocol,
-        runner_bin=runner_bin,
-        env=env,
-        timeout_s=runner_timeout_s,
-        library_dir=_library_dir_from_build(build_output_dir),
-    )
-    structured_run_id = f"run_{uuid.uuid4().hex[:12]}"
-    db.insert_run(
-        structured_run_id,
-        yaml_path=str(yaml_path),
-        output_dir=str(run_dir),
-        status="timeout" if structured.timed_out else "ok" if structured.ok else "failed",
-        returncode=structured.returncode,
-        metadata_json=json.dumps(
-            {
-                "command": structured.command,
-                "results_path": str(structured.results_path),
-                "stdout_path": str(structured.stdout_path),
-                "stderr_path": str(structured.stderr_path),
-                "duration_s": structured.duration_s,
-                "timed_out": structured.timed_out,
-                "runnable_pairs": len(runnable),
-                "negative_pairs": len(negative),
-                "solution_yamls": solution_yamls,
-                "build_output_dir": str(build_output_dir),
-                "use_build_cache": use_build_cache,
-                "validation_backend": protocol.validation_backend,
-            },
-            sort_keys=True,
-        ),
-    )
-    try:
-        inserts = validate_structured_samples(
-            structured.samples,
-            runnable_pairs=runnable,
-            protocol=protocol,
-            runner_returncode=structured.returncode,
-            allow_no_check=trust_prior_validation,
-        )
-    except Exception as exc:
-        return build_result, structured, negative, [str(exc)]
-    inserts = [
-        EvaluationInsert(
-            shape_id=item.shape_id,
-            candidate_hash=item.candidate_hash,
-            run_id=structured_run_id,
-            status=item.status,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            time_us=item.time_us,
-            validation=item.validation,
-            solution_index=item.solution_index,
-        )
-        for item in inserts
-    ]
-    return build_result, structured, [*negative, *inserts], []

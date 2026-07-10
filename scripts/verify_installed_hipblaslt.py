@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from evotensile.activity import apu_activity_lock
+
 CSV_HEADER_MARKER = "hipblaslt-Gflops"
 SOLUTION_INDEX_RE = re.compile(r"--Solution index:\s*(?P<value>-?\d+)")
 SOLUTION_NAME_RE = re.compile(r"--Solution name:\s*(?P<value>\S.*)")
@@ -158,7 +160,8 @@ def _env(rocm_path: Path, tensile_libpath: Path) -> dict[str, str]:
 def _run_case(bench: Path, case: Case, args: argparse.Namespace, env: dict[str, str], logs_dir: Path) -> dict[str, Any]:
     cmd = _command(bench, case, args)
     started = time.perf_counter()
-    proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=args.timeout)
+    with apu_activity_lock(exclusive=True):
+        proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=args.timeout)
     elapsed = time.perf_counter() - started
 
     log_prefix = logs_dir / case.name

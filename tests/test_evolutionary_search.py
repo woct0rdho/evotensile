@@ -13,7 +13,6 @@ from evotensile.search.random_search import initial_random_batch
 from evotensile.search_space import (
     DOMAINS,
     MATRIX_INSTRUCTIONS,
-    NT_HHS_RANDOM_TLDS2_PROBABILITY,
     NT_HHS_RANDOM_VALU_VGPR_HEADROOM,
     _valu_vgpr_lower_bound,
     cheap_constraints,
@@ -25,7 +24,7 @@ from evotensile.search_space import (
     repair_linked_overrides,
 )
 from evotensile.shapes import Shape
-from tests.helpers import DOCUMENTED_WINNER_CANDIDATE, sample_candidates
+from tests.helpers import REFERENCE_CANDIDATE, sample_candidates
 
 
 def test_encoding_round_trips_complete_candidate():
@@ -44,7 +43,7 @@ def test_matrix_instructions_have_symmetric_macro_tiles():
 
 
 def test_explain_invalid_nt_hhs_reports_rule_ids():
-    params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
+    params = REFERENCE_CANDIDATE.canonical_params()
     params.update(
         {
             "DepthU": 16,
@@ -80,7 +79,7 @@ def test_explain_invalid_nt_hhs_reports_rule_ids():
 
 
 def test_explain_invalid_nt_hhs_reports_tensilelite_lds_block_rule():
-    params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
+    params = REFERENCE_CANDIDATE.canonical_params()
     params.update(
         {
             "DepthU": 128,
@@ -112,7 +111,7 @@ def test_explain_invalid_nt_hhs_reports_tensilelite_lds_block_rule():
 
 
 def test_broad_lds_tuple_is_not_rejected_by_profile_allowlist():
-    params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
+    params = REFERENCE_CANDIDATE.canonical_params()
     params.update(
         {
             "TransposeLDS": 0,
@@ -127,7 +126,7 @@ def test_broad_lds_tuple_is_not_rejected_by_profile_allowlist():
 
 
 def test_explain_invalid_nt_hhs_reports_tlds2_lsp_padding_rule():
-    params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
+    params = REFERENCE_CANDIDATE.canonical_params()
     params.update(
         {
             "MatrixInstruction": [16, 16, 16, 1, 1, 1, 4, 4, 2],
@@ -156,7 +155,7 @@ def test_explain_invalid_nt_hhs_reports_tlds2_lsp_padding_rule():
 
 
 def test_repair_linked_overrides_matches_cheap_constraints():
-    params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
+    params = REFERENCE_CANDIDATE.canonical_params()
     params.update(
         {
             "DepthU": 16,
@@ -326,7 +325,7 @@ def test_repair_linked_overrides_clears_each_repairable_rule():
     ]
 
     for overrides, expected_rule_ids in cases:
-        params = defaulted_params({**DOCUMENTED_WINNER_CANDIDATE.canonical_params(), **overrides})
+        params = defaulted_params({**REFERENCE_CANDIDATE.canonical_params(), **overrides})
         rule_ids = {reason.rule_id for reason in explain_invalid_nt_hhs(params)}
         repaired = repair_linked_overrides(params)
 
@@ -335,7 +334,7 @@ def test_repair_linked_overrides_clears_each_repairable_rule():
 
 
 def test_explain_invalid_nt_hhs_reports_shape_gsu_workspace_rule():
-    params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
+    params = REFERENCE_CANDIDATE.canonical_params()
     params.update({"GlobalSplitU": 2, "DepthU": 32})
     shape = Shape(m=8192, n=8192, batch=1, k=8192)
 
@@ -375,28 +374,46 @@ def test_random_candidate_uses_constraint_aware_broad_sampling():
     }
 
     assert all(cheap_constraints(candidate.canonical_params()) for candidate in candidates)
-    assert DOCUMENTED_WINNER_CANDIDATE.hash not in hashes
+    assert REFERENCE_CANDIDATE.hash not in hashes
     assert {candidate.source for candidate in candidates} == {"random"}
     assert len(matrix_instructions) > 16
     assert len(lds_profiles) > 16
-    assert sum(candidate.canonical_params()["TransposeLDS"] == 2 for candidate in candidates) > len(candidates) // 2
+    transpose_lds_counts = {
+        value: sum(candidate.canonical_params()["TransposeLDS"] == value for candidate in candidates)
+        for value in (0, 2)
+    }
+    assert min(transpose_lds_counts.values()) >= len(candidates) // 4
     assert max(_valu_vgpr_lower_bound(candidate.canonical_params()) for candidate in candidates) <= (
         NT_HHS_RANDOM_VALU_VGPR_HEADROOM
     )
 
 
-def test_random_tlds2_bias_does_not_change_domains_or_constraints():
+def test_random_tlds_branches_do_not_change_domains_or_constraints():
     candidates = [random_candidate(random.Random(seed)) for seed in range(128, 256)]
-    tlds2_count = sum(candidate.canonical_params()["TransposeLDS"] == 2 for candidate in candidates)
+    branch_counts = {
+        value: sum(candidate.canonical_params()["TransposeLDS"] == value for candidate in candidates)
+        for value in (0, 2)
+    }
 
     assert DOMAINS["TransposeLDS"] == [0, 1, 2]
-    assert tlds2_count >= int(len(candidates) * NT_HHS_RANDOM_TLDS2_PROBABILITY * 0.5)
-    assert any(candidate.canonical_params()["TransposeLDS"] == 0 for candidate in candidates)
+    assert min(branch_counts.values()) >= len(candidates) // 4
     assert all(cheap_constraints(candidate.canonical_params()) for candidate in candidates)
 
 
+def test_random_candidate_can_target_each_valid_tlds_branch():
+    shape = Shape(m=8192, n=8192, batch=1, k=8192)
+
+    for transpose_lds in (0, 2):
+        candidates = [
+            random_candidate(random.Random(seed), target_shapes=[shape], transpose_lds=transpose_lds)
+            for seed in range(16)
+        ]
+        assert {candidate.canonical_params()["TransposeLDS"] for candidate in candidates} == {transpose_lds}
+        assert all(cheap_constraints(candidate.canonical_params(), shape=shape) for candidate in candidates)
+
+
 def test_explicit_candidates_can_exceed_random_vgpr_headroom():
-    params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
+    params = REFERENCE_CANDIDATE.canonical_params()
     params.update(
         {
             "MatrixInstruction": [16, 16, 16, 1, 1, 8, 2, 2, 4],
@@ -432,7 +449,7 @@ def test_explicit_candidates_can_exceed_random_vgpr_headroom():
 
 
 def test_encoding_accepts_nt_hhs_values():
-    params = DOCUMENTED_WINNER_CANDIDATE.canonical_params()
+    params = REFERENCE_CANDIDATE.canonical_params()
     params.update(
         {
             "MatrixInstruction": [16, 16, 16, 1, 1, 4, 2, 4, 1],

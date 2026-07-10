@@ -4,9 +4,9 @@ This document describes EvoTensile's SQLite result database and cache semantics.
 
 ## Evidence Namespace
 
-Each SQLite file is one evidence namespace for a target hardware/environment/campaign. EvoTensile does not automatically invalidate cache entries by ROCm commit hash or source checkout. Store environment metadata in run records for audit, and use separate DB files when comparing incompatible campaigns.
+Each SQLite file is one evidence namespace for a target hardware/environment/campaign. Use separate DB files for incompatible hardware or software environments.
 
-Within one DB, reusable evaluation identity is:
+Timing identity is:
 
 ```text
 problem_type_hash
@@ -15,7 +15,16 @@ shape_id
 candidate_hash
 ```
 
-The scheduler and ranking tools always filter by the active profile's problem type hash and benchmark protocol hash when those values are supplied.
+Correctness identity is independent:
+
+```text
+problem_type_hash
+validation_protocol_hash
+shape_id
+candidate_hash
+```
+
+This separation lets timing budgets change without repeating correctness while still invalidating correctness evidence when backend, extent, initialization, or validator version changes.
 
 ## Tables
 
@@ -23,49 +32,22 @@ The scheduler and ranking tools always filter by the active profile's problem ty
 
 ### candidates
 
-```text
-candidate_hash TEXT PRIMARY KEY
-candidate_json TEXT NOT NULL
-source TEXT NOT NULL
-parent_hashes TEXT NOT NULL
-created_at REAL NOT NULL
-```
-
-`candidate_json` stores the canonical parameter dictionary, source label, and parent hashes. Candidate hashes are derived from canonical params, so the hash is stable across runs.
+Stores canonical candidate JSON, source, parent hashes, and creation time under a stable candidate hash.
 
 ### shapes
 
-```text
-shape_id TEXT PRIMARY KEY
-m INTEGER NOT NULL
-n INTEGER NOT NULL
-batch INTEGER NOT NULL
-k INTEGER NOT NULL
-created_at REAL NOT NULL
-```
-
-`shape_id` has the form `m{M}_n{N}_b{batch}_k{K}`. Shape FLOP calculations use `2 * M * N * K * batch`.
+Stores exact `M`, `N`, batch, and `K` dimensions. Shape IDs use `m{M}_n{N}_b{batch}_k{K}`.
 
 ### runs
 
-```text
-run_id TEXT PRIMARY KEY
-timestamp REAL NOT NULL
-yaml_path TEXT
-output_dir TEXT
-status TEXT NOT NULL
-returncode INTEGER
-metadata_json TEXT
-```
-
-Run rows record build, structured-runner, and diagnostic invocations. Metadata stores commands, output paths, duration, timeout status, cache use, validation backend, and related counts.
+Stores every build, diagnostic, validation, and benchmark invocation. Metadata includes command, phase/mode, paths, duration, timeout state, and pair count.
 
 ### evaluations
 
 ```text
 eval_id INTEGER PRIMARY KEY AUTOINCREMENT
-problem_type_hash TEXT NOT NULL DEFAULT ''
-benchmark_protocol_hash TEXT NOT NULL DEFAULT ''
+problem_type_hash TEXT NOT NULL
+benchmark_protocol_hash TEXT NOT NULL
 shape_id TEXT NOT NULL
 candidate_hash TEXT NOT NULL
 run_id TEXT
@@ -76,105 +58,96 @@ solution_index INTEGER
 created_at REAL NOT NULL
 ```
 
-Each timing sample is one evaluation row. Negative rows such as rejected candidates or build failures also live here, usually without `time_us`.
+Each successful timing sample is one `status='ok'` row with finite positive `time_us`. Negative build, mapping, validation, or runner outcomes also live here, usually without timing.
 
-Indexes support cache lookup and ranking:
+Benchmark-only timing rows use `validation='PASSED prior_validation'`: the benchmark subprocess performed no validation, but the scheduler admitted the pair only after compatible correctness evidence.
+
+### validations
 
 ```text
-(problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash)
-(shape_id, candidate_hash)
-(problem_type_hash, benchmark_protocol_hash, shape_id, time_us)
+validation_id INTEGER PRIMARY KEY AUTOINCREMENT
+problem_type_hash TEXT NOT NULL
+validation_protocol_hash TEXT NOT NULL
+shape_id TEXT NOT NULL
+candidate_hash TEXT NOT NULL
+run_id TEXT
+status TEXT NOT NULL
+detail TEXT
+solution_index INTEGER
+created_at REAL NOT NULL
 ```
+
+Validation-only runs insert one row per pair. `status='passed'` is reusable correctness evidence. Failed validation also creates a `validation_fail` evaluation row so the pair remains reusable negative evidence under the active benchmark campaign.
+
+Validation rows never count as timing samples.
 
 ## Candidate And Shape Registration
 
-Before scheduling work, the scheduler inserts all proposed candidates and target shapes with `INSERT OR IGNORE`. This ensures later evaluation rows can always be joined to canonical candidate parameters and shape dimensions.
-
-Imported hipBLASLt baselines, random candidates, mutations, DE children, GOMEA children, transfer candidates, and repair seeds all use the same `candidates` table. Their `source` and `parent_hashes` fields preserve provenance but do not affect cache identity.
+Before scheduling, candidates and shapes are inserted with `INSERT OR IGNORE`. Imported baselines, random candidates, mutations, DE/GOMEA children, transfer candidates, and repair seeds share the same tables and cache identities.
 
 ## Evaluation Statuses
 
-The cache module defines reusable status groups:
+Reusable groups are:
 
 ```text
 POSITIVE_CACHE_STATUSES = ('ok',)
 NEGATIVE_CACHE_STATUSES = ('rejected', 'validation_fail', 'build_failed')
-REUSABLE_CACHE_STATUSES = positive + negative
 ```
 
-Important statuses include:
-- `ok`: finite positive timing sample with passing validation, or trusted timing-only top-up backed by prior validation.
-- `rejected`: candidate/shape pair did not survive known rules or final TensileLite solution mapping.
-- `validation_fail`: structured runner reported failed validation.
-- `validation_unknown`: positive-looking row without accepted validation token. Not reusable positive evidence.
-- `invalid`: malformed, missing, or non-positive timing row.
-- `build_failed`: attributable build/codegen failure, reusable as negative evidence.
-- `build_timeout`: singleton build timeout, recorded for audit.
-- `runner_timeout`: structured runner timeout for a batch.
-- `build_failed_unattributed` / `build_timeout_unattributed`: multi-candidate failure without trustworthy attribution. Audit only.
-- `unmapped`: planned pair not present in manifest or mapping. Audit/debug signal.
+Important statuses:
+- `ok`: finite positive benchmark sample admitted after compatible validation.
+- `rejected`: pair did not survive source-backed rules or final solution mapping.
+- `validation_fail`: correctness verification failed.
+- `build_failed`: attributable build/codegen failure.
+- `build_timeout`: singleton build timeout. Audit-only.
+- `runner_timeout`: benchmark timeout. Audit-only.
+- `build_failed_unattributed` / `build_timeout_unattributed`: mixed-build failure without candidate attribution. Audit-only.
+- `unmapped`: planned pair absent from manifest or mapping. Audit/debug evidence.
 
-Only statuses in `REUSABLE_CACHE_STATUSES` are used to skip planned work.
+Only reusable statuses skip future work.
 
 ## Validation Semantics
 
-Passing validation tokens are normalized by the first word of the validation string:
+`validated_cache_entries()` queries the `validations` table for `status='passed'` under the active validation-protocol hash. It no longer infers correctness from timing rows.
 
-```text
-PASSED
-OK
-VALID
-```
+The validation-protocol identity includes validator version, backend, validation extent, input initialization settings, and relevant output behavior. A timing protocol change does not invalidate correctness unless one of those validation properties also changes.
 
-`validated_cache_entries()` returns pairs with `status='ok'` and a passing validation token. Timing-only top-ups with `NO_CHECK` are allowed only when this prior validation evidence exists for the same pair.
-
-Unknown validation is never ranked as positive. Failed validation is reusable negative evidence for the same cache key.
+There is no trusted no-validation path. Benchmark mode is allowed only for pairs already represented in the prepared validation-passed set or compatible cached validation evidence.
 
 ## Cache Lookup
 
-`reusable_cache_entry_counts()` counts reusable statuses for candidate/shape sets under one problem/protocol hash pair. `has_reusable_cache_entry()` returns true when either:
-- positive `ok` rows meet the requested `min_ok_samples`.
-- any reusable negative status exists.
+`reusable_cache_entry_counts()` counts timing and reusable negative evaluations under one problem/benchmark protocol. `_missing_candidate_indices_by_shape()` combines:
+- Existing timing sample count.
+- Reusable negative evidence.
+- Compatible correctness evidence from `validations`.
+- Shape-dependent source-backed invalidity.
 
-`_missing_candidate_indices_by_shape()` uses these counts to decide how many more samples are needed for each pair. It also checks shape-dependent invalid rules and skips pairs that are invalid for the target shape.
+A pair may therefore require more timing while not requiring validation.
 
 ## Ranking
 
-`rank_evaluations()` groups `status='ok'` rows by `(shape_id, candidate_hash)` and computes:
-- sample count.
-- median and best time in microseconds.
-- median and best GFLOP/s from the joined shape dimensions.
+`rank_evaluations()` groups `status='ok'` timing rows by `(shape_id, candidate_hash)` and computes sample count, median/best time, and median/best GFLOP/s. Validation-only rows cannot enter ranking because they are stored separately and have no timing.
 
-Rows below `min_samples` are ignored. Results sort by best median time, with median GFLOP/s as a tie helper.
+Ranking feeds CLI reports, proposal elites, transfer seeds, learned linkage, outlier repair, family archives, and final GridBased updates.
 
-Ranking is used for:
-- CLI `rank-evals` output.
-- elite selection for local, DE, and GOMEA proposal modes.
-- nearest-shape transfer seeds.
-- learned-linkage evidence loading.
-- outlier repair detection.
-- final GridBased update selection.
+## Phase Metadata
 
-## Batch And Run Metadata
+`schedule_metadata.json` and `repair_metadata.json` record:
+- Benchmark and validation protocol hashes.
+- Prepare-worker count.
+- Planned batches.
+- Initial and adaptive execution phases.
+- Build, validation, and benchmark return codes.
+- Status counts and errors.
 
-`schedule-batches` writes `schedule_metadata.json` in the output directory. `repair-outliers` writes `repair_metadata.json`. These JSON files summarize proposal settings, protocol settings, learned-linkage status, adaptive policy, planned batches, executed batches, status counts, paths, and errors.
-
-The SQLite `runs` table stores lower-level invocation metadata, while the output metadata files summarize one CLI-level operation.
+The `runs` table provides lower-level command and artifact provenance.
 
 ## Concurrency
 
-SQLite connections use:
+SQLite uses WAL mode, a 60-second busy timeout, and short independent connections. Parallel prepare workers may insert build/diagnostic/validation evidence concurrently.
 
-```text
-PRAGMA journal_mode=WAL
-PRAGMA busy_timeout=60000
-sqlite timeout=60s
-```
+The prepare-worker pool is fully joined before serial benchmark insertion begins. Compile-cache population has a separate per-cache lock. A machine-wide shared/exclusive APU gate prevents timing from overlapping preparation activity across cooperating processes.
 
-This supports concurrent batch workers inserting results while avoiding short lock failures. The compile cache has its own filesystem lock and is separate from SQLite locking.
+## Portability
 
-## Portability And Migration
-
-The schema is intentionally small and append-only. There is no migration framework yet. If an incompatible schema change is needed, create a new DB or add backwards-compatible columns/tables with `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE` guards.
-
-Analytics that do not belong in the hot scheduler path can be performed by ad-hoc SQLite queries or by exporting to DuckDB later.
+The schema is additive and has no migration framework. New DBs are recommended for incompatible campaigns. Existing DBs receive the `validations` table through `CREATE TABLE IF NOT EXISTS`. Old timing rows are not automatically converted into validation evidence.

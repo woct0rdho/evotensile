@@ -40,6 +40,18 @@ class EvaluationInsert:
     solution_index: int | None = None
 
 
+@dataclass(frozen=True)
+class ValidationInsert:
+    shape_id: str
+    candidate_hash: str
+    run_id: str | None
+    status: str
+    problem_type_hash: str
+    validation_protocol_hash: str
+    detail: str | None = None
+    solution_index: int | None = None
+
+
 @dataclass
 class _TimingBucket:
     shape: Shape
@@ -109,6 +121,22 @@ CREATE INDEX IF NOT EXISTS idx_evaluations_shape_candidate
 
 CREATE INDEX IF NOT EXISTS idx_evaluations_shape_time
   ON evaluations(problem_type_hash, benchmark_protocol_hash, shape_id, time_us);
+
+CREATE TABLE IF NOT EXISTS validations (
+  validation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  problem_type_hash TEXT NOT NULL,
+  validation_protocol_hash TEXT NOT NULL,
+  shape_id TEXT NOT NULL,
+  candidate_hash TEXT NOT NULL,
+  run_id TEXT,
+  status TEXT NOT NULL,
+  detail TEXT,
+  solution_index INTEGER,
+  created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_validations_cache_key
+  ON validations(problem_type_hash, validation_protocol_hash, shape_id, candidate_hash);
 """
 
 
@@ -333,6 +361,34 @@ class EvoTensileDB:
                 ],
             )
 
+    def insert_validations(self, validations: list[ValidationInsert]) -> None:
+        if not validations:
+            return
+        now = time.time()
+        with self.connection() as con:
+            con.executemany(
+                """
+                INSERT INTO validations
+                  (problem_type_hash, validation_protocol_hash, shape_id, candidate_hash,
+                   run_id, status, detail, solution_index, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        validation.problem_type_hash,
+                        validation.validation_protocol_hash,
+                        validation.shape_id,
+                        validation.candidate_hash,
+                        validation.run_id,
+                        validation.status,
+                        validation.detail,
+                        validation.solution_index,
+                        now,
+                    )
+                    for validation in validations
+                ],
+            )
+
     def cached_evaluation_count(
         self,
         *,
@@ -353,6 +409,15 @@ class EvoTensileDB:
                   AND shape_id = ?
                   AND candidate_hash = ?
                   AND status IN ({placeholders})
+                  AND (status != 'ok' OR (
+                    time_us IS NOT NULL AND time_us > 0
+                    AND UPPER(CASE
+                      WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0
+                        THEN TRIM(COALESCE(validation, ''))
+                      ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1,
+                                  INSTR(TRIM(COALESCE(validation, '')), ' ') - 1)
+                    END) IN ('PASSED', 'OK', 'VALID')
+                  ))
                 """,
                 (
                     problem_type_hash,
@@ -414,6 +479,15 @@ class EvoTensileDB:
                   AND shape_id IN ({shape_placeholders})
                   AND candidate_hash IN ({candidate_placeholders})
                   AND status IN ({status_placeholders})
+                  AND (status != 'ok' OR (
+                    time_us IS NOT NULL AND time_us > 0
+                    AND UPPER(CASE
+                      WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0
+                        THEN TRIM(COALESCE(validation, ''))
+                      ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1,
+                                  INSTR(TRIM(COALESCE(validation, '')), ' ') - 1)
+                    END) IN ('PASSED', 'OK', 'VALID')
+                  ))
                 GROUP BY shape_id, candidate_hash, status
                 """,
                 (
@@ -435,7 +509,7 @@ class EvoTensileDB:
         self,
         *,
         problem_type_hash: str,
-        benchmark_protocol_hash: str,
+        validation_protocol_hash: str,
         shape_ids: list[str],
         candidate_hashes: list[str],
     ) -> set[tuple[str, str]]:
@@ -443,29 +517,18 @@ class EvoTensileDB:
             return set()
         shape_placeholders = ",".join("?" for _ in shape_ids)
         candidate_placeholders = ",".join("?" for _ in candidate_hashes)
-        validation_placeholders = ",".join("?" for _ in VALIDATION_PASS_TOKENS)
         with self.connection() as con:
             rows = con.execute(
                 f"""
                 SELECT DISTINCT shape_id, candidate_hash
-                FROM evaluations
+                FROM validations
                 WHERE problem_type_hash = ?
-                  AND benchmark_protocol_hash = ?
+                  AND validation_protocol_hash = ?
                   AND shape_id IN ({shape_placeholders})
                   AND candidate_hash IN ({candidate_placeholders})
-                  AND status = 'ok'
-                  AND UPPER(CASE
-                    WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0 THEN TRIM(COALESCE(validation, ''))
-                    ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1, INSTR(TRIM(COALESCE(validation, '')), ' ') - 1)
-                  END) IN ({validation_placeholders})
+                  AND status = 'passed'
                 """,
-                (
-                    problem_type_hash,
-                    benchmark_protocol_hash,
-                    *shape_ids,
-                    *candidate_hashes,
-                    *VALIDATION_PASS_TOKENS,
-                ),
+                (problem_type_hash, validation_protocol_hash, *shape_ids, *candidate_hashes),
             ).fetchall()
         return {(row["shape_id"], row["candidate_hash"]) for row in rows}
 
@@ -503,7 +566,15 @@ class EvoTensileDB:
         min_samples: int = 1,
         limit: int | None = None,
     ) -> list[EvaluationSummary]:
-        clauses = ["e.status = 'ok'"]
+        clauses = [
+            "e.status = 'ok'",
+            "e.time_us IS NOT NULL",
+            "e.time_us > 0",
+            "UPPER(CASE "
+            "WHEN INSTR(TRIM(COALESCE(e.validation, '')), ' ') = 0 THEN TRIM(COALESCE(e.validation, '')) "
+            "ELSE SUBSTR(TRIM(COALESCE(e.validation, '')), 1, "
+            "INSTR(TRIM(COALESCE(e.validation, '')), ' ') - 1) END) IN ('PASSED', 'OK', 'VALID')",
+        ]
         params: list[str] = []
         if problem_type_hash is not None:
             clauses.append("e.problem_type_hash = ?")
@@ -601,5 +672,5 @@ class EvoTensileDB:
         with self.connection() as con:
             return {
                 table: con.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
-                for table in ["candidates", "shapes", "runs", "evaluations"]
+                for table in ["candidates", "shapes", "runs", "evaluations", "validations"]
             }

@@ -4,6 +4,8 @@ from typing import Any
 
 from .candidate import stable_hash
 
+VALIDATION_PROTOCOL_VERSION = 1
+
 BENCHMARK_PROTOCOL_KEYS = (
     "KernelTime",
     "PreciseKernelTime",
@@ -69,8 +71,8 @@ class BenchmarkProtocol:
             raise ValueError("HardwareMonitor is not supported by the structured runner")
         if self.parallel_gpu_execution != 1:
             raise ValueError("ParallelGpuExecution must be 1 for serial structured benchmarking")
-        if self.validation_backend not in {"cpu", "hipblaslt", "none"}:
-            raise ValueError("validation_backend must be one of: cpu, hipblaslt, none")
+        if self.validation_backend not in {"cpu", "hipblaslt"}:
+            raise ValueError("validation_backend must be one of: cpu, hipblaslt")
 
     @property
     def samples_per_pair(self) -> int:
@@ -114,11 +116,29 @@ class BenchmarkProtocol:
         return {"ValidationBackend": self.validation_backend}
 
     def identity_parameters(self) -> dict[str, Any]:
-        values = {**self.global_parameters(), **self.runner_parameters()}
-        return {key: value for key, value in values.items() if key in BENCHMARK_PROTOCOL_KEYS}
+        return {key: value for key, value in self.global_parameters().items() if key in BENCHMARK_PROTOCOL_KEYS}
+
+    def validation_identity_parameters(self) -> dict[str, Any]:
+        return {
+            "ValidationProtocolVersion": VALIDATION_PROTOCOL_VERSION,
+            "ValidationBackend": self.validation_backend,
+            "NumElementsToValidate": self.num_elements_to_validate,
+            "DataInitTypeA": self.data_init_type_a,
+            "DataInitTypeB": self.data_init_type_b,
+            "DataInitTypeC": self.data_init_type_c,
+            "DataInitTypeD": self.data_init_type_d,
+            "DataInitTypeAlpha": self.data_init_type_alpha,
+            "DataInitTypeBeta": self.data_init_type_beta,
+            "DataInitTypeBias": self.data_init_type_bias,
+            "DataInitTypeScaleAlphaVec": self.data_init_type_scale_alpha_vec,
+            "CEqualD": self.c_equal_d,
+        }
 
     def protocol_hash(self) -> str:
         return stable_hash(self.identity_parameters(), prefix="bproto_")[:23]
+
+    def validation_protocol_hash(self) -> str:
+        return stable_hash(self.validation_identity_parameters(), prefix="vproto_")[:23]
 
 
 def benchmark_protocol_hash(protocol: BenchmarkProtocol) -> str:

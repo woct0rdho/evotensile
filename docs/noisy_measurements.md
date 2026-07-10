@@ -109,23 +109,24 @@ The scheduled target is:
 `schedule-batches` uses adaptive sampling unless `--fixed-sampling` is passed.
 
 The execution sequence is:
-- Run an initial pass with `--adaptive-initial-samples` samples per pair. Default `3`.
-- Load timing stats from the DB for the active shapes and candidates.
-- Decide retime groups for unresolved shapes.
-- Re-run only missing samples for plausible contenders, grouped by target sample count and candidate set.
+- Prepare all initial batches in parallel: compile, map/salvage, diagnose, and validate.
+- Join every prepare worker before timing starts.
+- Run the initial serial benchmark queue with `--adaptive-initial-samples` samples per pair. Default `3`.
+- Load timing stats and decide retime groups for unresolved shapes.
+- Run only missing benchmark samples for plausible contenders from the original prepared-artifact index.
 - Repeat for up to `--adaptive-max-rounds`. Default `4`.
 
-Top-ups use the same benchmark-protocol identity because `NumBenchmarks` is intentionally not part of `BenchmarkProtocol.identity_parameters()`. It is an execution budget, not a timing-compatibility field.
+Adaptive rounds never compile or validate. A pair without a successful prepared artifact is ineligible for top-up. Top-ups use the same benchmark-protocol identity because `NumBenchmarks` is an execution budget, not a timing-compatibility field.
 
 ## Validation Gate
 
 Correctness is handled separately from repetition count:
-- The first accepted run for a `(shape, candidate)` pair uses the configured validation backend, defaulting to `hipblaslt` GPU-oracle validation with `NumElementsToValidate=-1`.
-- Later timing-only top-ups set `NumElementsToValidate=0`.
-- Timing-only rows are accepted only when the DB already contains passing validation evidence for the same `(shape, candidate)` pair.
-- `validation_unknown` and `validation_fail` rows are not ranked as positive evidence.
+- Validation mode runs once per compatible `(shape, candidate, validation protocol)` and stores evidence in the `validations` table.
+- Benchmark mode always sets `NumElementsToValidate=0` and cannot perform correctness work.
+- Timing is admitted only for pairs in the prepared validation-passed set or compatible cached validation evidence.
+- Validation failures become reusable negative evidence and are never eligible for adaptive timing.
 
-This keeps adaptive retiming fast without allowing unvalidated candidates to become winners.
+This keeps adaptive retiming fast without recompiling or revalidating contenders and prevents unvalidated candidates from becoming winners.
 
 ## Ranking Semantics
 

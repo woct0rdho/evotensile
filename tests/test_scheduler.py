@@ -4,10 +4,10 @@ from textwrap import dedent
 
 from evotensile.candidate import Shape
 from evotensile.cli import main as cli_main
-from evotensile.database import EvoTensileDB
+from evotensile.database import EvoTensileDB, ValidationInsert
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.scheduler import (
-    default_batch_workers,
+    default_prepare_workers,
     detect_underperforming_shapes,
     execute_schedule,
     plan_batches,
@@ -18,11 +18,27 @@ from evotensile.scheduler import (
 from evotensile.search_space import cheap_constraints, make_candidate
 from evotensile.shapes import pilot_100_shapes
 from evotensile.tensilelite_diagnostics import DiagnosticRecord, DiagnosticRunResult
-from tests.helpers import DOCUMENTED_WINNER_CANDIDATE, sample_candidates
+from tests.helpers import REFERENCE_CANDIDATE, sample_candidates
 
 
 def _time_us_for_gflops(shape: Shape, gflops: float) -> float:
     return 2.0 * shape.m * shape.n * shape.batch * shape.k / (gflops * 1e9) * 1e6
+
+
+def _record_validation(db: EvoTensileDB, shape: Shape, candidate_hash: str, detail: str = "PASSED") -> None:
+    db.insert_validations(
+        [
+            ValidationInsert(
+                shape_id=shape.id,
+                candidate_hash=candidate_hash,
+                run_id="cached_validation",
+                status="passed",
+                problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+                validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
+                detail=detail,
+            )
+        ]
+    )
 
 
 def test_production_candidate_batch_size_maximizes_size_while_saturating_workers():
@@ -31,7 +47,7 @@ def test_production_candidate_batch_size_maximizes_size_while_saturating_workers
             candidate_count=64,
             shape_count=100,
             shape_batch_size=100,
-            batch_workers=32,
+            prepare_workers=32,
             max_candidate_batch_size=32,
         )
         == 2
@@ -41,7 +57,7 @@ def test_production_candidate_batch_size_maximizes_size_while_saturating_workers
             candidate_count=64,
             shape_count=100,
             shape_batch_size=25,
-            batch_workers=32,
+            prepare_workers=32,
             max_candidate_batch_size=32,
         )
         == 9
@@ -51,7 +67,7 @@ def test_production_candidate_batch_size_maximizes_size_while_saturating_workers
             candidate_count=16,
             shape_count=1,
             shape_batch_size=100,
-            batch_workers=32,
+            prepare_workers=32,
             max_candidate_batch_size=32,
         )
         == 1
@@ -72,6 +88,8 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
         status="ok",
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
+        time_us=1.0,
+        validation="PASSED prior_validation",
     )
 
     batches = plan_batches(
@@ -80,6 +98,7 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
         candidates=candidates,
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
+        validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
         candidate_batch_size=2,
         shape_batch_size=2,
     )
@@ -109,8 +128,9 @@ def test_plan_batches_requests_only_missing_sample_count(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
-        validation="PASSED",
+        validation="PASSED prior_validation",
     )
+    _record_validation(db, shapes[0], candidates[0].hash)
 
     batches = plan_batches(
         db,
@@ -118,6 +138,7 @@ def test_plan_batches_requests_only_missing_sample_count(tmp_path: Path):
         candidates=candidates,
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
+        validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
         min_samples=3,
         candidate_batch_size=1,
         shape_batch_size=1,
@@ -145,7 +166,13 @@ def test_plan_batches_reuses_detailed_hipblaslt_validation_evidence(tmp_path: Pa
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
-        validation="PASSED checked=1048576 stride=1 backend=hipblaslt_gpu_compare",
+        validation="PASSED prior_validation",
+    )
+    _record_validation(
+        db,
+        shapes[0],
+        candidates[0].hash,
+        detail="PASSED checked=1048576 stride=1 backend=hipblaslt_gpu_compare",
     )
 
     batches = plan_batches(
@@ -154,6 +181,7 @@ def test_plan_batches_reuses_detailed_hipblaslt_validation_evidence(tmp_path: Pa
         candidates=candidates,
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
+        validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
         min_samples=3,
         candidate_batch_size=1,
         shape_batch_size=1,
@@ -187,6 +215,7 @@ def test_plan_batches_requires_validation_without_prior_validation_evidence(tmp_
         candidates=candidates,
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
+        validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
         min_samples=3,
         candidate_batch_size=1,
         shape_batch_size=1,
@@ -226,6 +255,7 @@ def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):
         candidates=candidates,
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
+        validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
         candidate_batch_size=2,
         shape_batch_size=1,
     )
@@ -250,6 +280,7 @@ def test_local_proposal_mutates_cached_elites(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=10.0,
+        validation="PASSED prior_validation",
     )
 
     proposed = propose_candidates(
@@ -324,6 +355,7 @@ def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=time_us,
+            validation="PASSED prior_validation",
         )
 
     proposed = propose_candidates(
@@ -533,6 +565,7 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
+        validation="PASSED prior_validation",
     )
     db.insert_evaluation(
         shape_id=transfer_shape.id,
@@ -542,6 +575,7 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=0.5,
+        validation="PASSED prior_validation",
     )
 
     proposed = propose_candidates(
@@ -654,6 +688,7 @@ def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=1.0 + idx,
+            validation="PASSED prior_validation",
         )
 
     proposed = propose_candidates(
@@ -681,7 +716,7 @@ def test_random_proposal_does_not_include_fixed_controls(tmp_path: Path):
     proposed = propose_candidates(db, proposal="seed-random", num_random=12, seed=1151)
 
     assert {candidate.source for candidate in proposed} == {"random"}
-    assert DOCUMENTED_WINNER_CANDIDATE.hash not in {candidate.hash for candidate in proposed}
+    assert REFERENCE_CANDIDATE.hash not in {candidate.hash for candidate in proposed}
 
 
 def test_random_proposals_respect_target_shape_rules(tmp_path: Path):
@@ -730,13 +765,75 @@ def test_mixed_random_proposals_do_not_use_random_as_evolution_parents(tmp_path:
         assert {candidate.source for candidate in proposed} == {"random"}
 
 
+def test_family_qd_cold_start_uses_balanced_random_family_coverage(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    shape = Shape(m=8192, n=8192, batch=1, k=8192)
+
+    proposed = propose_candidates(
+        db,
+        proposal="family-qd",
+        num_random=16,
+        local_count=8,
+        de_count=4,
+        gomea_count=12,
+        target_shapes=[shape],
+        seed=819200,
+    )
+
+    assert {candidate.source for candidate in proposed} == {"random"}
+    assert len(proposed) == 16
+    assert {candidate.params["TransposeLDS"] for candidate in proposed} == {0, 2}
+
+
+def test_family_qd_proposal_preserves_family_archive_leaders(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = sample_candidates(4, seed=1151)
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes([shape])
+    for idx, candidate in enumerate(candidates):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=1.0 + idx,
+            validation="PASSED",
+        )
+
+    proposed = propose_candidates(
+        db,
+        proposal="family-qd",
+        num_random=3,
+        local_count=2,
+        de_count=0,
+        gomea_count=2,
+        elite_count=4,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        target_shapes=[shape],
+        seed=1151,
+    )
+
+    proposed_hashes = {candidate.hash for candidate in proposed}
+    assert candidates[0].hash in proposed_hashes
+    assert "random" in {candidate.source for candidate in proposed}
+    assert len(proposed_hashes) == len(proposed)
+
+
 def test_execute_schedule_records_shape_rule_rejection_without_build(tmp_path: Path):
     fake_tensile = tmp_path / "fail_if_called.py"
     fake_tensile.write_text("#!/usr/bin/env python3\nraise SystemExit(99)\n", encoding="utf-8")
     fake_tensile.chmod(0o755)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidate = make_candidate(
-        {**DOCUMENTED_WINNER_CANDIDATE.canonical_params(), "GlobalSplitU": 2, "DepthU": 32},
+        {**REFERENCE_CANDIDATE.canonical_params(), "GlobalSplitU": 2, "DepthU": 32},
         source="shape_rule",
     )
     shape = Shape(m=8192, n=8192, batch=1, k=8192)
@@ -792,6 +889,7 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
                 candidates=[candidate],
                 problem_type_hash=p_hash,
                 benchmark_protocol_hash=b_hash,
+                validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
                 candidate_batch_size=1,
                 shape_batch_size=1,
             )
@@ -830,6 +928,10 @@ def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_b
                     sort_keys=False,
                 )
             )
+            lib = out / "4_LibraryClient" / "library" / "gfx1151"
+            lib.mkdir(parents=True, exist_ok=True)
+            (lib / "TensileLibrary_gfx1151.yaml").write_text("---\\nsolutions: []\\n")
+            (lib / "Kernels.so-000-gfx1151.hsaco").write_bytes(b"fake")
             sys.exit(2)
             """
         ),
@@ -837,7 +939,7 @@ def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_b
     )
     fake_tensile.chmod(0o755)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
-    candidates = [sample_candidates(1)[0], DOCUMENTED_WINNER_CANDIDATE]
+    candidates = [sample_candidates(1)[0], REFERENCE_CANDIDATE]
     shape = pilot_100_shapes()[0]
 
     fake_runner = tmp_path / "fake_runner.py"
@@ -849,22 +951,34 @@ def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_b
             import json
 
             parser = argparse.ArgumentParser()
+            parser.add_argument("--mode", required=True)
             parser.add_argument("--pairs")
             parser.add_argument("--output")
             args, _ = parser.parse_known_args()
             with open(args.pairs) as src, open(args.output, "w") as out:
                 for line in src:
                     pair = json.loads(line)
-                    for sample_index in range(pair.get("num_benchmarks", 1)):
+                    if args.mode == "validate":
                         out.write(json.dumps({
                             "shape_id": pair["shape_id"],
                             "candidate_hash": pair["candidate_hash"],
                             "status": "ok",
-                            "sample_index": sample_index,
-                            "time_us": 1.0 + sample_index * 0.001,
-                            "validation": "NO_CHECK" if pair.get("num_elements_to_validate") == 0 else "PASSED",
+                            "sample_index": 0,
+                            "time_us": None,
+                            "validation": "PASSED",
                             "solution_index": pair["library_solution_index"],
                         }) + "\\n")
+                    else:
+                        for sample_index in range(pair.get("num_benchmarks", 1)):
+                            out.write(json.dumps({
+                                "shape_id": pair["shape_id"],
+                                "candidate_hash": pair["candidate_hash"],
+                                "status": "ok",
+                                "sample_index": sample_index,
+                                "time_us": 1.0 + sample_index * 0.001,
+                                "validation": "NO_CHECK",
+                                "solution_index": pair["library_solution_index"],
+                            }) + "\\n")
             """
         ),
         encoding="utf-8",
@@ -964,6 +1078,7 @@ def test_multi_candidate_build_failure_unattributed_is_not_reusable_cache(tmp_pa
                 candidates=candidates,
                 problem_type_hash=p_hash,
                 benchmark_protocol_hash=b_hash,
+                validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
                 candidate_batch_size=2,
                 shape_batch_size=1,
             )
@@ -1002,6 +1117,7 @@ def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path)
             candidates=[candidate],
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
+            validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
             candidate_batch_size=1,
             shape_batch_size=1,
         )
@@ -1040,15 +1156,18 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
         candidate_count=default_metadata["candidates"],
         shape_count=default_metadata["shapes"],
         shape_batch_size=default_metadata["shape_batch_size"],
-        batch_workers=default_metadata["batch_workers"],
+        prepare_workers=default_metadata["prepare_workers"],
         max_candidate_batch_size=DEFAULT_PROFILE.default_candidate_batch_size,
     )
-    assert default_metadata["batch_workers"] == default_batch_workers()
+    assert default_metadata["prepare_workers"] == default_prepare_workers()
     assert default_metadata["adaptive_sampling"] is True
     assert default_metadata["stop_on_error"] is False
     assert default_metadata["learned_linkage_requested"] is True
     assert default_metadata["learned_linkage_enabled"] is False
     assert default_metadata["linkage_fallback_reason"] == "insufficient_validated_evidence"
+    assert default_metadata["candidate_family_count"] >= 1
+    assert sum(default_metadata["candidate_family_counts"].values()) == default_metadata["candidates"]
+    assert default_metadata["archive_family_count"] == 0
 
     assert default_metadata["compile_cache_enabled"] is True
     assert default_metadata["compile_cache_root"] == str(tmp_path / "default" / "compile_cache")
@@ -1057,11 +1176,11 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
         tmp_path / "large_batch",
         "--num-random",
         "16",
-        "--batch-workers",
+        "--prepare-workers",
         "8",
     )
     assert large_batch_metadata["candidate_batch_size"] > 1
-    assert large_batch_metadata["planned_batches"] >= large_batch_metadata["batch_workers"]
+    assert large_batch_metadata["planned_batches"] >= large_batch_metadata["prepare_workers"]
 
     debug_singleton_metadata = run_cli(tmp_path / "debug_singleton", "--candidate-batch-size", "1")
     assert debug_singleton_metadata["candidate_batch_size"] == 1
