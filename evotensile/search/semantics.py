@@ -12,6 +12,10 @@ NT_HHS_SEMANTIC_GROUPS: tuple[tuple[str, ...], ...] = (
 )
 
 
+def semantic_group_key(group: tuple[str, ...]) -> str:
+    return "|".join(group)
+
+
 def semantic_group_names() -> tuple[tuple[str, ...], ...]:
     groups = [*NT_HHS_SEMANTIC_GROUPS, *tuple((name,) for name in PARAM_NAMES)]
     return tuple(dict.fromkeys(groups))

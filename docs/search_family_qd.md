@@ -54,6 +54,8 @@ The NT HHS random generator keeps compatible TLDS0 and TLDS2 construction branch
 
 Repeated occupancy matters because one build or validation failure is evidence about one candidate, not proof that an entire structural family is bad.
 
+An optional one-shape covering cold selector operates after stratified generation without changing the coarse family descriptor. Its decomposed mechanics, token policy, quality weighting, and exact-MI exclusion are documented in `docs/search_mechanical_coverage.md`.
+
 ## Family Archive
 
 `load_family_archive()` derives archive entries on demand from SQLite. It does not require a separate materialized archive table.
@@ -130,6 +132,6 @@ The implementation does not yet:
 - split or merge descriptor cells automatically from accumulated evidence.
 - retime family leaders as a separate fidelity tier before global finalists.
 - materialize archive history or per-generation family state in dedicated DB tables.
-- migrate elites between independent search islands.
+- provide general CLI-managed island migration. The blind one-shape driver has a campaign-specific isolated-parent and later-merge policy documented in `docs/blind_campaign_control.md`.
 
-Those are possible extensions. The current design keeps family state derived, auditable, and independent of candidate validity.
+Those are possible extensions. The current general family-QD design keeps family state derived, auditable, and independent of candidate validity.

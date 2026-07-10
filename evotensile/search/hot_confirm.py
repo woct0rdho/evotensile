@@ -3,10 +3,14 @@ import json
 import sqlite3
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
 from evotensile.database import EvoTensileDB
+from evotensile.metrics import gflops_from_us
+from evotensile.shapes import shape_from_id
+from evotensile.structured_runner import RunnablePair
 
 
 class HotConfirmationRecord(TypedDict):
@@ -23,8 +27,15 @@ class HotConfirmationRecord(TypedDict):
     command: list[str]
 
 
-def _artifact_map(db_path: str | Path, *, architecture: str) -> dict[str, tuple[dict[str, object], Path]]:
-    found: dict[str, tuple[dict[str, object], Path]] = {}
+@dataclass(frozen=True)
+class CandidateArtifact:
+    raw_pair: dict[str, object]
+    runnable_pair: RunnablePair
+    library_dir: Path
+
+
+def load_candidate_artifacts(db_path: str | Path, *, architecture: str) -> dict[tuple[str, str], CandidateArtifact]:
+    found: dict[tuple[str, str], CandidateArtifact] = {}
     with sqlite3.connect(db_path) as connection:
         rows = connection.execute(
             "SELECT metadata_json FROM runs WHERE metadata_json IS NOT NULL ORDER BY timestamp"
@@ -47,9 +58,25 @@ def _artifact_map(db_path: str | Path, *, architecture: str) -> dict[str, tuple[
         if not library_dirs or not library_dirs[0].exists():
             continue
         for line in pairs_path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                pair = json.loads(line)
-                found[str(pair["candidate_hash"])] = (pair, library_dirs[0])
+            if not line.strip():
+                continue
+            pair = json.loads(line)
+            shape_id = str(pair["shape_id"])
+            candidate_hash = str(pair["candidate_hash"])
+            manifest_solution_index = pair.get("manifest_solution_index")
+            runnable = RunnablePair(
+                shape_id=shape_id,
+                candidate_hash=candidate_hash,
+                problem_index=int(pair["problem_index"]),
+                requested_solution_index=int(pair["requested_solution_index"]),
+                library_solution_index=int(pair["library_solution_index"]),
+                manifest_solution_index=(None if manifest_solution_index is None else int(manifest_solution_index)),
+            )
+            found[(shape_id, candidate_hash)] = CandidateArtifact(
+                raw_pair=pair,
+                runnable_pair=runnable,
+                library_dir=library_dirs[0],
+            )
     return found
 
 
@@ -85,16 +112,17 @@ def hot_confirm_topk(
         candidate_hashes=hashes,
     )
     hashes = [candidate_hash for candidate_hash in hashes if (shape_id, candidate_hash) in validated]
-    artifacts = _artifact_map(db_path, architecture=architecture)
+    artifacts = load_candidate_artifacts(db_path, architecture=architecture)
+    shape = shape_from_id(shape_id)
     records: list[HotConfirmationRecord] = []
     for screen_rank, candidate_hash in enumerate(hashes, 1):
         if deadline is not None and time.monotonic() >= deadline:
             break
-        artifact = artifacts.get(candidate_hash)
+        artifact = artifacts.get((shape_id, candidate_hash))
         if artifact is None:
             continue
-        pair, library_dir = artifact
-        hot_pair = dict(pair)
+        library_dir = artifact.library_dir
+        hot_pair = dict(artifact.raw_pair)
         hot_pair.update(
             {
                 "num_warmups": 20,
@@ -144,8 +172,12 @@ def hot_confirm_topk(
         if not results_path.exists():
             continue
         rows = [json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        times = sorted(float(row["time_us"]) for row in rows if row.get("status") == "ok")
-        gflops = sorted(float(row["gflops"]) for row in rows if row.get("status") == "ok")
+        positive_rows = [row for row in rows if row.get("status") == "ok"]
+        times = sorted(float(row["time_us"]) for row in positive_rows)
+        gflops = sorted(
+            float(row["gflops"]) if row.get("gflops") is not None else gflops_from_us(shape, float(row["time_us"]))
+            for row in positive_rows
+        )
         if process.returncode != 0 or len(times) != 10:
             continue
         records.append(

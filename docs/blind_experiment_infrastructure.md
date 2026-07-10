@@ -1,6 +1,6 @@
 # Blind Experiment Infrastructure
 
-This document describes the infrastructure for blind EvoTensile search experiments, including real wall-time campaigns, exact-hash historical replay, simulated time accounting, finalist confirmation, and audit artifacts. Individual experiment outcomes belong in experiment logs such as `docs/blind_one_shape_experiment.md`.
+This document describes the infrastructure for blind EvoTensile search experiments, including real wall-time campaigns, exact-hash historical replay, simulated time accounting, finalist confirmation, and audit artifacts. The one-shape campaign state machine is documented in `docs/blind_campaign_control.md`. Individual experiment outcomes belong in logs such as `docs/blind_one_shape_experiment.md`.
 
 ## Blindness Contract
 
@@ -24,22 +24,24 @@ Unknown oracle candidates remain unknown. Simulation must not impute their perfo
 
 ## Real Campaign Driver
 
-`scripts/run_blind_one_shape_20min.py` runs the current one-shape policy against an empty campaign DB.
+`scripts/run_blind_one_shape.py` runs the current one-shape policy against an empty campaign DB.
 
 The driver provides:
 - a fixed seed and recorded frozen policy.
-- a cold family-stratified population.
-- repeated family-QD feedback rounds.
+- two independently seeded, mechanically covering cold populations.
+- island-local feedback rounds followed by explicit population migration.
+- repeated family-QD feedback rounds with optional low-diversity restarts.
 - adaptive operator allocation and surrogate oversized pools.
 - normal cache-aware compile, validation, probe, and screening execution.
-- wall-time-driven round admission using recent round duration.
+- cost-aware round admission using robust recent duration per missing pair.
 - a reserved finalist-confirmation budget.
 - per-round proposal lineage and execution summaries.
+- atomic exact-proposal checkpoints and hash-verified `--resume` under the original invocation contract.
 - a final campaign summary.
 
-The current frozen policy uses `48` cold candidates, then requests `24` generated candidates per feedback round from an `8x` pool. Existing family archive parents may also appear in the proposal list, but cache-aware planning measures only missing pairs.
+The current policy uses `48` measured cold candidates selected from two complementary `8x` island pools, then requests `24` generated candidates per feedback round. The first six feedback rounds keep parents island-local. Later rounds use the merged archive. Existing parents may also appear in the proposal list, but cache-aware planning measures only missing pairs. Preparation uses eight workers while GPU validation is capped at one worker after concurrent validation exposed a reproducible ROCr/KFD operational failure.
 
-The driver uses the existing three-launch catastrophic probe and two-sample screening protocol. It does not change TensileLite validity or validation behavior.
+The driver uses a staged catastrophic probe: one launch for every validated pair, followed by two more only for provisional survivors, then the two-sample screening protocol. It also stabilizes a bounded set of provisional main-protocol leaders between rounds. Probe math is documented in `docs/noisy_measurements.md`. Stabilization is documented in `docs/search_screening_stabilization.md`. Neither changes TensileLite validity or validation behavior.
 
 ## Exact-Hash Replay Oracle
 
@@ -68,8 +70,9 @@ CSV candidate streams require `--diagnostic-pool`. Output records `proof_eligibl
 
 `ReplayCostModel` accounts for:
 - parallel preparation waves.
-- per-candidate three-launch probes.
+- one initial probe launch per candidate plus two additional launches for provisional survivors.
 - main screening launches for probe survivors.
+- optional provisional-leader stabilization samples.
 - a reserved hot-confirmation budget.
 - final hot-loop launches.
 
@@ -82,10 +85,13 @@ ceil(selected_candidates / prepare_workers) * prepare_seconds_per_candidate
 Launch cost is derived from shape FLOPs and the exact measured GFLOP/s of the queried candidate.
 
 The simulator applies the same coarse probe policy used by production search:
-- screen candidates confidently outside the configured slowdown factor.
+- screen candidates outside the configured slowdown factor after the initial launch.
 - retain a minimum survivor count.
+- charge remaining probe launches only to provisional survivors.
 - keep probe-only rows out of the main training DB.
-- insert main screening evidence only for survivors.
+- insert main screening evidence only for complete probe survivors.
+
+Optional replay controls model covering cold selection, deterministic hash-partitioned islands, isolation duration, leader-stabilization cost, population diagnostics, and convergence stopping. These reproduce policy/accounting behavior over a fixed historical stream. They do not reproduce the real generator's parent genealogy.
 
 Search stops before the confirmation reserve. Finalists are ranked from queried main-protocol evidence and hot-confirmed only when an exact hot measurement exists and simulated time remains.
 
@@ -96,7 +102,8 @@ Each replay seed uses a fresh temporary SQLite database. Proposal shortlisting c
 This preserves causal ordering for:
 - surrogate training.
 - family archive ranking.
-- operator credit.
+- leader stabilization.
+- any credit or diagnostics derived from inserted replay evidence.
 - best-so-far traces.
 
 The oracle object itself can contain future answers, but proposal code receives only candidates and the simulated DB evidence already disclosed by prior queries.
@@ -120,18 +127,19 @@ Benchmark mode sets validation extent to zero and relies on prior validation evi
 Real campaigns write:
 - `frozen_policy.json`.
 - `campaign.sqlite`.
-- `round_NN/proposals.json` with source and parent hashes.
+- `round_NN/proposals.json` with exact parameters, source, parent hashes, proposal metadata, and proposal-call settings.
 - per-round build, validation, probe, and benchmark artifacts.
 - `campaign_progress.json`.
+- `campaign_checkpoint.json` with phase, exact pending hashes, seeds, policy, and elapsed accounting.
 - `campaign_summary.json`.
 - `hot_loop_top8/summary.json` and `ranked.csv`.
 
 Replay writes:
-- cost-model parameters.
+- cost-model and enabled-policy parameters.
 - proof eligibility.
-- query counts and unknown counts.
-- simulated elapsed time.
-- per-round best-so-far traces.
+- query, unknown, screened, and survivor counts.
+- simulated elapsed time and stop reason.
+- per-round best-so-far, stabilization, and population-diagnostic traces.
 - hot-confirmed result and threshold outcome when configured.
 
 Long real runs should additionally capture GPU busy, power, temperature, memory, and relevant process counts. Monitoring is external to the proposal algorithm and must not change the candidate sequence.
@@ -154,7 +162,7 @@ python scripts/simulate_blind_search.py \
 Real campaign:
 
 ```bash
-python scripts/run_blind_one_shape_20min.py \
+python scripts/run_blind_one_shape.py \
   --output out/blind-seed-1 \
   --shape 8192,8192,1,8192 \
   --seed 1 \
@@ -170,3 +178,4 @@ python scripts/run_blind_one_shape_20min.py \
 - Screening evidence can be noisy. Simulated replay cannot reconstruct unrecorded timing distributions.
 - A successful diagnostic pool is not a successful blind experiment.
 - Repeated real runs after observing a threshold result must be labeled transparently if policy or budget allocation changed.
+- Exact pending proposals survive resume, but an abrupt mid-round termination can leave an uncheckpointed wall-time interval. `docs/blind_campaign_control.md` documents the required audit treatment.

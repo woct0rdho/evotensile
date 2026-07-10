@@ -266,6 +266,7 @@ class EvoTensileDB:
                 params=payload["params"],
                 source=payload.get("source", "db"),
                 parent_hashes=tuple(payload.get("parent_hashes", [])),
+                proposal_metadata=payload.get("proposal_metadata", {}),
             )
         return [by_hash[h] for h in candidate_hashes if h in by_hash]
 

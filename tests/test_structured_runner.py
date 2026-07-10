@@ -82,7 +82,11 @@ def _fake_structured_runner(path: Path) -> Path:
             if events_path:
                 with Path(events_path).open("a") as events:
                     events.write(f"{args.mode}_start\\n")
-            active_dir = os.environ.get("EVOTENSILE_TEST_GPU_ACTIVE_DIR") if args.mode == "benchmark" else None
+            active_dir = (
+                os.environ.get("EVOTENSILE_TEST_GPU_ACTIVE_DIR")
+                if args.mode == "benchmark"
+                else os.environ.get("EVOTENSILE_TEST_VALIDATION_ACTIVE_DIR")
+            )
             active_path = Path(active_dir) if active_dir else None
             if active_path is not None:
                 try:
@@ -379,6 +383,35 @@ def test_parallel_prepare_finishes_before_serial_benchmark_queue(tmp_path: Path,
     assert db.cache_summary() == {"ok": 2}
 
 
+def test_validation_worker_cap_serializes_gpu_validation(tmp_path: Path, monkeypatch):
+    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = sample_candidates(4)
+    shape = pilot_100_shapes()[0]
+    validation_active = tmp_path / "validation-active"
+    monkeypatch.setenv("EVOTENSILE_TEST_VALIDATION_ACTIVE_DIR", str(validation_active))
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        prepare_workers=4,
+        validation_workers=1,
+    )
+
+    assert len(result.executed_batches) == 4
+    assert not validation_active.with_suffix(".overlap").exists()
+    assert not validation_active.exists()
+
+
 def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
     fake_tensile = _fake_build_tensile(tmp_path)
     fake_runner = _fake_structured_runner(tmp_path)
@@ -418,15 +451,20 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
     events = events_path.read_text(encoding="utf-8").splitlines()
     assert events.count("compile_start") == 1
     assert events.count("validate_start") == 1
-    assert events.count("benchmark_start") == 3
+    assert events.count("benchmark_start") == 4
     assert result.adaptive_rounds == 1
-    assert [batch.phase for batch in result.executed_batches] == ["probe", "initial", "adaptive"]
+    assert [batch.phase for batch in result.executed_batches] == [
+        "probe-initial",
+        "probe-topup",
+        "initial",
+        "adaptive",
+    ]
     assert not (tmp_path / "gpu-active.overlap").exists()
     assert not (tmp_path / "gpu-active").exists()
     assert db.cache_summary() == {"ok": 10}
 
 
-def test_adaptive_probe_limits_slow_candidates_to_three_launches(tmp_path: Path, monkeypatch):
+def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, monkeypatch):
     fake_tensile = _fake_build_tensile(tmp_path)
     fake_runner = _fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
@@ -480,16 +518,23 @@ def test_adaptive_probe_limits_slow_candidates_to_three_launches(tmp_path: Path,
 
     assert result.probe_survivor_pairs == 1
     assert result.probe_screened_pairs == 1
-    assert [summary.samples for summary in probe_rank] == [3, 3]
+    assert [(summary.candidate_hash, summary.samples) for summary in probe_rank] == [
+        (candidates[0].hash, 3),
+        (candidates[1].hash, 1),
+    ]
     assert [(summary.candidate_hash, summary.samples) for summary in main_rank] == [(candidates[0].hash, 2)]
-    assert [batch.phase for batch in result.executed_batches] == ["probe", "initial"]
+    assert [batch.phase for batch in result.executed_batches] == [
+        "probe-initial",
+        "probe-topup",
+        "initial",
+    ]
 
     pair_files = list((tmp_path / "batches").rglob("benchmark_*.pairs.jsonl"))
     pair_groups = [[json.loads(line) for line in path.read_text().splitlines()] for path in pair_files]
-    probe_pairs = next(rows for rows in pair_groups if rows[0]["enqueues_per_sync"] == 1)
+    probe_groups = [rows for rows in pair_groups if rows[0]["enqueues_per_sync"] == 1]
     main_pairs = next(rows for rows in pair_groups if rows[0]["enqueues_per_sync"] == 10)
-    assert len(probe_pairs) == 2
-    assert all(row["num_benchmarks"] == 3 and row["num_warmups"] == 0 for row in probe_pairs)
+    assert sorted((len(rows), rows[0]["num_benchmarks"]) for rows in probe_groups) == [(1, 2), (2, 1)]
+    assert all(row["num_warmups"] == 0 for rows in probe_groups for row in rows)
     assert len(main_pairs) == 1
     assert main_pairs[0]["candidate_hash"] == candidates[0].hash
     assert main_pairs[0]["num_benchmarks"] == 2

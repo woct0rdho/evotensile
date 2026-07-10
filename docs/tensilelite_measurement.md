@@ -40,9 +40,9 @@ The parallel prepare queue performs, for every batch:
 - Structured diagnostics for unattributed mixed-build failures.
 - Correctness verification for accepted pairs that lack compatible cached validation.
 
-`--prepare-workers` controls this queue and defaults to available CPU cores. `--compile-threads` controls CPU threads inside one TensileLite build and defaults to `1`.
+`--prepare-workers` controls this queue and defaults to available CPU cores. `--compile-threads` controls CPU threads inside one TensileLite build and defaults to `1`. `--validation-workers` optionally caps concurrent structured validation processes without reducing compilation parallelism.
 
-Compilation, diagnostics, CPU validation, and GPU validation may overlap each other. After all prepare futures finish, the worker pool is shut down. No timing starts until every prepare subprocess has exited.
+Compilation, diagnostics, CPU validation, and GPU validation may overlap when no validation cap is configured. The blind one-shape campaign uses one GPU validation worker because concurrent large-library validation destabilized ROCr/KFD on the integrated gfx1151 system. After all prepare futures finish, the worker pool is shut down. No timing starts until every prepare subprocess has exited.
 
 Timeouts kill the complete subprocess process group before a prepare future completes. Compiler descendants therefore cannot survive the phase barrier.
 
@@ -164,14 +164,15 @@ There is no public `none` validation backend and no trusted-validation bypass. S
 ## Adaptive Timing
 
 Adaptive sampling prepares the candidate set once. The scheduler then:
-- Runs a separate three-sample, one-enqueue, zero-warmup probe for every validation-passed pair.
-- Screens only candidates confidently slower than the best compatible shape reference by more than the configured coarse factor.
-- Runs the main timing protocol for probe survivors.
+- runs one one-enqueue, zero-warmup probe sample for every validation-passed pair.
+- screens candidates outside the configured coarse factor while retaining the minimum survivor floor.
+- gives provisional survivors the remaining samples needed for the three-sample probe target.
+- runs the main timing protocol only for candidates with complete surviving probe evidence.
 - Loads main-protocol timing statistics and selects plausible contenders within the final indifference zone.
 - Runs benchmark-only top-up subsets from the original prepared-artifact index.
 - Repeats up to the configured adaptive-round limit.
 
-Probe evidence has a separate protocol hash and cannot enter main ranking. Missing probe evidence fails open. Probe, main, and adaptive rounds do not compile, remap, diagnose, or validate candidates. A contender without a successfully prepared artifact is ineligible for timing.
+Probe evidence has a separate protocol hash and cannot enter main ranking. Missing or incomplete probe evidence is not admitted to main timing in that schedule and creates no reusable negative cache row. Probe, main, and adaptive rounds do not compile, remap, diagnose, or validate candidates. A contender without a successfully prepared artifact is ineligible for timing.
 
 ## Hot-Loop Confirmation
 
@@ -194,4 +195,4 @@ Attributed failures become reusable `build_failed` rows. Unattributed failures b
 
 ## Run Records
 
-Build, diagnostic, validation, and benchmark invocations insert separate `runs` rows with command, mode, paths, return code, duration, and timeout status. CLI metadata records the probe policy/hash, survivor and screened pair counts, and whether an executed batch belongs to probe, initial main timing, or an adaptive top-up.
+Build, diagnostic, validation, and benchmark invocations insert separate `runs` rows with command, mode, paths, return code, duration, and timeout status. CLI metadata records the probe policy/hash, survivor and screened pair counts, and whether an executed batch belongs to initial probe, probe top-up, initial main timing, screening stabilization, or an adaptive top-up.

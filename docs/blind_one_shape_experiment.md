@@ -1,6 +1,6 @@
 # Blind One-Shape Experiment Log
 
-This document records the blind `gfx1151-nt-hhs` search experiments for shape `8192,8192,1,8192`. It is an experiment log, not the design specification for the search algorithms. Search design lives in the search-prefixed documents under `docs/`. Replay, time accounting, and blind-run tooling are documented in `docs/blind_experiment_infrastructure.md`.
+This document records the blind `gfx1151-nt-hhs` search experiments for shape `8192,8192,1,8192`. It is an experiment log, not a subsystem design specification. Reusable search design lives in focused documents under `docs/`. Replay and blindness rules are in `docs/blind_experiment_infrastructure.md`, and the one-shape state machine is in `docs/blind_campaign_control.md`.
 
 ## Objective And Success Criterion
 
@@ -167,15 +167,64 @@ The strongest conclusions are:
 - short screening is adequate for exploration but too noisy for final claims or high-impact credit decisions.
 - seed variance remains large enough that one global population is fragile.
 
-## Next Experiments
+## Follow-up Campaign Series
 
-The next generic experiment should keep the search blind and test:
-- noise-aware top-ups for provisional archive and global leaders before they strongly influence surrogate training or operator credit.
-- two independent cold-start islands with later family-local migration.
-- cost-aware operator reward that includes proposal, build, validation, and timing cost.
-- fixed-policy multi-seed evaluation before threshold comparison.
+The `2026-07-10` follow-up kept the validation, serialized-timing, hot-confirmation, and anti-hindsight rules while testing whether broader cold coverage, deeper local assembly, more reliable feedback, and explicit campaign control reduce seed variance and close the remaining performance gap.
 
-These changes should be evaluated by equal wall time and must not import external winner parameters.
+### Policy Under Test
+
+The combined policy enabled:
+- screening-leader stabilization from `docs/search_screening_stabilization.md`.
+- mechanical covering cold starts from `docs/search_mechanical_coverage.md`.
+- bounded GOMEA neighborhoods and adaptive donor selection from `docs/search_gomea.md`.
+- semantic-group, donor-mode, and cost-aware credit from `docs/search_operator_portfolio.md` and `docs/search_cost_model.md`.
+- two isolated cold islands, later migration, checkpointing, robust round admission, and optional convergence detection from `docs/blind_campaign_control.md`.
+- the staged one-launch catastrophic probe from `docs/noisy_measurements.md`.
+
+These mechanisms were evaluated as one combined campaign policy. The run was not a component-by-component causal ablation.
+
+### Replay Preflight
+
+Implementation and simulation preflight completed on `2026-07-10`. Before the real campaign series, focused correctness coverage and the complete repository test suite passed.
+
+Exact-hash replay was rerun with staged-probe accounting over seeds `20260710–20260712` and equal `1200s` budgets. The matched baseline and new policy recovered the same historical `44.331 TFLOP/s` hot finalist. Median simulated time to first exceed `40 TFLOP/s` screening improved from `168.47s` to `114.05s`, a `32.3%` reduction. The staged probe allowed a median of `984` queried candidates instead of the former `960`, although new-policy seed `20260711` regressed to `172.71s`. Replay therefore supports the timing-allocation change but not automatic early stopping or a claim of better unseen solution quality.
+
+### Attempt 1: Concurrent Validation Failure
+
+`out/blind_one_shape_next_20260710_seed20260713/` was stopped during cold validation after six concurrent validators destabilized ROCr/KFD module loading. Before timing, `48` candidates were registered, `11` validation pairs passed, `3` failed, and `2` were rejected. Two validation batches completed in about `17s`. Four concurrent batches remained active beyond `220s`.
+
+After termination, even a singleton from a previously successful library could not validate within `30s`. A reboot restored that exact validation to `0.70s`, confirming transient loader state rather than candidate invalidity. The next policy revision retained eight preparation workers but capped validation workers at one.
+
+### Attempt 2: Catastrophic Probe Tail
+
+`out/blind_one_shape_next_v2_20260710_seed20260713/` confirmed the validation fix: all six serialized validation batches completed in about `2–28s`, at most one validator and one benchmark runner were active, and the loader failure did not recur.
+
+This attempt was stopped after about `135s` before round zero completed. The exact-MI cold selector had chosen two `16x16` workgroups requiring about `8.7–9.0s` per launch. Their six launches consumed about `53s` of one `55.0s` probe batch. The next policy revision removed exact MI identities from coverage, added the soft dispatch-efficiency prior, and staged the probe so the slow tail received one launch before screening.
+
+For the same seed, the revised cold pool increased mechanical-token coverage from `226` to `236`, retained `42` rather than `44` distinct MatrixInstruction values, removed all five single-instruction workgroups, reduced median CU rounds from `740` to `276`, and raised median macro-tile area from `4608` to `12288`.
+
+### Attempt 3: Completed Corrected Campaign
+
+The corrected real campaign at `out/blind_one_shape_next_v3_20260710_seed20260713/` completed normally:
+- round zero finished in `59.8s`, covering `42` MatrixInstruction values, `31` family cells, and `236` mechanical tokens.
+- `11` catastrophic candidates were screened after the initial probe launch, while `22` received complete probe evidence.
+- migration produced late gains from `29.42 TFLOP/s` in round 6 to `32.86` in round 7, `40.61` in round 16, `42.87` in round 24, and `43.39` in round 29.
+- search stopped through normal round admission after `44` rounds and `1116.39s`, with `1015` unique candidates and `1143.48s` total active time including hot confirmation.
+- screening leader `cand_3fa1d1f87910a88c` confirmed at `42.168 TFLOP/s` hot median and `42.465 TFLOP/s` best, a `2.81%` screening-to-hot decline.
+
+### Final Comparison
+
+The corrected policy improved throughput but not best confirmed quality. It measured about `0.91` candidates per search second, `29.6%` more than prior best seed `20260711`, and registered `1015` candidates versus `496`, `700`, and `709` previously. Its hot median beat prior seed `20260712` but trailed seeds `20260710` and `20260711`. It was `4.88%` below the retained best `44.331 TFLOP/s` and `6.82%` below the external `45.253 TFLOP/s` target.
+
+Operator evidence was mixed rather than supporting a single replacement strategy. DE produced the final screening/hot leader despite only `17/105` comparable child successes. Semantic mutation and GOMEA produced `18/20` top screening candidates. Semantic mutation improved in `69/213` comparable trials, GOMEA neighborhoods in `69/197`, and GOMEA mixing in `36/149`. Diverse and random GOMEA donors had higher posterior success rates than quality donors in this seed, but all donor modes contributed top candidates.
+
+Monitoring recorded median GPU busy `61%`, `90th` percentile `93%`, peak power `126W`, and peak edge temperature `77C`. Up to six compilers overlapped, while validation and benchmark concurrency both remained exactly one. No loader, validation-concurrency, or timing-overlap failure recurred.
+
+### Early-Stop Observation
+
+Automatic convergence stopping remained disabled. The corrected run improved after several earlier plateaus and did not reach its final leader until round 29. Prior best seed `20260711` improved after an eight-round gap. The final 14-round plateau could have saved about `333s` only with hindsight, while mean Hamming diversity remained high at `16.79`, so the implemented low-improvement plus low-diversity detector correctly did not trigger. More equal-time seeds or an explicit ablation are required before broadening the stop condition.
+
+No ablation, prior, seed, linkage priority, or neighborhood order uses the external winner parameters or performance-derived hindsight.
 
 ## Artifacts
 
@@ -190,3 +239,13 @@ Best campaign:
 
 Aggregate operator and utilization analysis:
 - `out/blind_one_shape_20min_adaptive_analysis.jsonl`
+
+Follow-up campaign and analysis:
+- `out/blind_one_shape_next_v3_20260710_seed20260713/campaign_summary.json`
+- `out/blind_one_shape_next_v3_20260710_seed20260713/hot_loop_top8/summary.json`
+- `out/blind_one_shape_next_v3_analysis.json`
+- `out/blind_one_shape_next_replay/comparison_staged_probe.json`
+
+Unsuccessful diagnostic summaries:
+- `out/blind_one_shape_next_20260710_seed20260713/aborted_summary.json`
+- `out/blind_one_shape_next_v2_20260710_seed20260713/aborted_summary.json`

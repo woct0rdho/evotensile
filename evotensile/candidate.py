@@ -33,6 +33,7 @@ class Candidate:
     params: Mapping[str, Any]
     source: str = "unknown"
     parent_hashes: tuple[str, ...] = field(default_factory=tuple)
+    proposal_metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def canonical_params(self) -> dict[str, Any]:
         return canonicalize(dict(self.params))
@@ -46,6 +47,7 @@ class Candidate:
             "hash": self.hash,
             "source": self.source,
             "parent_hashes": list(self.parent_hashes),
+            "proposal_metadata": canonicalize(dict(self.proposal_metadata)),
             "params": self.canonical_params(),
         }
         return json.dumps(payload, sort_keys=True, indent=2)

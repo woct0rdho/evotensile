@@ -2,20 +2,7 @@
 
 EvoTensile is a smart-search autotuner for TensileLite. The implemented pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid in the `gfx1151-nt-hhs` profile.
 
-This file is the live project log and forward plan. Stable design details live in focused docs:
-- `docs/nt_hhs_search_space.md`: how the NT HHS candidate search space is constructed.
-- `docs/search_algorithms.md`: general search loop and proposal modes.
-- `docs/search_family_qd.md`: family descriptors, stratified initialization, and the multi-elite archive.
-- `docs/search_gomea.md`: GOMEA proposal mechanics.
-- `docs/search_linkage_learning.md`: learned linkage mechanics.
-- `docs/search_operator_portfolio.md`: semantic mutation and adaptive operator allocation.
-- `docs/search_surrogate.md`: ExtraTrees oversized-pool shortlisting.
-- `docs/search_outlier_repair.md`: local outlier detection and repair math.
-- `docs/noisy_measurements.md`: adaptive timing and noisy winner-selection math.
-- `docs/tensilelite_measurement.md`: TensileLite YAML/build/runner/JSONL measurement contract.
-- `docs/blind_experiment_infrastructure.md`: real and simulated blind-experiment infrastructure.
-- `docs/blind_one_shape_experiment.md`: chronological blind one-shape experiment log.
-- `docs/database.md`: SQLite schema, ranking, cache, and validation semantics.
+This file is the live project log and forward plan. Stable design details live in focused docs.
 
 ## Current Status
 
@@ -27,8 +14,10 @@ Implemented and working:
 - Separate correctness and timing identities: validation evidence is stored independently from benchmark samples.
 - Cache-aware exact-pair planning keyed by problem type, benchmark protocol, validation protocol, shape, and candidate.
 - Random, local and semantic mutation, categorical DE, GOMEA, learned-linkage GOMEA, family-QD proposals, adaptive operator allocation, transfer seeding, and imported hipBLASLt baseline participation.
-- Optional ExtraTrees shortlisting from oversized proposal pools using validation-passed DB evidence.
-- Adaptive finalist top-ups that reuse the original compiled and correctness-verified artifacts without recompilation or revalidation.
+- Optional ExtraTrees shortlisting and mechanical covering from oversized proposal pools using validation-passed DB evidence or evidence-free soft mechanics.
+- Adaptive finalist top-ups plus campaign-level screening-leader stabilization that reuse original compiled and correctness-verified artifacts without recompilation or revalidation.
+- Optional cost-aware operator credit and longest-predicted-work-first preparation ordering.
+- A deterministic blind one-shape campaign harness with two isolated cold islands, later migration, exact-proposal checkpoints, and opt-in convergence stopping.
 - `repair-outliers` neighbor-seeded second-stage search.
 - DB-driven hipBLASLt GridBased YAML update helper for HHS/HHS+AuxH/BBS/BBS+AuxB variants.
 - Installed-library verification helper using `hipblaslt-bench --verify`.
@@ -93,7 +82,7 @@ The production scheduler uses two explicit queues:
 
 ## Blind Search Experiments
 
-Blind one-shape baselines, simulated policy selection, real 20-minute campaigns, unsuccessful seeds, utilization evidence, and follow-up hypotheses are recorded in `docs/blind_one_shape_experiment.md`.
+Blind one-shape baselines, simulated policy selection, real 20-minute campaigns, unsuccessful diagnostics, utilization evidence, and the completed family-aware follow-up experiment are recorded in `docs/blind_one_shape_experiment.md`.
 
 ## Build And Runtime Conventions
 
@@ -104,14 +93,71 @@ Use these build directories for current work:
 
 Runtime validation should point `HIPBLASLT_TENSILE_LIBPATH` at the installed gfx target library path when the Python/runtime package might otherwise use stale packaged assets.
 
-## Future Plan
+## Next Production Search Plan
+
+The completed blind one-shape follow-up is recorded in `docs/blind_one_shape_experiment.md`. This section focuses on ideas whose main benefit appears only when searching many shapes, allocating a production workload budget, or building a compact final solution library. The ideas adapt useful signals from Ductile and GEKO while keeping EvoTensile layered directly over TensileLite.
+
+### Grid-Aware Acquisition
+
+Multi-shape surrogate acquisition should compare every candidate with the incumbent for each shape rather than averaging predicted log time across all target shapes. The shortlist should greedily maximize marginal predicted improvement over unresolved shapes and preserve separate lanes for:
+- per-shape and per-cluster specialists.
+- workload-weighted generalists.
+- uncertainty and poorly modeled shapes.
+- family, mechanical, and random diversity.
+
+Equal weights should remain the default for an authoritative fixed grid. Optional production weights may come from shape frequency, baseline latency, or measured end-to-end contribution. A candidate that is exceptional for a small subset of shapes must not be hidden by poor grid-wide average performance.
+
+Candidate-shape interaction features should include tile fill, total tiles, tiles per effective CU, CU-round and wave granularity, K-tail behavior, LDS and VGPR pressure, GSU workspace fraction, and arithmetic intensity. Architecture-specific MI filters and hand-selected parameter lists may inform soft priors, but must not become permanent validity constraints.
+
+### Staged Shape Evaluation
+
+Production shapes should be clustered by mechanical behavior rather than only raw dimension distance. Clustering inputs should include aspect, batch and K regimes, arithmetic intensity, tile efficiency across macro-tile families, CU-round behavior, and compatible coarse kernel families.
+
+The staged search should:
+- choose representative or medoid shapes for each cluster.
+- search representatives first using the normal family-QD, operator portfolio, and surrogate flow.
+- promote promising specialists and generalists to the remaining cluster members.
+- migrate candidates between mechanically adjacent clusters.
+- finish with full-grid outlier detection and `repair-outliers` so every authoritative shape is covered.
+
+Compilation artifacts should remain candidate-centric and reusable across promoted shapes. Representative-shape screening reduces candidate-shape measurements. It must not infer an unmeasured production winner.
+
+### Workload And Cost Allocation
+
+For application-derived workloads, shape priority should reflect `call_count × baseline_latency`, predicted improvement headroom, uncertainty, and expected evaluation cost. Low-contribution shapes may be deferred or omitted only in an explicitly workload-weighted mode. A fixed GridBased coverage campaign must continue to evaluate every required shape.
+
+Preparation cost should be predicted from observed build, validation, candidate-count, and resource-complexity history. Parallel preparation should use longest-processing-time-first ordering to reduce the compile/validation barrier. Serialized benchmark work should be ordered by expected improvement or information per second, and campaign admission should reserve enough measured time for finalist confirmation and outlier repair.
+
+### Specialist And Generalist Bank
+
+The production archive should track both shape specialists and candidates that remain within a configurable tolerance of the winner across many shapes. After confidence-aware retiming, an optional greedy set-cover pass should choose the smallest solution bank that covers all required shapes within the requested tolerance.
+
+A zero tolerance must preserve exact per-shape winners. Nonzero tolerance is a deployment trade-off and should report:
+- weighted and worst-shape performance loss.
+- number of retained solutions and code objects.
+- shapes covered by each generalist.
+- any shapes requiring dedicated specialists.
+
+The selected candidate-shape pairs must be rechecked through the normal validation and final measurement path before GridBased YAML generation.
+
+### Production Evaluation
+
+Grid policies should be compared at equal wall time and report every required shape. Primary metrics should include:
+- weighted and unweighted incumbent-normalized regret.
+- worst-shape regret and unresolved-shape count over time.
+- candidate-shape pairs prepared, validated, probed, screened, and confirmed.
+- compile/validation barrier time and serialized benchmark time.
+- representative-to-cluster promotion precision and missed specialists.
+- unique final solutions and solution-bank coverage at each tolerance.
+
+Controlled ablations should cover grid-aware acquisition, shape clustering, workload weighting, cost-aware scheduling, and solution-bank minimization before they become production defaults.
+
+## Broader Future Plan
 
 Near-term:
-- Run larger or finer NT HHS grids with the structured scheduler, adaptive sampling, surrogate shortlisting, and `repair-outliers` as the standard loop.
-- Add noise-aware top-ups for provisional archive/global leaders before they strongly affect operator credit or surrogate training.
-- Evaluate two-island cold starts with later family-local migration for seed robustness.
-- Compare learned-linkage and surrogate/operator features with fixed DB snapshots and equal wall-time budgets.
-- Add more audit scripts for DB-level winner sensitivity, sample-count sensitivity, and repair effectiveness.
+- Run larger or finer NT HHS grids with the staged structured workflow, adaptive sampling, surrogate shortlisting, and `repair-outliers` as the standard loop.
+- Compare learned-linkage, surrogate, clustering, and acquisition features with fixed DB snapshots and equal wall-time budgets.
+- Add audit scripts for DB-level winner sensitivity, sample-count sensitivity, representative-shape promotion, and repair effectiveness.
 - Broaden installed-library correctness cases beyond the six curated verifier cases.
 
 Medium-term:

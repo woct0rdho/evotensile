@@ -38,13 +38,15 @@ These groups preserve important TensileLite couplings during mixing. They are de
 
 ## Neighborhood Sweep Operator
 
-`gomea_neighborhood_candidates()` samples compact one-parent neighborhoods around ranked elites:
-- It forms fair `(parent, semantic-group)` slots across the selected parent pool.
-- It shuffles those slots with the search seed so the first static group cannot consume the budget.
-- For one slot, it changes at least one gene and may change other genes in the same group.
-- Domain alternatives are randomized rather than tried in declaration order.
-- Each trial is repaired and passed through `make_candidate()`.
-- Candidate hashes are deduplicated against parents and already planned work.
+`gomea_neighborhood_candidates()` supports sampled and bounded micro-exhaustive one-parent neighborhoods around ranked elites:
+- It forms `(parent, semantic-group)` slots across the selected parent pool.
+- The default path preserves seeded sampled-neighborhood behavior.
+- The opt-in micro-exhaustive path enumerates a complete Cartesian neighborhood when it fits the cap, otherwise randomized singleton and paired alternatives.
+- Queried semantic-group UCB scores may bias slot order without eliminating any group.
+- Every trial is linked-repaired, shape-checked, passed through `make_candidate()`, and deduplicated.
+- Children record group, transition, changed-gene, and enumeration metadata for audit and future credit.
+
+For micro-exhaustive search, the operator opens a bounded number of `(parent, group)` slots. If all non-current Cartesian variants fit the per-slot cap, it enumerates them completely and shuffles their order. Otherwise it tries randomized single-gene alternatives first and then randomized two-gene combinations. It does not enumerate higher-order combinations for an oversized group. Valid candidates from active slots are emitted round-robin so one large semantic group cannot consume the complete output budget.
 
 The scheduler normally gives this operator part of the configured GOMEA budget. Under the adaptive portfolio it has the distinct source identity `gomea-neighborhood`, so its measured reward is separate from donor mixing.
 
@@ -53,15 +55,17 @@ The scheduler normally gives this operator part of the configured GOMEA budget. 
 `gomea_candidates()` is the stochastic GOMEA mixer:
 - Load ranked parents from DB evidence, ordered best-first by `rank_evaluations()`.
 - Encode parents as categorical genomes.
-- Pick a base parent and a different donor parent at random.
+- Pick a base parent and a different donor parent.
 - When family-aware adaptive search is active, prefer a donor from the base candidate's family with probability `0.8` when one exists.
+- The opt-in adaptive donor policy mixes quality donors from the best compatible quarter of the ranked pool, donors at maximum Hamming distance from the base, and random donors.
+- Base donor-mode weights are `0.5` quality, `0.3` diverse, and `0.2` random. Queried donor-mode UCB scores multiply these priors while minimum whole-operator exploration remains intact.
 - Select static FOS groups plus learned-linkage FOS groups when available, otherwise use static groups plus a fallback FOS learned from the current elite genomes.
 - Shuffle groups and apply a small random prefix of them.
 - For each group, copy donor genes into the base genome and accept the trial only if proposal-side rule checks pass.
 - If no useful change happened, perform forced improvement by copying one group from the nearest elite.
 - Convert the final genome back to a repaired candidate and dedupe by candidate hash.
 
-A GOMEA child records parent hashes for audit, but ranking and cache identity are based on the child candidate hash. Adaptive search records two-parent children as `gomea-mixing` so operator credit can distinguish them from neighborhood trials.
+A GOMEA child records parent hashes plus donor mode, family locality, donor distance, applied groups, and changed genes for audit. Ranking and cache identity remain based only on the child parameter hash. Adaptive search records two-parent children as `gomea-mixing` so operator and donor-mode credit can distinguish them from neighborhood trials.
 
 ## Rule-Gated Proposals
 

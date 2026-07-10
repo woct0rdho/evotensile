@@ -12,6 +12,7 @@ from pathlib import Path
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.metrics import gflops_from_us
+from evotensile.search.campaign_control import convergence_detected, population_diagnostics, split_budget
 from evotensile.search.surrogate import select_surrogate_pool
 
 
@@ -31,11 +32,16 @@ class ReplayCostModel:
     prepare_workers: int = 4
     prepare_seconds_per_candidate: float = 8.0
     probe_launches: int = 3
+    initial_probe_launches: int = 1
     screening_launches: int = 3
     hot_launches: int = 120
     hot_reserve_s: float = 60.0
     probe_max_slowdown_factor: float = 4.0
     probe_min_survivors: int = 8
+    leader_stabilization_samples: int = 6
+    leader_stabilization_max_samples: int = 10
+    leader_stabilization_top_k: int = 4
+    leader_min_timed_duration_us: float = 100_000.0
 
 
 @dataclass
@@ -51,6 +57,7 @@ class ReplayResult:
     best_hot_hash: str | None = None
     best_hot_gflops: float | None = None
     reached_target: bool = False
+    stop_reason: str | None = None
     trace: list[dict[str, object]] = field(default_factory=list)
 
     def summary(self) -> dict[str, object]:
@@ -66,6 +73,7 @@ class ReplayResult:
             "best_hot_hash": self.best_hot_hash,
             "best_hot_gflops": self.best_hot_gflops,
             "reached_target": self.reached_target,
+            "stop_reason": self.stop_reason,
             "trace": self.trace,
         }
 
@@ -76,6 +84,7 @@ def _candidate_from_payload(payload: str) -> Candidate:
         params=data["params"],
         source=data.get("source", "oracle"),
         parent_hashes=tuple(data.get("parent_hashes", [])),
+        proposal_metadata=data.get("proposal_metadata", {}),
     )
 
 
@@ -220,11 +229,12 @@ def _insert_screening_evidence(
     record: OracleRecord,
     problem_type_hash: str,
     benchmark_protocol_hash: str,
+    samples: int = 2,
 ) -> None:
     if record.screening_gflops is None or record.screening_gflops <= 0.0:
         return
     time_us = 2.0 * shape.m * shape.n * shape.batch * shape.k / (record.screening_gflops * 1e3)
-    for _ in range(2):
+    for _ in range(samples):
         db.insert_evaluation(
             shape_id=shape.id,
             candidate_hash=record.candidate.hash,
@@ -235,6 +245,61 @@ def _insert_screening_evidence(
             time_us=time_us,
             validation="PASSED",
         )
+
+
+def _candidate_island(candidate: Candidate, island_count: int) -> int:
+    return int(candidate.hash.removeprefix("cand_")[:8], 16) % max(1, island_count)
+
+
+def _select_replay_batch(
+    pending: Sequence[Candidate],
+    *,
+    db: EvoTensileDB,
+    problem_type_hash: str,
+    benchmark_protocol_hash: str,
+    shape: Shape,
+    count: int,
+    seed: int,
+    min_evidence: int,
+    covering_cold_start: bool,
+    island_count: int,
+    isolated: bool,
+) -> list[Candidate]:
+    if not isolated or island_count <= 1:
+        return select_surrogate_pool(
+            pending,
+            db=db,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            shapes=[shape],
+            count=min(count, len(pending)),
+            seed=seed,
+            min_evidence=min_evidence,
+            covering_cold_start=covering_cold_start,
+        )
+    selected: list[Candidate] = []
+    budgets = split_budget(count, island_count)
+    for island_index, budget in enumerate(budgets):
+        pool = [candidate for candidate in pending if _candidate_island(candidate, island_count) == island_index]
+        if not pool or budget <= 0:
+            continue
+        selected.extend(
+            select_surrogate_pool(
+                pool,
+                db=db,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                shapes=[shape],
+                count=min(budget, len(pool)),
+                seed=seed + island_index * 1_000_003,
+                min_evidence=min_evidence,
+                covering_cold_start=covering_cold_start,
+            )
+        )
+    if len(selected) < min(count, len(pending)):
+        remaining = [candidate for candidate in pending if candidate.hash not in {item.hash for item in selected}]
+        selected.extend(remaining[: min(count, len(pending)) - len(selected)])
+    return selected
 
 
 def simulate_candidate_stream(
@@ -251,6 +316,11 @@ def simulate_candidate_stream(
     surrogate_min_evidence: int = 24,
     hot_finalists: int = 8,
     target_hot_gflops: float | None = None,
+    covering_cold_start: bool = False,
+    island_count: int = 1,
+    island_isolation_rounds: int = 0,
+    leader_stabilization: bool = False,
+    early_stop_on_convergence: bool = False,
 ) -> ReplayResult:
     result = ReplayResult(seed=seed)
     with tempfile.TemporaryDirectory(prefix="evotensile-replay-") as directory:
@@ -262,6 +332,7 @@ def simulate_candidate_stream(
         queried: set[str] = set()
         round_index = 0
         incumbent_gflops: float | None = None
+        best_history: list[float] = []
         search_time_limit = max(0.0, cost.time_budget_s - max(0.0, cost.hot_reserve_s))
         budget_exhausted = False
         while result.simulated_time_s < search_time_limit and (stream_index < len(stream) or pending):
@@ -272,20 +343,24 @@ def simulate_candidate_stream(
                     pending.setdefault(candidate.hash, candidate)
             if not pending:
                 break
-            selected = select_surrogate_pool(
+            selected = _select_replay_batch(
                 list(pending.values()),
                 db=db,
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
-                shapes=[shape],
+                shape=shape,
                 count=min(batch_size, len(pending)),
                 seed=seed + round_index,
                 min_evidence=surrogate_min_evidence,
+                covering_cold_start=covering_cold_start and round_index == 0,
+                island_count=island_count,
+                isolated=round_index <= island_isolation_rounds,
             )
             preparation_cost = (
                 math.ceil(len(selected) / max(1, cost.prepare_workers)) * cost.prepare_seconds_per_candidate
             )
             if result.simulated_time_s + preparation_cost > search_time_limit:
+                result.stop_reason = "insufficient_prepare_budget"
                 break
             result.simulated_time_s += preparation_cost
             known_ok = []
@@ -299,11 +374,15 @@ def simulate_candidate_stream(
                     result.unknown.append(candidate.hash)
                     continue
                 if record.screening_gflops is not None and record.screening_gflops > 0.0:
-                    probe_cost = cost.probe_launches * _launch_seconds(shape, record.screening_gflops)
-                    if result.simulated_time_s + probe_cost > search_time_limit:
+                    initial_probe_launches = min(
+                        max(0, cost.initial_probe_launches),
+                        max(0, cost.probe_launches),
+                    )
+                    initial_probe_cost = initial_probe_launches * _launch_seconds(shape, record.screening_gflops)
+                    if result.simulated_time_s + initial_probe_cost > search_time_limit:
                         budget_exhausted = True
                         break
-                    result.simulated_time_s += probe_cost
+                    result.simulated_time_s += initial_probe_cost
                     known_ok.append(record)
             if known_ok:
                 reference = max(
@@ -313,15 +392,30 @@ def simulate_candidate_stream(
                 threshold = reference / cost.probe_max_slowdown_factor
                 ranked = sorted(known_ok, key=lambda record: record.screening_gflops or 0.0, reverse=True)
                 minimum_hashes = {record.candidate.hash for record in ranked[: cost.probe_min_survivors]}
-                survivors = [
+                provisional_survivors = [
                     record
                     for record in known_ok
                     if (record.screening_gflops or 0.0) >= threshold or record.candidate.hash in minimum_hashes
                 ]
-                survivor_hashes = {record.candidate.hash for record in survivors}
+                provisional_hashes = {record.candidate.hash for record in provisional_survivors}
                 for record in known_ok:
-                    if record.candidate.hash not in survivor_hashes:
+                    if record.candidate.hash not in provisional_hashes:
                         result.screened.append(record.candidate.hash)
+                survivors = []
+                additional_probe_launches = max(
+                    0,
+                    cost.probe_launches - min(max(0, cost.initial_probe_launches), max(0, cost.probe_launches)),
+                )
+                for record in provisional_survivors:
+                    additional_probe_cost = additional_probe_launches * _launch_seconds(
+                        shape,
+                        record.screening_gflops or 0.0,
+                    )
+                    if result.simulated_time_s + additional_probe_cost > search_time_limit:
+                        budget_exhausted = True
+                        break
+                    result.simulated_time_s += additional_probe_cost
+                    survivors.append(record)
                 for record in survivors:
                     if record.screening_gflops is None:
                         continue
@@ -342,6 +436,46 @@ def simulate_candidate_stream(
                         incumbent_gflops = record.screening_gflops
                         result.best_screening_hash = record.candidate.hash
                         result.best_screening_gflops = record.screening_gflops
+            stabilized_candidates = 0
+            stabilization_samples = 0
+            if leader_stabilization:
+                leaders = db.rank_evaluations(
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                    shape_id=shape.id,
+                    min_samples=2,
+                    limit=cost.leader_stabilization_top_k,
+                )
+                for summary in leaders:
+                    record = oracle.get(summary.candidate_hash)
+                    if record is None or record.screening_gflops is None or record.screening_gflops <= 0.0:
+                        continue
+                    launch_seconds = _launch_seconds(shape, record.screening_gflops)
+                    duration_target = math.ceil(cost.leader_min_timed_duration_us / max(launch_seconds * 1e6, 1.0))
+                    target_samples = min(
+                        cost.leader_stabilization_max_samples,
+                        max(cost.leader_stabilization_samples, duration_target),
+                    )
+                    remaining = max(0, target_samples - summary.samples)
+                    if remaining <= 0:
+                        continue
+                    topup_cost = (remaining + 1) * launch_seconds
+                    if result.simulated_time_s + topup_cost > search_time_limit:
+                        continue
+                    result.simulated_time_s += topup_cost
+                    _insert_screening_evidence(
+                        db,
+                        shape=shape,
+                        record=record,
+                        problem_type_hash=problem_type_hash,
+                        benchmark_protocol_hash=benchmark_protocol_hash,
+                        samples=remaining,
+                    )
+                    stabilized_candidates += 1
+                    stabilization_samples += remaining
+            if result.best_screening_gflops is not None:
+                best_history.append(result.best_screening_gflops)
+            diagnostics = population_diagnostics(selected, shape)
             result.trace.append(
                 {
                     "round": round_index,
@@ -351,11 +485,21 @@ def simulate_candidate_stream(
                     "simulated_time_s": result.simulated_time_s,
                     "best_screening_hash": result.best_screening_hash,
                     "best_screening_gflops": result.best_screening_gflops,
+                    "stabilized_candidates": stabilized_candidates,
+                    "stabilization_samples": stabilization_samples,
+                    "population_diagnostics": diagnostics.to_dict(),
                 }
             )
             round_index += 1
             if budget_exhausted:
+                result.stop_reason = "timing_budget_exhausted"
                 break
+            if early_stop_on_convergence and convergence_detected(best_history, diagnostics):
+                result.stop_reason = "converged"
+                break
+
+        if result.stop_reason is None:
+            result.stop_reason = "stream_exhausted" if stream_index >= len(stream) and not pending else "search_budget"
 
         ranked_hashes = [
             summary.candidate_hash

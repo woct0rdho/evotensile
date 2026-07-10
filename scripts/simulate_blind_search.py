@@ -34,6 +34,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--prepare-seconds-per-candidate", type=float, default=8.0)
     parser.add_argument("--hot-reserve", type=float, default=60.0)
     parser.add_argument("--target-hot-gflops", type=float, default=None)
+    parser.add_argument("--covering-cold-start", action="store_true")
+    parser.add_argument("--island-count", type=int, default=1)
+    parser.add_argument("--island-isolation-rounds", type=int, default=0)
+    parser.add_argument("--leader-stabilization", action="store_true")
+    parser.add_argument("--early-stop-on-convergence", action="store_true")
     parser.add_argument(
         "--diagnostic-pool",
         action="store_true",
@@ -92,6 +97,11 @@ def main() -> int:
             pool_window=args.pool_window,
             surrogate_min_evidence=args.surrogate_min_evidence,
             target_hot_gflops=args.target_hot_gflops,
+            covering_cold_start=args.covering_cold_start,
+            island_count=args.island_count,
+            island_isolation_rounds=args.island_isolation_rounds,
+            leader_stabilization=args.leader_stabilization,
+            early_stop_on_convergence=args.early_stop_on_convergence,
         )
         for seed in seeds
     ]
