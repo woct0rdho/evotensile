@@ -2,7 +2,7 @@
 
 Work in progress. README is AI-generated.
 
-EvoTensile is a smart-search autotuner for TensileLite. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, uses TensileLite for solution/code-object generation, and records structured timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion) and [rocm_wmma_gemm](https://github.com/adelj88/rocm_wmma_gemm).
+EvoTensile is a smart-search autotuner for TensileLite. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, uses TensileLite for solution/code-object generation, and records structured timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion), [rocm\_wmma\_gemm](https://github.com/adelj88/rocm_wmma_gemm), [Ductile](https://github.com/ROCm/rocm-libraries/pull/8831), and [GEKO](https://github.com/ROCm/rocm-libraries/pull/8832).
 
 The repository currently includes one concrete target configuration, but the core code is intended to stay reusable: candidate hashing, shape handling, search-space encoding, YAML emission, runner orchestration, benchmark-protocol hashing, validation-aware ingestion, ranking, adaptive finalist top-ups, hipBLASLt baseline import, and logic-file update helpers.
 
@@ -88,13 +88,13 @@ The external runner consumes TensileLite build artifacts from either full-client
 
 Production CLI defaults favor throughput: `--prepare-workers` defaults to available CPU cores, `--compile-threads` defaults to `1`, compile-cache reuse is enabled under `OUTPUT_DIR/compile_cache`, and `--candidate-batch-size` is chosen as the largest profile-bounded value that still leaves enough candidate/shape batches to saturate preparation. Preparation performs build/map/diagnostic/validation in parallel. Timing starts only after that pool drains and always runs serially.
 
-Useful proposal modes include `random`, `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, and `evolutionary`. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can initialize non-random proposal operators through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
+Useful proposal modes include `random`, `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, `evolutionary`, and `family-qd`. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can initialize non-random proposal operators through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
 
 Supported protocol overrides include `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, `--num-elements-to-validate`, and `--validation-backend`. The default performs full hipBLASLt GPU-oracle validation with `NumElementsToValidate=-1`. `--validation-backend cpu` selects CPU audit validation. There is no no-validation backend: benchmark-only execution is admitted only after compatible correctness evidence exists.
 
 Validation is a hard gate stored independently from timing. Adaptive top-ups reuse the original compiled and correctness-verified artifacts. They perform no recompilation or repeated verification.
 
-Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches` uses adaptive sampling by default: it prepares all candidates once, gives each validation-passed pair a separate three-launch probe, runs the main timing protocol only for probe survivors, then appends missing main-protocol samples for plausible contenders from the prepared-artifact index. Use `--fixed-sampling` only for debugging or fixed-budget utility runs.
+Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches` uses adaptive sampling by default: it prepares all candidates once, gives each validation-passed pair one probe launch, tops up provisional probe survivors to three launches, runs the main timing protocol only for final probe survivors, then appends missing main-protocol samples for plausible contenders from the prepared-artifact index. Use `--fixed-sampling` only for debugging or fixed-budget utility runs.
 
 Structured scheduler runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
 
@@ -211,6 +211,6 @@ Benchmark protocol is represented by the typed `BenchmarkProtocol` profile objec
 ## Current Limitations
 
 - Bundled profiles and runners are target-specific. Broader data types, layouts, and epilogues need profile and backend coverage.
-- Surrogate/LFBO proposals are not implemented. Keep `PredictionThreshold: 2.0` to disable heuristics like Formocast and Origami in TensileLite, until they are accurate enough on gfx1151.
+- The implemented ExtraTrees surrogate is per-campaign shortlisting only. LFBO, persistent transfer surrogates, and trusted TensileLite prediction pruning are not implemented. Keep `PredictionThreshold: 2.0` to disable heuristics like Formocast and Origami in TensileLite until they are accurate enough on gfx1151.
 - Logic file update helpers are profile-aware, but each new target variant needs validation before measured-performance claims.
 - The production structured backend is intentionally narrower than the generic search abstractions and needs broader target coverage before it is a general GEMM runner.

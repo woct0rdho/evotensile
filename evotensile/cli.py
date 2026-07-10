@@ -85,6 +85,7 @@ def _timing_policies(args: argparse.Namespace) -> tuple[AdaptivePolicy | None, P
         ),
         ProbePolicy(
             samples=args.adaptive_probe_samples,
+            initial_samples=args.adaptive_probe_initial_samples,
             max_slowdown_factor=args.adaptive_probe_max_slowdown_factor,
             confidence=args.adaptive_probe_confidence,
             noise_floor_pct=args.adaptive_probe_noise_floor_pct,
@@ -294,6 +295,11 @@ def _propose_candidates_for_shapes(
         adaptive_operators=args.adaptive_operators,
         surrogate_pool_multiplier=args.surrogate_pool_multiplier,
         surrogate_min_evidence=args.surrogate_min_evidence,
+        covering_cold_start=args.covering_cold_start,
+        adaptive_group_credit=args.adaptive_group_credit,
+        micro_exhaustive_neighborhoods=args.micro_exhaustive_neighborhoods,
+        adaptive_donor_selection=args.adaptive_donor_selection,
+        cost_aware_operator_credit=args.cost_aware_operator_credit,
     )
 
 
@@ -338,6 +344,8 @@ def _execute_schedule_from_args(
         compile_cache_root=None
         if args.no_compile_cache
         else args.compile_cache_dir or Path(args.output_dir) / "compile_cache",
+        cost_aware_scheduling=args.cost_aware_scheduling,
+        validation_workers=args.validation_workers,
     )
 
 
@@ -424,11 +432,18 @@ def _schedule_metadata_common(
         "adaptive_operators": args.adaptive_operators,
         "surrogate_pool_multiplier": args.surrogate_pool_multiplier,
         "surrogate_min_evidence": args.surrogate_min_evidence,
+        "covering_cold_start": args.covering_cold_start,
+        "adaptive_group_credit": args.adaptive_group_credit,
+        "micro_exhaustive_neighborhoods": args.micro_exhaustive_neighborhoods,
+        "adaptive_donor_selection": args.adaptive_donor_selection,
+        "cost_aware_operator_credit": args.cost_aware_operator_credit,
+        "cost_aware_scheduling": args.cost_aware_scheduling,
         "candidates": len(candidates),
         "shapes": len(shapes),
         "candidate_batch_size": args.candidate_batch_size,
         "shape_batch_size": args.shape_batch_size,
         "prepare_workers": args.prepare_workers,
+        "validation_workers": args.validation_workers,
         "compile_cache_root": None
         if args.no_compile_cache
         else str(args.compile_cache_dir or Path(args.output_dir) / "compile_cache"),
@@ -497,6 +512,31 @@ def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False)
         default=24,
         help="Validation-passed timing rows required before fitting the proposal surrogate",
     )
+    parser.add_argument(
+        "--covering-cold-start",
+        action="store_true",
+        help="Shortlist evidence-free one-shape pools by mechanical and parameter coverage",
+    )
+    parser.add_argument(
+        "--adaptive-group-credit",
+        action="store_true",
+        help="Bias semantic and neighborhood groups from queried group-level rewards",
+    )
+    parser.add_argument(
+        "--micro-exhaustive-neighborhoods",
+        action="store_true",
+        help="Enumerate bounded valid alternatives inside selected GOMEA neighborhoods",
+    )
+    parser.add_argument(
+        "--adaptive-donor-selection",
+        action="store_true",
+        help="Mix quality, diverse, and random GOMEA donors using queried donor-mode rewards",
+    )
+    parser.add_argument(
+        "--cost-aware-operator-credit",
+        action="store_true",
+        help="Scale queried operator, group, and donor rewards by measured evaluation cost",
+    )
     parser.add_argument("--crossover-rate", type=float, default=DEFAULT_CROSSOVER_RATE)
     parser.add_argument("--random-gene-rate", type=float, default=DEFAULT_RANDOM_GENE_RATE)
     parser.add_argument(
@@ -532,6 +572,12 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
         default=default_prepare_workers(),
         help="Parallel build/map/diagnostic/validation workers; timing always runs serially",
     )
+    parser.add_argument(
+        "--validation-workers",
+        type=int,
+        default=None,
+        help="Optional cap on concurrent validation runners; compilation remains parallel",
+    )
     parser.add_argument("--min-samples", type=int, default=1)
     parser.add_argument("--ignore-cache", action="store_true")
     parser.add_argument(
@@ -541,6 +587,11 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
         help="Stable TensileLite build-cache directory; defaults to OUTPUT_DIR/compile_cache",
     )
     parser.add_argument("--no-compile-cache", action="store_true", help="Disable stable TensileLite build-cache reuse")
+    parser.add_argument(
+        "--cost-aware-scheduling",
+        action="store_true",
+        help="Order parallel preparation longest-predicted-work first",
+    )
     parser.add_argument("--max-batches", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
@@ -561,6 +612,7 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
 def _add_adaptive_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fixed-sampling", action="store_true", help="Disable probing and adaptive top-ups")
     parser.add_argument("--adaptive-probe-samples", type=int, default=3)
+    parser.add_argument("--adaptive-probe-initial-samples", type=int, default=1)
     parser.add_argument("--adaptive-probe-max-slowdown-factor", type=float, default=4.0)
     parser.add_argument("--adaptive-probe-confidence", type=float, default=0.90)
     parser.add_argument("--adaptive-probe-noise-floor-pct", type=float, default=5.0)
@@ -611,6 +663,11 @@ def cmd_proposal_coverage(args: argparse.Namespace) -> int:
         "adaptive_operators": args.adaptive_operators,
         "surrogate_pool_multiplier": args.surrogate_pool_multiplier,
         "surrogate_min_evidence": args.surrogate_min_evidence,
+        "covering_cold_start": args.covering_cold_start,
+        "adaptive_group_credit": args.adaptive_group_credit,
+        "micro_exhaustive_neighborhoods": args.micro_exhaustive_neighborhoods,
+        "adaptive_donor_selection": args.adaptive_donor_selection,
+        "cost_aware_operator_credit": args.cost_aware_operator_credit,
         "candidate_family_count": len(descriptor_counts),
         "candidate_family_counts": dict(sorted(descriptor_counts.items())),
     }

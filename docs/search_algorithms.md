@@ -1,12 +1,12 @@
 # Search Algorithms Design
 
-This document describes EvoTensile's general search loop and proposal sources. Candidate-space construction, family-QD, GOMEA, learned linkage, adaptive operator allocation, surrogate shortlisting, noisy measurement handling, TensileLite communication, outlier repair, and database semantics have separate design docs.
+This document describes EvoTensile's general search loop and proposal sources. Candidate-space construction, family-QD, GOMEA, learned linkage, adaptive operator allocation, mechanical coverage, cost modeling, surrogate shortlisting, screening stabilization, noisy measurement handling, TensileLite communication, outlier repair, and database semantics have separate design docs.
 
 ## Search Unit
 
 The search unit is a `(shape, candidate)` pair:
 - A `Shape` has exact `M`, `N`, `batch`, and `K` fields plus a stable `shape_id` such as `m512_n128_b1_k256`.
-- A `Candidate` is a complete TensileLite solution dictionary with a stable `cand_...` hash.
+- A `Candidate` is a complete TensileLite solution dictionary with a stable parameter-only `cand_...` hash. Source, parent hashes, and proposal metadata remain audit lineage outside hash identity.
 - A valid observation is a timed, validation-passed DB row for that pair under the active problem and benchmark protocol hashes.
 
 Search algorithms only propose candidates. They do not select final winners directly. Winner selection comes from DB ranking and adaptive retiming.
@@ -20,7 +20,8 @@ Search algorithms only propose candidates. They do not select final winners dire
 - Record immediate shape-dependent rule rejections.
 - Plan missing `(shape, candidate)` observations from reusable cache status.
 - Emit TensileLite YAML and manifest files for exact rectangular batches.
-- Run all build/map/diagnostic/correctness work in a parallel prepare queue.
+- Run all build/map/diagnostic/correctness work in a parallel prepare queue, optionally ordered longest-predicted-work first.
+- Optionally cap validation-runner concurrency without reducing compilation parallelism.
 - Join every prepare worker, then run benchmark-only work in one serial queue.
 - When adaptive sampling is enabled, top up plausible finalists from the original prepared artifacts only.
 - Write `schedule_metadata.json` with proposal, protocol, linkage, batching, and execution details.
@@ -108,9 +109,9 @@ gomea-neighborhood
 gomea-mixing
 ```
 
-The scheduler loads compatible child-versus-parent timing outcomes and allocates the variation budget with a UCB-style score. Every arm retains minimum exploration when budget permits. Candidate source and parent hashes make allocation evidence auditable.
+The scheduler loads compatible child-versus-parent timing outcomes and allocates the variation budget with a UCB-style score. Every arm retains minimum exploration when budget permits. Optional semantic-group and donor-mode credit use persisted proposal metadata, and optional cost-aware credit scales UCB scores from measured proposal/evaluation cost.
 
-The portfolio changes proposal counts only. It does not change validity, measurement, or ranking. See `docs/search_operator_portfolio.md`.
+The portfolio changes proposal counts and proposal ordering only. It does not change validity, measurement, or ranking. See `docs/search_operator_portfolio.md` and `docs/search_cost_model.md`.
 
 ## Surrogate-Guided Oversized Pools
 
@@ -118,7 +119,7 @@ The portfolio changes proposal counts only. It does not change validity, measure
 
 After at least `--surrogate-min-evidence` compatible positive rows, an ExtraTrees model predicts log median time and ensemble uncertainty from candidate, shape, tile, vectorization, and resource features. The shortlist mixes exploitation, uncertainty, family diversity, and random exploration. Before enough evidence exists, selection falls back to family-diverse round-robin sampling.
 
-Archive and transfer parents are preserved outside the generated-candidate shortlist. The default multiplier is `1`, so the feature is opt-in. See `docs/search_surrogate.md`.
+Archive and transfer parents are preserved outside the generated-candidate shortlist. Before enough model evidence exists, an opt-in one-shape covering selector can use decomposed mechanical coverage instead of the default family round-robin fallback. The default multiplier is `1`, so oversized shortlisting remains opt-in. See `docs/search_surrogate.md` and `docs/search_mechanical_coverage.md`.
 
 ## Elite And Transfer Sources
 
@@ -150,17 +151,17 @@ Each batch writes:
 - `config.manifest.csv`: intended shape/candidate/solution mapping.
 - `run/` or a unique run directory for build and structured-runner outputs.
 
-The production path requires `--runner-bin` unless using `--dry-run` or `--generate-only`. `--prepare-workers` controls parallel build/map/diagnostic/validation work. After all prepare workers exit, benchmarks run serially. A shared/exclusive APU gate at `EVOTENSILE_APU_LOCK_PATH` protects this invariant across cooperating processes and direct runner invocations.
+The production path requires `--runner-bin` unless using `--dry-run` or `--generate-only`. `--prepare-workers` controls parallel build/map/diagnostic/validation work. `--validation-workers` optionally caps concurrent validators, and `--cost-aware-scheduling` orders heavier predicted preparation batches first. After all prepare workers exit, benchmarks run serially. A shared/exclusive APU gate at `EVOTENSILE_APU_LOCK_PATH` protects this invariant across cooperating processes and direct runner invocations.
 
 The default candidate batch size is chosen by a throughput heuristic that keeps enough candidate/shape batches to saturate available workers while respecting the profile's max candidate batch size. Use `--candidate-batch-size 1` for debugging or singleton failure attribution.
 
 ## Adaptive Sampling
 
-Adaptive sampling is enabled by default. After parallel compilation and one-time validation, every pair receives a separate `3×1` probe. Candidates confidently slower than the shape reference by more than the default `4×` factor stop there. Survivors receive the main `--num-benchmarks` budget and existing confidence-based top-ups. Probe, main, and adaptive rounds reuse the same prepared artifacts and never recompile or revalidate.
+Adaptive sampling is enabled by default. After parallel compilation and one-time validation, every pair receives one probe launch. Candidates confidently slower than the shape reference by more than the default `4×` factor stop there. Provisional survivors receive two additional launches to reach the `3×1` probe target. Survivors then receive the main `--num-benchmarks` budget and existing confidence-based top-ups. Probe, main, and adaptive rounds reuse the same prepared artifacts and never recompile or revalidate.
 
 Probe timing has a distinct protocol identity, so it cannot enter production ranking, family archives, transfer, or learned linkage. `--fixed-sampling` disables both probe racing and adaptive top-ups.
 
-Timing-noise math and validation-gated top-up rules are documented in `docs/noisy_measurements.md`.
+Timing-noise math and validation-gated top-up rules are documented in `docs/noisy_measurements.md`. Campaign-level provisional-leader top-ups are separate and documented in `docs/search_screening_stabilization.md`.
 
 Use `--fixed-sampling` for deterministic fixed-budget utility runs or debugging.
 
@@ -179,10 +180,9 @@ The implemented search stack is cache-aware random/evolutionary/family-QD genera
 
 Not currently implemented:
 - family-level measurement bandits.
-- family-leader-specific fidelity stages.
+- family-leader-specific fidelity stages beyond one-shape global leader stabilization.
 - automatic family descriptor splitting or merging.
-- multi-island migration.
+- general CLI-managed multi-island search beyond the blind one-shape campaign driver.
 - LFBO or a persistent cross-campaign surrogate.
-- cost-aware operator reward.
 
 TensileLite prediction mechanisms such as Formocast/Origami are not hard pruning gates for this target. The profile keeps `PredictionThreshold=2.0`.

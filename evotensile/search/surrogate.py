@@ -10,6 +10,7 @@ from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.search.encoding import PARAM_NAMES, candidate_to_genome, hamming_distance
 from evotensile.search.family import family_descriptor
+from evotensile.search.mechanics import candidate_shape_mechanics, select_covering_cold_pool
 from evotensile.search_space import _valu_vgpr_lower_bound, macro_tile
 
 DEFAULT_SURROGATE_MIN_EVIDENCE = 24
@@ -64,6 +65,7 @@ def candidate_shape_features(candidate: Candidate, shape: Shape) -> dict[str, fl
     params = candidate.canonical_params()
     macro_tile0, macro_tile1 = macro_tile(params["MatrixInstruction"])
     workgroup_threads = math.prod(params["WorkGroup"])
+    mechanics = candidate_shape_mechanics(candidate, shape)
     features: dict[str, float | str] = {
         f"gene:{name}": json.dumps(params[name], sort_keys=True, separators=(",", ":")) for name in PARAM_NAMES
     }
@@ -80,12 +82,25 @@ def candidate_shape_features(candidate: Candidate, shape: Shape) -> dict[str, fl
             "tile:aspect_log2": math.log2(macro_tile0 / macro_tile1),
             "tile:m_remainder_fraction": (shape.m % macro_tile0) / macro_tile0,
             "tile:n_remainder_fraction": (shape.n % macro_tile1) / macro_tile1,
-            "grid:log2_tiles": math.log2(
-                math.ceil(shape.m / macro_tile0) * math.ceil(shape.n / macro_tile1) * shape.batch
-            ),
-            "reduction:log2_iterations": math.log2(max(1.0, shape.k / (params["DepthU"] * params["GlobalSplitU"]))),
+            "tile:fill_m": mechanics["tile_fill_m"],
+            "tile:fill_n": mechanics["tile_fill_n"],
+            "grid:log2_tiles": math.log2(mechanics["output_tiles"]),
+            "grid:log2_workgroups": math.log2(mechanics["workgroups"]),
+            "grid:tiles_per_cu": mechanics["tiles_per_cu"],
+            "grid:log2_cu_rounds": math.log2(mechanics["cu_rounds"]),
+            "grid:cu_granularity": mechanics["cu_granularity"],
+            "reduction:log2_iterations": math.log2(mechanics["reduction_iterations"]),
+            "reduction:k_fill": mechanics["k_fill"],
             "workgroup:log2_threads": math.log2(workgroup_threads),
+            "workgroup:waves": mechanics["waves_per_workgroup"],
+            "workgroup:wave_tile_area": mechanics["wave_tile_area"],
+            "workgroup:wave_group_size": mechanics["wave_group_size"],
             "resource:valu_vgpr_lower_bound": float(_valu_vgpr_lower_bound(params)),
+            "resource:valu_vgpr_fraction": mechanics["valu_vgpr_fraction"],
+            "resource:lds_bytes": mechanics["lds_bytes"],
+            "resource:lds_fraction": mechanics["lds_fraction"],
+            "resource:workspace_fraction": mechanics["workspace_fraction"],
+            "shape:arithmetic_intensity": mechanics["arithmetic_intensity"],
             "vector:a_bytes": float(params["VectorWidthA"] * 2),
             "vector:b_bytes": float(params["VectorWidthB"] * 2),
             "vector:global_a_bytes": float(params["GlobalReadVectorWidthA"] * 2),
@@ -178,6 +193,8 @@ def select_surrogate_pool(
     count: int,
     seed: int,
     min_evidence: int = DEFAULT_SURROGATE_MIN_EVIDENCE,
+    covering_cold_start: bool = False,
+    cold_start_precovered_tokens: set[str] | None = None,
 ) -> list[Candidate]:
     deduped = list({candidate.hash: candidate for candidate in candidates}.values())
     if count <= 0:
@@ -193,6 +210,14 @@ def select_surrogate_pool(
         shapes=shapes,
     )
     if len(training_rows) < min_evidence:
+        if covering_cold_start and len(shapes) == 1:
+            return select_covering_cold_pool(
+                deduped,
+                shape=shapes[0],
+                count=count,
+                seed=seed,
+                precovered_tokens=cold_start_precovered_tokens,
+            )
         return _diverse_fallback(deduped, count=count, seed=seed)
 
     model = ExtraTreesSurrogate(seed=seed)

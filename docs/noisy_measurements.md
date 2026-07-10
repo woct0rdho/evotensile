@@ -44,18 +44,18 @@ The coefficient is `sqrt(pi / 2)`, the asymptotic ratio between the standard err
 
 `timing_stats_from_times()` also records mean log time, standard deviation, MAD, IQR, `p10`, `p90`, and high-side outlier count for audit output.
 
-## Three-Launch Probe
+## Staged Three-Launch Probe
 
-Adaptive schedules first run a low-fidelity probe for every validation-passed pair:
+Adaptive schedules first run one low-fidelity launch for every validation-passed pair:
 
 ```text
 NumWarmups=0
-NumBenchmarks=3
+NumBenchmarks=1
 EnqueuesPerSync=1
 SyncsPerBenchmark=1
 ```
 
-The default probe therefore spends exactly three timed launches per candidate. Probe timing has a distinct `BenchmarkRole=probe` protocol identity and is never pooled with main timing.
+The first launch screens the catastrophic slow tail. Provisional survivors are then given two additional launches, reaching the default three-launch evidence target. Candidates screened after the first stage consume only one launch. Probe timing has a distinct `BenchmarkRole=probe` protocol identity and is never pooled with main timing.
 
 Let `r` be the fastest compatible reference: the current probe leader or a faster existing main-protocol incumbent for the same shape. A probe candidate `c` is screened out only when the lower confidence bound on its log-time gap exceeds the coarse slowdown threshold:
 
@@ -65,12 +65,13 @@ $$
 
 The default factor is `F=4`. The probe also applies a `5%` minimum log-noise floor because two or three observations cannot provide a reliable zero-noise estimate. At least eight probe candidates per shape survive regardless of the threshold, or all candidates when fewer than eight are available.
 
-Probe screening is a timing-allocation decision, not invalidity or reusable negative cache evidence. Missing/incomplete probe evidence fails open: the pair remains eligible for main timing.
+Probe screening is a timing-allocation decision, not invalidity or reusable negative cache evidence. Missing or incomplete probe evidence is not admitted to main timing in that schedule, but it also creates no reusable negative cache row and may be retried later.
 
 The probe controls are:
 
 ```text
 --adaptive-probe-samples 3
+--adaptive-probe-initial-samples 1
 --adaptive-probe-max-slowdown-factor 4.0
 --adaptive-probe-confidence 0.90
 --adaptive-probe-noise-floor-pct 5.0
@@ -144,8 +145,9 @@ The scheduled target is:
 The execution sequence is:
 - Prepare all batches in parallel: compile, map/salvage, diagnose, and validate.
 - Join every prepare worker before timing starts.
-- Run the serial three-launch probe queue for every validation-passed pair.
-- Compare complete probe evidence by shape and screen only confidently catastrophic candidates.
+- Run one serial probe launch for every validation-passed pair.
+- Screen catastrophic candidates against the compatible reference and retain the minimum survivor floor.
+- Give provisional survivors the remaining launches needed for complete probe evidence.
 - Run the main timing protocol only for probe survivors. `--num-benchmarks` is the initial main sample budget.
 - Load main-protocol timing stats and decide retime groups for unresolved shapes.
 - Run only missing main-protocol samples for plausible contenders from the original prepared-artifact index.
@@ -193,4 +195,4 @@ SyncsPerBenchmark=1
 
 `hot_confirm_topk()` reuses generated libraries and prior compatible validation evidence. It does not recompile or revalidate finalists. Confirmation rows are reported separately from broad screening so expensive launches are reserved for a small candidate set.
 
-The current search does not automatically top up provisional archive leaders before they influence operator credit or surrogate training. Noise-aware leader top-ups are a planned improvement. Blind experiment procedures and time-budget accounting are documented in `docs/blind_experiment_infrastructure.md`.
+The blind one-shape campaign can stabilize provisional leaders between search rounds before they influence the next proposal call. Confidence selection, duration/sample targets, artifact reuse, ingestion, and limitations are documented in `docs/search_screening_stabilization.md`. Blind experiment procedures and time-budget accounting are documented in `docs/blind_experiment_infrastructure.md`.

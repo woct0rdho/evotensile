@@ -22,7 +22,10 @@ The relevant controls are:
 ```text
 --surrogate-pool-multiplier N
 --surrogate-min-evidence N
+--covering-cold-start
 ```
+
+`--covering-cold-start` changes only the one-shape evidence-free fallback and is independent of model activation.
 
 The default multiplier is `1`, so existing proposal behavior is unchanged unless shortlisting is requested. The default evidence threshold is `24` rows.
 
@@ -57,17 +60,17 @@ Lower values are better. Log time makes multiplicative performance differences m
 Categorical features include the canonical value of every parameter in `PARAM_NAMES`.
 
 Derived features include:
-- `log2(M)`, `log2(N)`, `log2(K)`, batch, and aspect ratio.
-- macro-tile dimensions, area, and aspect.
-- M/N tile remainder fractions.
-- grid tile count.
-- reduction iterations from `K`, `DepthU`, and `GlobalSplitU`.
-- workgroup thread count.
-- proposal-side VALU VGPR lower bound.
+- `log2(M)`, `log2(N)`, `log2(K)`, batch, aspect ratio, and arithmetic intensity.
+- macro-tile dimensions, area, aspect, and M/N tile fill.
+- output tiles, GSU-expanded workgroups, tiles per effective CU, CU rounds, and CU granularity.
+- reduction iterations and K fill from `K`, `DepthU`, and `GlobalSplitU`.
+- workgroup threads, waves, WMMA wave-tile area, and wave-group size.
+- proposal-side VALU VGPR lower bound and fraction.
+- LDS bytes and fraction plus GSU workspace fraction.
 - local and global vector widths in bytes.
 - whether store batching uses the nominal auto value.
 
-These features express shape compatibility and resource mechanics without encoding a known winning parameter bundle.
+These features express shape compatibility and resource mechanics without encoding a known winning parameter bundle. Their shared analytical definitions and limitations are documented in `docs/search_mechanical_coverage.md`.
 
 ## Model
 
@@ -110,9 +113,9 @@ This mixture prevents the model from converting early noisy evidence into a full
 
 ## Cold-Start Fallback
 
-Before `--surrogate-min-evidence` is satisfied, no model is fitted. `_diverse_fallback()` groups candidates by family descriptor and samples round-robin across shuffled family cells.
+Before `--surrogate-min-evidence` is satisfied, no model is fitted. The default `_diverse_fallback()` groups candidates by family descriptor and samples round-robin across shuffled family cells.
 
-The fallback preserves cold-start structural breadth while keeping the same measurement budget.
+For an explicitly enabled one-shape covering cold start, the fallback instead uses the quality-weighted mechanical covering selector from `docs/search_mechanical_coverage.md`. Exact MatrixInstruction identities are not coverage tokens. This policy changes only which generated candidates are shortlisted and preserves the same measurement budget.
 
 ## Scheduler Integration
 
@@ -146,5 +149,6 @@ Current limitations include:
 - acquisition weights and shortlist fractions are fixed rather than cost-adaptive.
 - uncertainty is ensemble disagreement, not a calibrated posterior interval.
 - there is no cross-campaign transfer model beyond evidence explicitly present in the DB.
+- campaign-level screening stabilization improves a few global contenders but is not a general surrogate-training fidelity policy.
 
-The next useful extension is noise-aware top-up of provisional archive/global leaders before their rows strongly influence surrogate training.
+Screening stabilization is documented in `docs/search_screening_stabilization.md`.

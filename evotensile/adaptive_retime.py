@@ -106,6 +106,7 @@ class ShapeProbeDecision:
 @dataclass(frozen=True)
 class ProbePolicy:
     samples: int = 3
+    initial_samples: int = 1
     max_slowdown_factor: float = 4.0
     confidence: float = 0.90
     noise_floor_pct: float = 5.0
@@ -114,6 +115,8 @@ class ProbePolicy:
     def __post_init__(self) -> None:
         if self.samples < 2:
             raise ValueError("probe samples must be at least 2")
+        if not 1 <= self.initial_samples < self.samples:
+            raise ValueError("probe initial samples must be positive and less than total samples")
         if self.max_slowdown_factor < 1.0:
             raise ValueError("probe max slowdown factor must be at least 1")
         if not 0.0 < self.confidence < 1.0:

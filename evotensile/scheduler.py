@@ -4,9 +4,10 @@ import json
 import math
 import os
 import random
+import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ from .manifest import write_manifest
 from .profile import DEFAULT_PROFILE, TargetProfile
 from .protocol import BenchmarkProtocol
 from .runner import DEFAULT_TENSILELITE_BIN, RunResult, run_tensilelite
+from .search.cost_model import predicted_batch_prepare_weight
 from .search.differential_evolution import differential_evolution_candidates
 from .search.family import (
     DEFAULT_FAMILY_ELITES_PER_CELL,
@@ -37,7 +39,13 @@ from .search.learned_linkage import (
     learn_linkage_models_from_db,
 )
 from .search.local_search import mutate_elites, semantic_mutation_candidates
-from .search.operator_credit import allocate_operator_budget, load_operator_credits
+from .search.operator_credit import (
+    allocate_operator_budget,
+    credit_ucb_scores,
+    load_donor_mode_credits,
+    load_operator_credits,
+    load_semantic_group_credits,
+)
 from .search.random_search import initial_random_batch
 from .search.surrogate import DEFAULT_SURROGATE_MIN_EVIDENCE, select_surrogate_pool
 from .search_space import cheap_constraints, explain_invalid_nt_hhs, random_candidate
@@ -626,6 +634,13 @@ def propose_candidates(
     adaptive_operators: bool = False,
     surrogate_pool_multiplier: int = 1,
     surrogate_min_evidence: int = DEFAULT_SURROGATE_MIN_EVIDENCE,
+    covering_cold_start: bool = False,
+    adaptive_group_credit: bool = False,
+    micro_exhaustive_neighborhoods: bool = False,
+    adaptive_donor_selection: bool = False,
+    cost_aware_operator_credit: bool = False,
+    parent_candidates: Sequence[Candidate] | None = None,
+    cold_start_precovered_tokens: set[str] | None = None,
 ) -> list[Candidate]:
     """Build candidates from random proposals and/or cached/imported elites."""
     if proposal not in PROPOSAL_MODES:
@@ -656,8 +671,11 @@ def propose_candidates(
         "evolutionary",
         "family-qd",
     }
+    supplied_parents = _dedupe_candidates(list(parent_candidates or ()))
     elites = (
-        _ranked_elites(
+        supplied_parents
+        if needs_elites and parent_candidates is not None
+        else _ranked_elites(
             db,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
@@ -676,7 +694,7 @@ def propose_candidates(
             nearest_shape_count=transfer_shape_count,
             per_shape=transfer_per_shape,
         )
-        if needs_elites and shape_id is None
+        if needs_elites and shape_id is None and parent_candidates is None
         else []
     )
     if transfer_elites:
@@ -684,7 +702,8 @@ def propose_candidates(
         candidates.extend(transfer_elites)
         elites = _dedupe_candidates([*elites, *transfer_elites])
 
-    if proposal == "family-qd":
+    family_leaders: list[Candidate] = []
+    if proposal == "family-qd" and parent_candidates is None:
         family_leaders = _family_archive_leaders(
             db,
             problem_type_hash=problem_type_hash,
@@ -695,8 +714,12 @@ def propose_candidates(
         )
         candidates.extend(family_leaders)
         elites = _dedupe_candidates([*family_leaders, *elites])
+    elif supplied_parents:
+        candidates.extend(supplied_parents)
 
     operator_allocation: dict[str, int] | None = None
+    semantic_group_weights: dict[str, float] | None = None
+    donor_mode_weights: dict[str, float] | None = None
     if adaptive_operators and proposal == "family-qd":
         operator_credits = load_operator_credits(
             db,
@@ -707,7 +730,28 @@ def propose_candidates(
         operator_allocation = allocate_operator_budget(
             pool_local_count + pool_de_count + pool_gomea_count,
             operator_credits,
+            cost_aware=cost_aware_operator_credit,
         )
+        if adaptive_group_credit:
+            semantic_group_weights = credit_ucb_scores(
+                load_semantic_group_credits(
+                    db,
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                    shapes=target_shapes,
+                ),
+                cost_aware=cost_aware_operator_credit,
+            )
+        if adaptive_donor_selection:
+            donor_mode_weights = credit_ucb_scores(
+                load_donor_mode_credits(
+                    db,
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                    shapes=target_shapes,
+                ),
+                cost_aware=cost_aware_operator_credit,
+            )
 
     if uses_random:
         random_batch = (
@@ -734,6 +778,7 @@ def propose_candidates(
                     seed=seed + 1009,
                     target_shapes=target_shapes,
                     exclude={candidate.hash for candidate in candidates},
+                    group_weights=semantic_group_weights,
                 )
             )
         else:
@@ -791,6 +836,9 @@ def propose_candidates(
                 exclude={candidate.hash for candidate in candidates},
                 seed=seed + 2903,
                 source="gomea-neighborhood" if operator_allocation is not None else "gomea",
+                target_shapes=target_shapes,
+                group_weights=semantic_group_weights,
+                micro_exhaustive=micro_exhaustive_neighborhoods,
             )
         )
         candidates.extend(
@@ -804,6 +852,8 @@ def propose_candidates(
                 linkage_models=linkage_models,
                 family_local_probability=0.8 if operator_allocation is not None else 0.0,
                 source="gomea-mixing" if operator_allocation is not None else "gomea",
+                donor_mode_weights=donor_mode_weights,
+                adaptive_donor_selection=adaptive_donor_selection,
             )
         )
 
@@ -811,9 +861,9 @@ def propose_candidates(
     if pool_multiplier <= 1:
         return deduped
     preserved_hashes = (
-        {candidate.hash for candidate in [*transfer_elites, *family_leaders]}
+        {candidate.hash for candidate in [*transfer_elites, *family_leaders, *supplied_parents]}
         if proposal == "family-qd"
-        else {candidate.hash for candidate in transfer_elites}
+        else {candidate.hash for candidate in [*transfer_elites, *supplied_parents]}
     )
     preserved = [candidate for candidate in deduped if candidate.hash in preserved_hashes]
     generated = [candidate for candidate in deduped if candidate.hash not in preserved_hashes]
@@ -828,6 +878,8 @@ def propose_candidates(
         count=selection_count,
         seed=seed + 4001,
         min_evidence=surrogate_min_evidence,
+        covering_cold_start=covering_cold_start,
+        cold_start_precovered_tokens=cold_start_precovered_tokens,
     )
     return _dedupe_candidates([*preserved, *selected])
 
@@ -1168,6 +1220,7 @@ def _probe_survivor_keys(
     probe_protocol_hash: str,
     benchmark_protocol_hash: str,
     policy: ProbePolicy,
+    min_samples: int,
 ) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
     shape_ids = {shape.id for shape in shapes}
     candidate_hashes = {candidate.hash for candidate in candidates}
@@ -1175,7 +1228,7 @@ def _probe_survivor_keys(
         db,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hashes=[probe_protocol_hash],
-        min_samples=policy.samples,
+        min_samples=min_samples,
         shape_ids=shape_ids,
         candidate_hashes=candidate_hashes,
     )
@@ -1186,7 +1239,7 @@ def _probe_survivor_keys(
         min_samples=1,
         shape_ids=shape_ids,
     )
-    screened: set[tuple[str, str]] = set()
+    survivors: set[tuple[str, str]] = set()
     for shape_id, stats in probe_stats.items():
         eligible = [stats_item for stats_item in stats if (shape_id, stats_item.candidate_hash) in available_pairs]
         if not eligible:
@@ -1197,8 +1250,8 @@ def _probe_survivor_keys(
             policy=policy,
             reference_stats=reference_stats.get(shape_id, ()),
         )
-        screened.update((shape_id, candidate_hash) for candidate_hash in decision.screened_hashes)
-    return available_pairs - screened, screened
+        survivors.update((shape_id, candidate_hash) for candidate_hash in decision.survivor_hashes)
+    return survivors, available_pairs - survivors
 
 
 def _adaptive_topup_groups(
@@ -1303,6 +1356,7 @@ def _prepare_current_batch(
     build_timeout_s: float | None,
     runner_timeout_s: float | None,
     compile_cache_root: str | Path | None,
+    validation_gate: threading.Semaphore | None,
 ) -> PreparedBatch:
     build_protocol = protocol.with_overrides(num_benchmarks=current.samples_per_pair)
     yaml_path, manifest_path, run_dir = write_batch_inputs(
@@ -1413,16 +1467,24 @@ def _prepare_current_batch(
         assert library_dir is not None
         if current.requires_validation:
             validation_protocol = protocol.with_overrides(num_benchmarks=1)
-            validation_result = run_structured_phase(
-                mode="validate",
-                run_dir=run_dir,
-                pairs=runnable,
-                shapes=current.shapes,
-                protocol=validation_protocol,
-                runner_bin=runner_bin,
-                library_dir=library_dir,
-                timeout_s=runner_timeout_s,
-            )
+
+            def run_validation() -> StructuredRunOutput:
+                return run_structured_phase(
+                    mode="validate",
+                    run_dir=run_dir,
+                    pairs=runnable,
+                    shapes=current.shapes,
+                    protocol=validation_protocol,
+                    runner_bin=runner_bin,
+                    library_dir=library_dir,
+                    timeout_s=runner_timeout_s,
+                )
+
+            if validation_gate is None:
+                validation_result = run_validation()
+            else:
+                with validation_gate:
+                    validation_result = run_validation()
             _record_structured_run(
                 db,
                 validation_result,
@@ -1596,11 +1658,15 @@ def execute_schedule(
     adaptive_max_rounds: int = 4,
     prepare_workers: int | None = None,
     compile_cache_root: str | Path | None = None,
+    cost_aware_scheduling: bool = False,
+    validation_workers: int | None = None,
 ) -> ScheduleResult:
     if not dry_run and not generate_only and runner_bin is None:
         raise ValueError("--runner-bin is required")
     if prepare_workers is not None and prepare_workers <= 0:
         raise ValueError("prepare_workers must be positive")
+    if validation_workers is not None and validation_workers <= 0:
+        raise ValueError("validation_workers must be positive")
     if adaptive_policy is not None and probe_policy is None:
         raise ValueError("probe_policy is required when adaptive sampling is enabled")
     if adaptive_max_rounds < 0:
@@ -1665,6 +1731,7 @@ def execute_schedule(
         return ScheduleResult(planned_batches=planned, executed_batches=generated)
 
     assert runner_bin is not None
+    validation_gate = None if validation_workers is None else threading.Semaphore(validation_workers)
 
     def prepare(batch: PlannedBatch) -> PreparedBatch:
         return _prepare_current_batch(
@@ -1682,12 +1749,22 @@ def execute_schedule(
             build_timeout_s=build_timeout_s,
             runner_timeout_s=runner_timeout_s,
             compile_cache_root=compile_cache_root,
+            validation_gate=validation_gate,
         )
 
     # Phase 1: all compilation, mapping, diagnostics, and correctness verification.
     # Exiting the executor is the hard barrier before any timing begins.
+    prepare_order = planned
+    if cost_aware_scheduling:
+        prepare_order = sorted(
+            planned,
+            key=lambda batch: (
+                -predicted_batch_prepare_weight(batch.candidates, batch.shapes),
+                batch.batch_index,
+            ),
+        )
     with ThreadPoolExecutor(max_workers=resolved_prepare_workers) as executor:
-        prepared = list(executor.map(prepare, planned))
+        prepared = list(executor.map(prepare, prepare_order))
 
     executed: list[ExecutedBatch] = []
     pair_owner: dict[tuple[str, str], tuple[PreparedBatch, RunnablePair]] = {}
@@ -1725,7 +1802,6 @@ def execute_schedule(
     )
     probe_protocol_hash = target_profile.benchmark_protocol_hash(probe_protocol)
 
-    # Phase 2: give every validated pair only the missing part of its three-launch probe budget.
     for item in prepared:
         if not item.validated_pairs:
             continue
@@ -1735,13 +1811,13 @@ def execute_schedule(
             shape_ids=[shape.id for shape in item.planned.shapes],
             candidate_hashes=[candidate.hash for candidate in item.planned.candidates],
         )
-        pairs_by_remaining: dict[int, list[RunnablePair]] = {}
+        initial_pairs_by_remaining: dict[int, list[RunnablePair]] = {}
         for pair in item.validated_pairs:
             current_samples = counts.get((pair.shape_id, pair.candidate_hash), {}).get("ok", 0)
-            remaining = probe_policy.samples - current_samples
+            remaining = probe_policy.initial_samples - current_samples
             if remaining > 0:
-                pairs_by_remaining.setdefault(remaining, []).append(pair)
-        for remaining, pairs in sorted(pairs_by_remaining.items()):
+                initial_pairs_by_remaining.setdefault(remaining, []).append(pair)
+        for remaining, pairs in sorted(initial_pairs_by_remaining.items()):
             probe = _benchmark_prepared_pairs(
                 db,
                 item,
@@ -1751,7 +1827,7 @@ def execute_schedule(
                 benchmark_protocol_hash=probe_protocol_hash,
                 runner_bin=runner_bin,
                 runner_timeout_s=runner_timeout_s,
-                phase="probe",
+                phase="probe-initial",
             )
             executed.append(probe)
             if not keep_going and probe.ingest is not None and not probe.ingest.ok:
@@ -1761,7 +1837,7 @@ def execute_schedule(
                     probe_protocol_hash=probe_protocol_hash,
                 )
 
-    survivor_keys, screened_keys = _probe_survivor_keys(
+    provisional_survivor_keys, provisional_screened_keys = _probe_survivor_keys(
         db,
         shapes=shapes,
         candidates=candidates,
@@ -1770,7 +1846,59 @@ def execute_schedule(
         probe_protocol_hash=probe_protocol_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         policy=probe_policy,
+        min_samples=probe_policy.initial_samples,
     )
+
+    for item in prepared:
+        topup_pairs = [
+            pair for pair in item.validated_pairs if (pair.shape_id, pair.candidate_hash) in provisional_survivor_keys
+        ]
+        if not topup_pairs:
+            continue
+        counts = db.reusable_cache_entry_counts(
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=probe_protocol_hash,
+            shape_ids=[shape.id for shape in item.planned.shapes],
+            candidate_hashes=[candidate.hash for candidate in item.planned.candidates],
+        )
+        topup_pairs_by_remaining: dict[int, list[RunnablePair]] = {}
+        for pair in topup_pairs:
+            current_samples = counts.get((pair.shape_id, pair.candidate_hash), {}).get("ok", 0)
+            remaining = probe_policy.samples - current_samples
+            if remaining > 0:
+                topup_pairs_by_remaining.setdefault(remaining, []).append(pair)
+        for remaining, pairs in sorted(topup_pairs_by_remaining.items()):
+            probe = _benchmark_prepared_pairs(
+                db,
+                item,
+                pairs=pairs,
+                protocol=probe_protocol.with_overrides(num_benchmarks=remaining),
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=probe_protocol_hash,
+                runner_bin=runner_bin,
+                runner_timeout_s=runner_timeout_s,
+                phase="probe-topup",
+            )
+            executed.append(probe)
+            if not keep_going and probe.ingest is not None and not probe.ingest.ok:
+                return ScheduleResult(
+                    planned_batches=planned,
+                    executed_batches=executed,
+                    probe_protocol_hash=probe_protocol_hash,
+                )
+
+    survivor_keys, final_screened_keys = _probe_survivor_keys(
+        db,
+        shapes=shapes,
+        candidates=candidates,
+        available_pairs=provisional_survivor_keys,
+        problem_type_hash=problem_type_hash,
+        probe_protocol_hash=probe_protocol_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+        policy=probe_policy,
+        min_samples=probe_policy.samples,
+    )
+    screened_keys = provisional_screened_keys | final_screened_keys
 
     # Phase 3: run the main timing protocol only for probe survivors.
     for item in prepared:

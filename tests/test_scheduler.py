@@ -860,6 +860,9 @@ def test_family_qd_adaptive_operators_use_separate_semantic_arms(tmp_path: Path)
         benchmark_protocol_hash=b_hash,
         target_shapes=[shape],
         adaptive_operators=True,
+        adaptive_group_credit=True,
+        micro_exhaustive_neighborhoods=True,
+        adaptive_donor_selection=True,
         seed=20260711,
     )
 
@@ -868,6 +871,12 @@ def test_family_qd_adaptive_operators_use_separate_semantic_arms(tmp_path: Path)
     assert "mutation" not in generated_sources
     assert "gomea" not in generated_sources
     assert {"semantic-mutation", "de", "gomea-neighborhood", "gomea-mixing"} <= generated_sources
+    metadata_by_source = {
+        candidate.source: candidate.proposal_metadata for candidate in proposed if candidate.hash not in parent_hashes
+    }
+    assert "semantic_group" in metadata_by_source["semantic-mutation"]
+    assert metadata_by_source["gomea-neighborhood"]["enumerated_neighborhood"] is True
+    assert metadata_by_source["gomea-mixing"]["donor_mode"] in {"quality", "diverse", "random"}
 
 
 def test_execute_schedule_records_shape_rule_rejection_without_build(tmp_path: Path):

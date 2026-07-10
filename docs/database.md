@@ -32,7 +32,9 @@ This separation lets timing budgets change without repeating correctness while s
 
 ### candidates
 
-Stores canonical candidate JSON, source, parent hashes, and creation time under a stable candidate hash.
+Stores canonical candidate JSON, source, parent hashes, proposal metadata, and creation time under a stable candidate hash. The hash depends only on canonical parameters. Island identity, semantic group, donor mode, requested transitions, changed genes, restart index, and proposal-cost metadata do not fragment cache identity.
+
+Candidate registration uses `INSERT OR IGNORE`, so the first registered source/lineage/metadata for a parameter hash remains the DB-level candidate record. Later proposal appearances of the same hash remain auditable in per-round proposal artifacts but do not overwrite candidate-level credit identity.
 
 ### shapes
 
@@ -40,7 +42,7 @@ Stores exact `M`, `N`, batch, and `K` dimensions. Shape IDs use `m{M}_n{N}_b{bat
 
 ### runs
 
-Stores every build, diagnostic, validation, and benchmark invocation. Metadata includes command, phase/mode, paths, duration, timeout state, and pair count.
+Stores every build, diagnostic, validation, and benchmark invocation. Metadata includes command, phase/mode, paths, duration, timeout state, and pair count. Cost-aware search reconstructs approximate candidate phase costs from these rows, pair files, and manifests rather than materializing a separate cost table.
 
 ### evaluations
 
@@ -133,18 +135,19 @@ Ranking feeds CLI reports, proposal elites, transfer seeds, learned linkage, out
 ## Phase Metadata
 
 `schedule_metadata.json` and `repair_metadata.json` record:
-- Benchmark and validation protocol hashes.
-- Prepare-worker count.
-- Planned batches.
-- Initial and adaptive execution phases.
-- Build, validation, and benchmark return codes.
-- Status counts and errors.
+- benchmark and validation protocol hashes.
+- prepare- and optional validation-worker counts.
+- proposal, surrogate, group/donor-credit, and cost-aware flags.
+- planned batches.
+- staged probe, initial, stabilization, and adaptive execution phases when applicable.
+- build, validation, and benchmark return codes.
+- status counts and errors.
 
 The `runs` table provides lower-level command and artifact provenance.
 
 ## Concurrency
 
-SQLite uses WAL mode, a 60-second busy timeout, and short independent connections. Parallel prepare workers may insert build/diagnostic/validation evidence concurrently.
+SQLite uses WAL mode, a 60-second busy timeout, and short independent connections. Parallel prepare workers may insert build/diagnostic/validation evidence concurrently. An optional validation-worker semaphore can reduce validator concurrency without reducing compilation concurrency.
 
 The prepare-worker pool is fully joined before serial benchmark insertion begins. Compile-cache population has a separate per-cache lock. A machine-wide shared/exclusive APU gate prevents timing from overlapping preparation activity across cooperating processes.
 

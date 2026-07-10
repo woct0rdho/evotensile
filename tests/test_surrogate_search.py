@@ -1,10 +1,15 @@
 import random
 
-from evotensile.candidate import Shape
+from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.scheduler import propose_candidates
 from evotensile.search.family import family_descriptor_counts
+from evotensile.search.mechanics import (
+    candidate_shape_mechanics,
+    mechanical_coverage_tokens,
+    mechanical_prior_score,
+)
 from evotensile.search.surrogate import candidate_shape_features, select_surrogate_pool
 from evotensile.search_space import macro_tile, random_candidate
 
@@ -34,6 +39,23 @@ def test_candidate_shape_features_include_generic_mechanics():
     assert features["tile:n_remainder_fraction"] == (shape.n % macro_tile1) / macro_tile1
     assert "gene:MatrixInstruction" in features
     assert "resource:valu_vgpr_lower_bound" in features
+    cu_granularity = features["grid:cu_granularity"]
+    tile_fill_m = features["tile:fill_m"]
+    tile_fill_n = features["tile:fill_n"]
+    lds_bytes = features["resource:lds_bytes"]
+    assert isinstance(cu_granularity, (int, float))
+    assert isinstance(tile_fill_m, (int, float))
+    assert isinstance(tile_fill_n, (int, float))
+    assert isinstance(lds_bytes, (int, float))
+    assert 0.0 < cu_granularity <= 1.0
+    assert 0.0 < tile_fill_m <= 1.0
+    assert 0.0 < tile_fill_n <= 1.0
+    assert lds_bytes > 0.0
+
+    mechanics = candidate_shape_mechanics(candidate, shape)
+    assert mechanics["tiles_per_cu"] > 0.0
+    assert mechanics["cu_rounds"] >= mechanics["tiles_per_cu"]
+    assert mechanics["arithmetic_intensity"] > 0.0
 
 
 def test_surrogate_pool_learns_synthetic_tlds_performance_from_queried_rows(tmp_path):
@@ -99,6 +121,57 @@ def test_surrogate_pool_falls_back_to_family_diversity_without_evidence(tmp_path
     assert len(family_descriptor_counts(selected)) >= 12
 
 
+def test_mechanical_prior_penalizes_single_instruction_workgroups():
+    shape = Shape(8192, 8192, 1, 8192)
+    base = _shape_candidates(shape, 11_000, 1)[0]
+    tiny_params = base.canonical_params()
+    tiny_params["MatrixInstruction"] = [16, 16, 16, 1, 1, 1, 1, 1, 1]
+    broad_params = base.canonical_params()
+    broad_params["MatrixInstruction"] = [16, 16, 16, 1, 1, 4, 4, 2, 2]
+    tiny = Candidate(params=tiny_params)
+    broad = Candidate(params=broad_params)
+
+    assert candidate_shape_mechanics(tiny, shape)["dispatch_efficiency"] == 0.0
+    assert candidate_shape_mechanics(broad, shape)["dispatch_efficiency"] > 0.8
+    assert mechanical_prior_score(broad, shape) > mechanical_prior_score(tiny, shape)
+
+
+def test_covering_cold_start_increases_mechanical_token_coverage(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "surrogate.sqlite")
+    db.init()
+    shape = Shape(8192, 8192, 1, 8192)
+    pool = _shape_candidates(shape, 12_000, 256)
+
+    baseline = select_surrogate_pool(
+        pool,
+        db=db,
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        shapes=[shape],
+        count=48,
+        seed=20260710,
+        min_evidence=24,
+    )
+    covering = select_surrogate_pool(
+        pool,
+        db=db,
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        shapes=[shape],
+        count=48,
+        seed=20260710,
+        min_evidence=24,
+        covering_cold_start=True,
+    )
+
+    baseline_tokens = set().union(*(mechanical_coverage_tokens(candidate, shape) for candidate in baseline))
+    covering_tokens = set().union(*(mechanical_coverage_tokens(candidate, shape) for candidate in covering))
+    baseline_instructions = {tuple(candidate.canonical_params()["MatrixInstruction"]) for candidate in baseline}
+    covering_instructions = {tuple(candidate.canonical_params()["MatrixInstruction"]) for candidate in covering}
+    assert len(covering_tokens) > len(baseline_tokens)
+    assert len(covering_instructions) >= len(baseline_instructions)
+
+
 def test_scheduler_surrogate_multiplier_preserves_cold_measurement_budget(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "surrogate.sqlite")
     db.init()
@@ -113,6 +186,7 @@ def test_scheduler_surrogate_multiplier_preserves_cold_measurement_budget(tmp_pa
         gomea_count=12,
         target_shapes=[shape],
         surrogate_pool_multiplier=4,
+        covering_cold_start=True,
         seed=20260710,
     )
 

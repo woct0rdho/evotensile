@@ -1,5 +1,5 @@
 import random
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -905,11 +905,22 @@ def repair_linked_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
     return _repair_linked_params(defaulted_params(overrides))
 
 
-def make_candidate(overrides: dict[str, Any], *, source: str, parents: Iterable[str] = ()) -> Candidate:
+def make_candidate(
+    overrides: dict[str, Any],
+    *,
+    source: str,
+    parents: Iterable[str] = (),
+    proposal_metadata: Mapping[str, Any] | None = None,
+) -> Candidate:
     params = defaulted_params(overrides)
     if not cheap_constraints(params):
         raise ValueError(f"candidate failed cheap constraints: {params}")
-    return Candidate(params=params, source=source, parent_hashes=tuple(parents))
+    return Candidate(
+        params=params,
+        source=source,
+        parent_hashes=tuple(parents),
+        proposal_metadata=proposal_metadata or {},
+    )
 
 
 def _random_domain_overrides(rng: random.Random) -> dict[str, Any]:

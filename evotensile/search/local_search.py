@@ -1,9 +1,9 @@
 import random
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from evotensile.candidate import Candidate, Shape
-from evotensile.search.semantics import semantic_group_names
+from evotensile.search.semantics import semantic_group_key, semantic_group_names
 from evotensile.search_space import DOMAINS, cheap_constraints, make_candidate, repair_linked_overrides
 
 
@@ -40,6 +40,26 @@ def mutate_elites(
     return list(out.values())
 
 
+def _weighted_group_choice(
+    rng: random.Random,
+    groups: tuple[tuple[str, ...], ...],
+    weights: Mapping[str, float] | None,
+) -> tuple[str, ...]:
+    if not weights:
+        return rng.choice(groups)
+    resolved = [max(0.0, float(weights.get(semantic_group_key(group), 1.0))) for group in groups]
+    total = sum(resolved)
+    if total <= 0.0:
+        return rng.choice(groups)
+    threshold = rng.random() * total
+    cumulative = 0.0
+    for group, weight in zip(groups, resolved, strict=True):
+        cumulative += weight
+        if cumulative >= threshold:
+            return group
+    return groups[-1]
+
+
 def semantic_mutation_candidates(
     parents: Sequence[Candidate],
     *,
@@ -48,6 +68,7 @@ def semantic_mutation_candidates(
     target_shapes: Sequence[Shape] | None = None,
     max_changed_genes: int = 2,
     exclude: set[str] | None = None,
+    group_weights: Mapping[str, float] | None = None,
 ) -> list[Candidate]:
     """Mutate one semantic group while keeping the step deliberately small."""
     if count <= 0 or not parents:
@@ -61,21 +82,34 @@ def semantic_mutation_candidates(
     while len(out) < count and attempts < max_attempts:
         attempts += 1
         parent = rng.choice(list(parents))
-        params = dict(parent.canonical_params())
-        group = rng.choice(groups)
+        parent_params = parent.canonical_params()
+        params = dict(parent_params)
+        group = _weighted_group_choice(rng, groups, group_weights)
         mutable_names = [name for name in group if len(DOMAINS[name]) > 1]
         if not mutable_names:
             continue
         changed_count = rng.randint(1, min(max(1, max_changed_genes), len(mutable_names)))
+        requested_transitions: dict[str, dict[str, Any]] = {}
         for name in rng.sample(mutable_names, changed_count):
             alternatives = [value for value in DOMAINS[name] if value != params.get(name)]
             if alternatives:
-                params[name] = rng.choice(alternatives)
+                selected = rng.choice(alternatives)
+                requested_transitions[name] = {"from": params.get(name), "to": selected}
+                params[name] = selected
         params = repair_linked_overrides(params)
         if target_shapes and not all(cheap_constraints(params, shape=shape) for shape in target_shapes):
             continue
         try:
-            child = make_candidate(params, source="semantic-mutation", parents=[parent.hash])
+            child = make_candidate(
+                params,
+                source="semantic-mutation",
+                parents=[parent.hash],
+                proposal_metadata={
+                    "semantic_group": semantic_group_key(group),
+                    "requested_transitions": requested_transitions,
+                    "changed_genes": sorted(name for name in DOMAINS if params[name] != parent_params[name]),
+                },
+            )
         except ValueError:
             continue
         if child.hash in seen:
