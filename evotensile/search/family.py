@@ -7,6 +7,7 @@ from typing import Any
 
 from ..candidate import Candidate, Shape
 from ..database import EvaluationSummary, EvoTensileDB
+from ..search.encoding import candidate_to_genome, hamming_distance
 from ..search_space import (
     DOMAINS,
     MATRIX_INSTRUCTIONS,
@@ -21,6 +22,8 @@ from ..search_space import (
 
 FAMILY_DESCRIPTOR_VERSION = "nt_hhs_v2"
 NT_HHS_PROFILE = "gfx1151-nt-hhs"
+DEFAULT_FAMILY_ELITES_PER_CELL = 4
+DEFAULT_FAMILY_DIVERSITY_SCORE_SLACK = 0.25
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,8 @@ class FamilyArchiveEntry:
     shape_count: int
     observed_candidate_count: int
     status_counts: dict[str, int]
+    family_rank: int = 1
+    novelty_distance: int = 0
 
     @property
     def leader_candidate_hash(self) -> str:
@@ -65,6 +70,8 @@ class FamilyArchiveEntry:
             "samples": self.samples,
             "shape_count": self.shape_count,
             "observed_candidate_count": self.observed_candidate_count,
+            "family_rank": self.family_rank,
+            "novelty_distance": self.novelty_distance,
             "status_counts": dict(sorted(self.status_counts.items())),
         }
 
@@ -396,6 +403,52 @@ def _family_status_counts(
     return {key: dict(status_counts) for key, status_counts in counts.items()}
 
 
+@dataclass(frozen=True)
+class _FamilyCandidateScore:
+    candidate_hash: str
+    aggregate_score: float
+    samples: int
+    shape_count: int
+
+
+def _select_diverse_family_scores(
+    scores: Sequence[_FamilyCandidateScore],
+    *,
+    candidates: Mapping[str, Candidate],
+    count: int,
+    score_slack: float,
+) -> list[tuple[_FamilyCandidateScore, int]]:
+    if count <= 0 or not scores:
+        return []
+    remaining = sorted(
+        scores,
+        key=lambda item: (item.aggregate_score, -item.samples, -item.shape_count, item.candidate_hash),
+    )
+    selected: list[tuple[_FamilyCandidateScore, int]] = [(remaining.pop(0), 0)]
+    quality_limit = selected[0][0].aggregate_score + max(0.0, score_slack)
+    while remaining and len(selected) < count:
+        eligible = [item for item in remaining if item.aggregate_score <= quality_limit] or remaining
+        selected_hashes = [item.candidate_hash for item, _ in selected]
+
+        def selection_key(item: _FamilyCandidateScore) -> tuple[int, float, int, int, str]:
+            genome = candidate_to_genome(candidates[item.candidate_hash])
+            novelty = min(
+                hamming_distance(genome, candidate_to_genome(candidates[selected_hash]))
+                for selected_hash in selected_hashes
+            )
+            return (-novelty, item.aggregate_score, -item.samples, -item.shape_count, item.candidate_hash)
+
+        chosen = min(eligible, key=selection_key)
+        chosen_genome = candidate_to_genome(candidates[chosen.candidate_hash])
+        novelty = min(
+            hamming_distance(chosen_genome, candidate_to_genome(candidates[selected_hash]))
+            for selected_hash in selected_hashes
+        )
+        selected.append((chosen, novelty))
+        remaining.remove(chosen)
+    return selected
+
+
 def load_family_archive(
     db: EvoTensileDB,
     *,
@@ -405,6 +458,8 @@ def load_family_archive(
     min_samples: int = 1,
     profile: str = NT_HHS_PROFILE,
     limit: int | None = None,
+    elites_per_family: int = 1,
+    diversity_score_slack: float = DEFAULT_FAMILY_DIVERSITY_SCORE_SLACK,
 ) -> list[FamilyArchiveEntry]:
     shape_ids = _archive_shape_ids(
         db,
@@ -452,30 +507,39 @@ def load_family_archive(
 
     entries: list[FamilyArchiveEntry] = []
     for descriptor_key, scores_by_candidate in candidate_scores.items():
-        best_hash = min(
-            scores_by_candidate,
-            key=lambda candidate_hash: (
-                sum(score for _, score, _ in scores_by_candidate[candidate_hash])
-                / len(scores_by_candidate[candidate_hash]),
-                -sum(samples for _, _, samples in scores_by_candidate[candidate_hash]),
-                candidate_hash,
-            ),
-        )
-        best_items = scores_by_candidate[best_hash]
-        leader = candidates[best_hash]
-        entries.append(
-            FamilyArchiveEntry(
-                descriptor=family_descriptors[descriptor_key],
-                leader=leader,
-                aggregate_score=sum(score for _, score, _ in best_items) / len(best_items),
-                samples=sum(samples for _, _, samples in best_items),
-                shape_count=len({shape_id for shape_id, _, _ in best_items}),
-                observed_candidate_count=len(scores_by_candidate),
-                status_counts=status_counts.get(descriptor_key, {}),
+        family_scores = []
+        for candidate_hash, items in scores_by_candidate.items():
+            family_scores.append(
+                _FamilyCandidateScore(
+                    candidate_hash=candidate_hash,
+                    aggregate_score=sum(score for _, score, _ in items) / len(items),
+                    samples=sum(samples for _, _, samples in items),
+                    shape_count=len({shape_id for shape_id, _, _ in items}),
+                )
             )
+        selected = _select_diverse_family_scores(
+            family_scores,
+            candidates=candidates,
+            count=elites_per_family,
+            score_slack=diversity_score_slack,
         )
+        for family_rank, (score, novelty_distance) in enumerate(selected, start=1):
+            entries.append(
+                FamilyArchiveEntry(
+                    descriptor=family_descriptors[descriptor_key],
+                    leader=candidates[score.candidate_hash],
+                    aggregate_score=score.aggregate_score,
+                    samples=score.samples,
+                    shape_count=score.shape_count,
+                    observed_candidate_count=len(scores_by_candidate),
+                    status_counts=status_counts.get(descriptor_key, {}),
+                    family_rank=family_rank,
+                    novelty_distance=novelty_distance,
+                )
+            )
     entries.sort(
         key=lambda entry: (
+            entry.family_rank,
             entry.aggregate_score,
             -entry.samples,
             -entry.shape_count,

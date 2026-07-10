@@ -21,7 +21,11 @@ from .profile import DEFAULT_PROFILE, TargetProfile
 from .protocol import BenchmarkProtocol
 from .runner import DEFAULT_TENSILELITE_BIN, RunResult, run_tensilelite
 from .search.differential_evolution import differential_evolution_candidates
-from .search.family import family_stratified_random_candidates, load_family_archive
+from .search.family import (
+    DEFAULT_FAMILY_ELITES_PER_CELL,
+    family_stratified_random_candidates,
+    load_family_archive,
+)
 from .search.gomea import gomea_candidates, gomea_neighborhood_candidates
 from .search.learned_linkage import (
     DEFAULT_MAX_CLUSTERS,
@@ -32,8 +36,10 @@ from .search.learned_linkage import (
     LinkageModel,
     learn_linkage_models_from_db,
 )
-from .search.local_search import mutate_elites
+from .search.local_search import mutate_elites, semantic_mutation_candidates
+from .search.operator_credit import allocate_operator_budget, load_operator_credits
 from .search.random_search import initial_random_batch
+from .search.surrogate import DEFAULT_SURROGATE_MIN_EVIDENCE, select_surrogate_pool
 from .search_space import cheap_constraints, explain_invalid_nt_hhs, random_candidate
 from .shapes import shape_from_id
 from .solution_mapping import find_solution_yamls
@@ -588,6 +594,7 @@ def _family_archive_leaders(
         shapes=archive_shapes,
         min_samples=1,
         limit=None,
+        elites_per_family=min(DEFAULT_FAMILY_ELITES_PER_CELL, elite_count),
     )
     return _dedupe_candidates([entry.leader for entry in entries])
 
@@ -616,10 +623,18 @@ def propose_candidates(
     linkage_min_samples: int = DEFAULT_LINKAGE_MIN_SAMPLES,
     linkage_max_clusters: int = DEFAULT_LINKAGE_MAX_CLUSTERS,
     linkage_ordinal_bins: int = DEFAULT_LINKAGE_ORDINAL_BINS,
+    adaptive_operators: bool = False,
+    surrogate_pool_multiplier: int = 1,
+    surrogate_min_evidence: int = DEFAULT_SURROGATE_MIN_EVIDENCE,
 ) -> list[Candidate]:
     """Build candidates from random proposals and/or cached/imported elites."""
     if proposal not in PROPOSAL_MODES:
         raise ValueError(f"unknown proposal mode: {proposal}")
+    pool_multiplier = max(1, surrogate_pool_multiplier)
+    pool_num_random = num_random * pool_multiplier
+    pool_local_count = local_count * pool_multiplier
+    pool_de_count = de_count * pool_multiplier
+    pool_gomea_count = gomea_count * pool_multiplier
 
     candidates: list[Candidate] = []
     uses_random = proposal in {
@@ -681,30 +696,58 @@ def propose_candidates(
         candidates.extend(family_leaders)
         elites = _dedupe_candidates([*family_leaders, *elites])
 
+    operator_allocation: dict[str, int] | None = None
+    if adaptive_operators and proposal == "family-qd":
+        operator_credits = load_operator_credits(
+            db,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            shapes=target_shapes,
+        )
+        operator_allocation = allocate_operator_budget(
+            pool_local_count + pool_de_count + pool_gomea_count,
+            operator_credits,
+        )
+
     if uses_random:
         random_batch = (
             family_stratified_random_candidates(
                 db,
-                num_random,
+                pool_num_random,
                 seed=seed,
                 target_shapes=target_shapes,
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
             )
             if proposal == "family-qd"
-            else _shape_aware_random_batch(num_random, seed=seed, target_shapes=target_shapes)
+            else _shape_aware_random_batch(pool_num_random, seed=seed, target_shapes=target_shapes)
         )
         candidates.extend(random_batch)
 
-    if proposal in {"local", "seed-random-local", "evolutionary", "family-qd"} and local_count > 0:
-        candidates.extend(mutate_elites(elites, count=local_count, seed=seed + 1009, mutation_rate=mutation_rate))
+    mutation_budget = operator_allocation["semantic-mutation"] if operator_allocation is not None else pool_local_count
+    if proposal in {"local", "seed-random-local", "evolutionary", "family-qd"} and mutation_budget > 0:
+        if operator_allocation is not None:
+            candidates.extend(
+                semantic_mutation_candidates(
+                    elites,
+                    count=mutation_budget,
+                    seed=seed + 1009,
+                    target_shapes=target_shapes,
+                    exclude={candidate.hash for candidate in candidates},
+                )
+            )
+        else:
+            candidates.extend(
+                mutate_elites(elites, count=mutation_budget, seed=seed + 1009, mutation_rate=mutation_rate)
+            )
 
-    if proposal in {"de", "seed-random-de", "evolutionary", "family-qd"} and de_count > 0:
+    de_budget = operator_allocation["de"] if operator_allocation is not None else pool_de_count
+    if proposal in {"de", "seed-random-de", "evolutionary", "family-qd"} and de_budget > 0:
         parents = _dedupe_candidates(elites)
         candidates.extend(
             differential_evolution_candidates(
                 parents,
-                count=de_count,
+                count=de_budget,
                 seed=seed + 2003,
                 crossover_rate=crossover_rate,
                 random_gene_rate=random_gene_rate,
@@ -712,7 +755,14 @@ def propose_candidates(
             )
         )
 
-    if proposal in {"gomea", "seed-random-gomea", "evolutionary", "family-qd"} and gomea_count > 0:
+    adaptive_gomea_budget = (
+        0
+        if operator_allocation is None
+        else operator_allocation["gomea-neighborhood"] + operator_allocation["gomea-mixing"]
+    )
+    if proposal in {"gomea", "seed-random-gomea", "evolutionary", "family-qd"} and (
+        gomea_count > 0 or adaptive_gomea_budget > 0
+    ):
         parents = _dedupe_candidates(elites)
         linkage_models, _ = _learned_linkage_models_for_proposal(
             db,
@@ -726,8 +776,13 @@ def propose_candidates(
             ordinal_bins=linkage_ordinal_bins,
         )
         neighborhood_parents = parents
-        gomea_budget = max(0, gomea_count)
-        neighborhood_budget = gomea_budget // 2
+        if operator_allocation is None:
+            gomea_budget = max(0, pool_gomea_count)
+            neighborhood_budget = gomea_budget // 2
+            mixing_budget = gomea_budget - neighborhood_budget
+        else:
+            neighborhood_budget = operator_allocation["gomea-neighborhood"]
+            mixing_budget = operator_allocation["gomea-mixing"]
         candidates.extend(
             gomea_neighborhood_candidates(
                 neighborhood_parents,
@@ -735,21 +790,46 @@ def propose_candidates(
                 max_elites=None,
                 exclude={candidate.hash for candidate in candidates},
                 seed=seed + 2903,
+                source="gomea-neighborhood" if operator_allocation is not None else "gomea",
             )
         )
         candidates.extend(
             gomea_candidates(
                 parents,
-                count=gomea_budget - neighborhood_budget,
+                count=mixing_budget,
                 seed=seed + 3001,
                 elite_count=elite_count,
                 exclude={candidate.hash for candidate in candidates},
                 target_shapes=target_shapes,
                 linkage_models=linkage_models,
+                family_local_probability=0.8 if operator_allocation is not None else 0.0,
+                source="gomea-mixing" if operator_allocation is not None else "gomea",
             )
         )
 
-    return _dedupe_candidates(candidates)
+    deduped = _dedupe_candidates(candidates)
+    if pool_multiplier <= 1:
+        return deduped
+    preserved_hashes = (
+        {candidate.hash for candidate in [*transfer_elites, *family_leaders]}
+        if proposal == "family-qd"
+        else {candidate.hash for candidate in transfer_elites}
+    )
+    preserved = [candidate for candidate in deduped if candidate.hash in preserved_hashes]
+    generated = [candidate for candidate in deduped if candidate.hash not in preserved_hashes]
+    variation_budget = local_count + de_count + gomea_count if elites else 0
+    selection_count = num_random + variation_budget
+    selected = select_surrogate_pool(
+        generated,
+        db=db,
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+        shapes=target_shapes or [],
+        count=selection_count,
+        seed=seed + 4001,
+        min_evidence=surrogate_min_evidence,
+    )
+    return _dedupe_candidates([*preserved, *selected])
 
 
 def _chunks(items: list[T], size: int) -> list[list[T]]:

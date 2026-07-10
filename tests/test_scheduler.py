@@ -827,6 +827,49 @@ def test_family_qd_proposal_preserves_family_archive_leaders(tmp_path: Path):
     assert len(proposed_hashes) == len(proposed)
 
 
+def test_family_qd_adaptive_operators_use_separate_semantic_arms(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = sample_candidates(12, seed=20260710)
+    shape = Shape(m=8192, n=8192, batch=1, k=8192)
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes([shape])
+    for index, candidate in enumerate(candidates):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=100.0 + index,
+            validation="PASSED",
+        )
+
+    proposed = propose_candidates(
+        db,
+        proposal="family-qd",
+        num_random=0,
+        local_count=4,
+        de_count=4,
+        gomea_count=8,
+        elite_count=12,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        target_shapes=[shape],
+        adaptive_operators=True,
+        seed=20260711,
+    )
+
+    parent_hashes = {candidate.hash for candidate in candidates}
+    generated_sources = {candidate.source for candidate in proposed if candidate.hash not in parent_hashes}
+    assert "mutation" not in generated_sources
+    assert "gomea" not in generated_sources
+    assert {"semantic-mutation", "de", "gomea-neighborhood", "gomea-mixing"} <= generated_sources
+
+
 def test_execute_schedule_records_shape_rule_rejection_without_build(tmp_path: Path):
     fake_tensile = tmp_path / "fail_if_called.py"
     fake_tensile.write_text("#!/usr/bin/env python3\nraise SystemExit(99)\n", encoding="utf-8")

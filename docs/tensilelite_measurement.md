@@ -35,10 +35,10 @@ The manifest records intended ordering. Final accepted mapping remains authorita
 One scheduler wave has two phases separated by a hard barrier.
 
 The parallel prepare queue performs, for every batch:
-1. TensileLite build/codegen.
-2. Final-YAML mapping and positive salvage.
-3. Structured diagnostics for unattributed mixed-build failures.
-4. Correctness verification for accepted pairs that lack compatible cached validation.
+- TensileLite build/codegen.
+- Final-YAML mapping and positive salvage.
+- Structured diagnostics for unattributed mixed-build failures.
+- Correctness verification for accepted pairs that lack compatible cached validation.
 
 `--prepare-workers` controls this queue and defaults to available CPU cores. `--compile-threads` controls CPU threads inside one TensileLite build and defaults to `1`.
 
@@ -164,14 +164,27 @@ There is no public `none` validation backend and no trusted-validation bypass. S
 ## Adaptive Timing
 
 Adaptive sampling prepares the candidate set once. The scheduler then:
-1. Runs a separate three-sample, one-enqueue, zero-warmup probe for every validation-passed pair.
-2. Screens only candidates confidently slower than the best compatible shape reference by more than the configured coarse factor.
-3. Runs the main timing protocol for probe survivors.
-4. Loads main-protocol timing statistics and selects plausible contenders within the final indifference zone.
-5. Runs benchmark-only top-up subsets from the original prepared-artifact index.
-6. Repeats up to the configured adaptive-round limit.
+- Runs a separate three-sample, one-enqueue, zero-warmup probe for every validation-passed pair.
+- Screens only candidates confidently slower than the best compatible shape reference by more than the configured coarse factor.
+- Runs the main timing protocol for probe survivors.
+- Loads main-protocol timing statistics and selects plausible contenders within the final indifference zone.
+- Runs benchmark-only top-up subsets from the original prepared-artifact index.
+- Repeats up to the configured adaptive-round limit.
 
 Probe evidence has a separate protocol hash and cannot enter main ranking. Missing probe evidence fails open. Probe, main, and adaptive rounds do not compile, remap, diagnose, or validate candidates. A contender without a successfully prepared artifact is ineligible for timing.
+
+## Hot-Loop Confirmation
+
+Broad search normally uses a cheap main protocol so many candidates can provide feedback. Final performance claims use a separate hot-loop confirmation over a small ranked set.
+
+`hot_confirm_topk()`:
+- ranks screening candidates under the requested main protocol.
+- requires compatible passed validation evidence.
+- resolves each finalist's generated library and mapped solution from run metadata.
+- runs benchmark mode with `20` warmups, `10` samples, and `10` enqueues per sample.
+- writes JSON and CSV rankings without recompilation or repeated validation.
+
+Confirmation uses `NumElementsToValidate=0` in benchmark mode and relies on the validation table as its correctness gate. The helper is used by real blind campaign tooling described in `docs/blind_experiment_infrastructure.md`. Statistical interpretation of screening and confirmation is documented in `docs/noisy_measurements.md`.
 
 ## Diagnostic Attribution
 

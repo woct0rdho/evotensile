@@ -291,6 +291,9 @@ def _propose_candidates_for_shapes(
         linkage_min_samples=args.linkage_min_samples,
         linkage_max_clusters=args.linkage_max_clusters,
         linkage_ordinal_bins=args.linkage_ordinal_bins,
+        adaptive_operators=args.adaptive_operators,
+        surrogate_pool_multiplier=args.surrogate_pool_multiplier,
+        surrogate_min_evidence=args.surrogate_min_evidence,
     )
 
 
@@ -418,6 +421,9 @@ def _schedule_metadata_common(
         "runner_protocol": context.protocol.runner_parameters(),
         "validation_backend": context.protocol.validation_backend,
         "proposal": args.proposal,
+        "adaptive_operators": args.adaptive_operators,
+        "surrogate_pool_multiplier": args.surrogate_pool_multiplier,
+        "surrogate_min_evidence": args.surrogate_min_evidence,
         "candidates": len(candidates),
         "shapes": len(shapes),
         "candidate_batch_size": args.candidate_batch_size,
@@ -474,6 +480,23 @@ def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False)
     parser.add_argument("--de-count", type=int, default=DEFAULT_DE_COUNT)
     parser.add_argument("--gomea-count", type=int, default=DEFAULT_GOMEA_COUNT)
     parser.add_argument("--mutation-rate", type=float, default=DEFAULT_MUTATION_RATE)
+    parser.add_argument(
+        "--adaptive-operators",
+        action="store_true",
+        help="Allocate family-QD variation budget from queried child-versus-parent evidence",
+    )
+    parser.add_argument(
+        "--surrogate-pool-multiplier",
+        type=int,
+        default=1,
+        help="Generate this multiple of the requested proposal budget, then shortlist blindly from DB evidence",
+    )
+    parser.add_argument(
+        "--surrogate-min-evidence",
+        type=int,
+        default=24,
+        help="Validation-passed timing rows required before fitting the proposal surrogate",
+    )
     parser.add_argument("--crossover-rate", type=float, default=DEFAULT_CROSSOVER_RATE)
     parser.add_argument("--random-gene-rate", type=float, default=DEFAULT_RANDOM_GENE_RATE)
     parser.add_argument(
@@ -585,6 +608,9 @@ def cmd_proposal_coverage(args: argparse.Namespace) -> int:
         "gomea_count": args.gomea_count,
         "de_count": args.de_count,
         "local_count": args.local_count,
+        "adaptive_operators": args.adaptive_operators,
+        "surrogate_pool_multiplier": args.surrogate_pool_multiplier,
+        "surrogate_min_evidence": args.surrogate_min_evidence,
         "candidate_family_count": len(descriptor_counts),
         "candidate_family_counts": dict(sorted(descriptor_counts.items())),
     }

@@ -8,7 +8,9 @@ from evotensile.search.learned_linkage import (
     hybrid_mi_matrix,
     leader_clusters,
     learn_linkage_models,
+    learn_linkage_models_from_db,
     load_candidate_evidence,
+    minimum_evidence_for_truncation,
     nearest_linkage_model,
     ordinal_gene_indices,
     select_truncation_pool,
@@ -86,6 +88,47 @@ def test_load_candidate_evidence_uses_shape_local_ranks_and_positive_rows(tmp_pa
     assert evidence[1].aggregate_score == 0.5
     assert scored[0].candidate_hash == candidates[0].hash
     assert scored[0].samples == 1
+
+
+def test_minimum_evidence_for_truncation_satisfies_selected_sample_floor():
+    assert minimum_evidence_for_truncation(truncation_tau=1.0, min_samples=8) == 8
+    assert minimum_evidence_for_truncation(truncation_tau=0.75, min_samples=8) == 11
+    assert minimum_evidence_for_truncation(truncation_tau=0.5, min_samples=8) == 16
+
+
+def test_linkage_db_loader_expands_evidence_for_truncation(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "linkage.sqlite")
+    db.init()
+    candidates = sample_candidates(20, seed=1153)
+    shape = pilot_100_shapes()[0]
+    problem_hash = DEFAULT_PROFILE.problem_type_hash
+    protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes([shape])
+    for index, candidate in enumerate(candidates):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="run",
+            status="ok",
+            problem_type_hash=problem_hash,
+            benchmark_protocol_hash=protocol_hash,
+            time_us=1.0 + index,
+            validation="PASSED",
+        )
+
+    _, summary = learn_linkage_models_from_db(
+        db,
+        problem_type_hash=problem_hash,
+        benchmark_protocol_hash=protocol_hash,
+        shapes=[shape],
+        truncation_tau=0.5,
+        min_samples=8,
+    )
+
+    assert summary.evidence_count == 16
+    assert summary.selected_count == 8
+    assert summary.fallback_reason is None
 
 
 def test_truncation_selection_keeps_best_finite_scores():
