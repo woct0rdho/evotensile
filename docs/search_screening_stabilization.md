@@ -45,7 +45,7 @@ For each shape, `plan_screening_stabilization()` ranks candidates by median log 
 
 ```text
 gap_log = score_c - score_b
-combined_se = sqrt(SE_c^2 + SE_b^2)
+combined_se = sqrt(SE_c**2 + SE_b**2)
 ci_low_log = gap_log - z * combined_se
 ```
 

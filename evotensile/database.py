@@ -450,13 +450,7 @@ class EvoTensileDB:
             ).fetchall()
         by_hash: dict[str, Candidate] = {}
         for row in rows:
-            payload = json.loads(row["candidate_json"])
-            by_hash[row["candidate_hash"]] = Candidate(
-                params=payload["params"],
-                source=payload.get("source", "db"),
-                parent_hashes=tuple(payload.get("parent_hashes", [])),
-                proposal_metadata=payload.get("proposal_metadata", {}),
-            )
+            by_hash[row["candidate_hash"]] = Candidate.from_mapping(json.loads(row["candidate_json"]))
         return [by_hash[h] for h in candidate_hashes if h in by_hash]
 
     def insert_run(

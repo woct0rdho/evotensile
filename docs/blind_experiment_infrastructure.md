@@ -24,9 +24,9 @@ Unknown oracle candidates remain unknown. Simulation must not impute their perfo
 
 ## Real Campaign Driver
 
-`scripts/run_blind_one_shape.py` runs the current one-shape policy against an empty campaign DB.
+`evotensile/campaign/one_shape.py` runs the current one-shape policy against an empty campaign DB. `scripts/run_blind_one_shape.py` is the CLI entry point and contains only argument, profile, shape, and package-runner wiring.
 
-The driver provides:
+The package runner provides:
 - a versioned immutable campaign configuration with strict resume identity.
 - two independently seeded, mechanically covering cold populations.
 - island-local feedback rounds followed by explicit population migration.
@@ -41,7 +41,9 @@ The driver provides:
 
 The current policy uses `48` measured cold candidates selected from two complementary `8x` island pools, then requests `24` generated candidates per feedback round. The first six feedback rounds keep parents island-local. Later rounds use a globally capped merged archive. Proposal results distinguish preserved archive parents, novel generated hashes, and the exact selected set. Only selected novel candidates receive new proposal metadata or cost. Cache-aware planning measures only missing pairs. The campaign records and uses the selected profile's resource identity: gfx1151 uses `32` preparation workers, one GPU validation worker, one ExtraTrees job, 40 physical CUs, and 20 two-CU WGPs. Dispatch mechanics use the WGP count because HIP runs gfx1151 in WGP mode and reports `multiProcessorCount=20`. Physical compute-capacity facts use 40 CUs.
 
-The driver uses a staged catastrophic probe: one launch for every validated pair, followed by two more only for provisional survivors, then the two-sample screening protocol. It also stabilizes a bounded set of provisional main-protocol leaders between rounds. The campaign deadline controls admission of rounds, stabilization groups, and hot finalists. It does not truncate build or runner timeouts after work starts. Probe math is documented in `docs/noisy_measurements.md`. Stabilization is documented in `docs/search_screening_stabilization.md`. Neither changes TensileLite validity or validation behavior.
+The package runner uses the shared scheduler pipeline: `scheduling/planning.py` resolves exact missing pairs, `scheduling/compile_cache.py` owns stable cache identities and advisory locking, `scheduling/preparation.py` compiles and validates bounded parallel waves, `scheduling/structured.py` records invocation costs, and `scheduling/timing.py` serializes probes, screening, and adaptive top-ups. `scheduler.py` coordinates these owners without generating candidates or implementing phase internals. Tests follow the same ownership in `test_scheduling_planning.py`, `test_structured_runner.py`, `test_scheduler.py`, `test_schedule_cli.py`, `test_search_acquisition.py`, and `test_outlier_repair.py`.
+
+The timing pipeline uses a staged catastrophic probe: one launch for every validated pair, followed by two more only for provisional survivors, then the two-sample screening protocol. The campaign also stabilizes a bounded set of provisional main-protocol leaders between rounds. The campaign deadline controls admission of rounds, stabilization groups, and hot finalists. It does not truncate build or runner timeouts after work starts. Probe math is documented in `docs/noisy_measurements.md`. Stabilization is documented in `docs/search_screening_stabilization.md`. Neither changes TensileLite validity or validation behavior.
 
 ## Exact-Hash Replay Oracle
 

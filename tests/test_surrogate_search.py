@@ -3,7 +3,7 @@ import random
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
-from evotensile.scheduler import propose_candidates
+from evotensile.search.acquisition import propose_candidates
 from evotensile.search.evidence import load_proposal_evidence_snapshot
 from evotensile.search.family import family_descriptor_counts
 from evotensile.search.mechanics import (

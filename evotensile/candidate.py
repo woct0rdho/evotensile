@@ -42,15 +42,39 @@ class Candidate:
     def hash(self) -> str:
         return stable_hash(self.canonical_params(), prefix="cand_")[:21]
 
-    def to_json(self) -> str:
-        payload = {
-            "hash": self.hash,
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "Candidate":
+        params = payload.get("params")
+        parent_hashes = payload.get("parent_hashes", [])
+        proposal_metadata = payload.get("proposal_metadata", {})
+        if not isinstance(params, Mapping):
+            raise ValueError("candidate params must be a mapping")
+        if not isinstance(parent_hashes, (list, tuple)):
+            raise ValueError("candidate parent hashes must be a sequence")
+        if not isinstance(proposal_metadata, Mapping):
+            raise ValueError("candidate proposal metadata must be a mapping")
+        candidate = cls(
+            params={str(key): value for key, value in params.items()},
+            source=str(payload.get("source", "unknown")),
+            parent_hashes=tuple(str(value) for value in parent_hashes),
+            proposal_metadata={str(key): value for key, value in proposal_metadata.items()},
+        )
+        expected_hash = payload.get("candidate_hash", payload.get("hash"))
+        if expected_hash is not None and candidate.hash != str(expected_hash):
+            raise ValueError(f"candidate hash mismatch: expected {expected_hash}, got {candidate.hash}")
+        return candidate
+
+    def to_mapping(self, *, hash_key: str = "hash") -> dict[str, Any]:
+        return {
+            hash_key: self.hash,
             "source": self.source,
             "parent_hashes": list(self.parent_hashes),
             "proposal_metadata": canonicalize(dict(self.proposal_metadata)),
             "params": self.canonical_params(),
         }
-        return json.dumps(payload, sort_keys=True, indent=2)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_mapping(), sort_keys=True, indent=2)
 
 
 @dataclass(frozen=True)

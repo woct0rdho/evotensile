@@ -1,6 +1,20 @@
 # Blind Campaign Control
 
-This document describes the campaign-specific state machine implemented by `scripts/run_blind_one_shape.py` and helpers in `evotensile/search/campaign_control.py`. The broader blindness, replay, and artifact contract is documented in `docs/blind_experiment_infrastructure.md`. Search operators remain documented in the search-prefixed design docs.
+This document describes the campaign-specific state machine implemented by `evotensile/campaign/one_shape.py`. The broader blindness, replay, and artifact contract is documented in `docs/blind_experiment_infrastructure.md`. Search operators remain documented in the search-prefixed design docs.
+
+## Implementation Ownership
+
+The one-shape workflow is split by domain:
+- `evotensile/campaign/models.py` owns immutable campaign and proposal records.
+- `evotensile/campaign/configuration.py` owns protocol construction and binary, implementation, environment, profile, and topology identity.
+- `evotensile/campaign/store.py` owns artifact paths, exact proposal serialization, strict resume checks, phase checkpoints, progress, and summaries.
+- `evotensile/campaign/proposal_policy.py` owns cold/feedback allocations, island phases, restart transitions, proposal events, and deterministic round seeds.
+- `evotensile/campaign/one_shape.py` owns soft admission, schedule invocation, stabilization, diagnostics, confirmation, and campaign completion.
+- `scripts/run_blind_one_shape.py` parses CLI options, resolves the profile and shape, constructs `OneShapeCampaign`, and invokes `run_one_shape_campaign()`.
+
+Reusable search acquisition lives in `evotensile/search/acquisition.py`. Reusable population and budget helpers remain in `evotensile/search/campaign_control.py`. Campaign modules import those owners directly rather than through scheduler compatibility exports.
+
+Tests mirror these boundaries: `tests/test_campaign_control.py` covers reusable control calculations, `tests/test_campaign_proposal_policy.py` covers acquisition and island proposal semantics, `tests/test_campaign_store.py` covers exact candidate persistence, and `tests/test_one_shape_campaign.py` covers the package state machine plus one CLI integration path.
 
 ## Scope
 
@@ -86,7 +100,7 @@ An external process timeout is an operational guard, not the campaign budget. Se
 
 ## Checkpoints
 
-The driver writes `campaign_checkpoint.json` atomically at three phase boundaries:
+`CampaignStore` writes `campaign_checkpoint.json` atomically at three phase boundaries:
 - `proposed`: exact candidate dictionaries and hashes are already materialized in `round_NN/proposals.json`.
 - `completed`: the round record and DB evidence are durable.
 - `finished`: campaign summary and hot-confirmation attempt are complete.
@@ -134,7 +148,7 @@ Campaign-control artifacts include:
 
 ## Limitations
 
-- Multi-island control exists only in the one-shape driver.
+- Multi-island control is reusable package code but currently implements only the one-shape campaign policy.
 - Island identity is proposal metadata rather than a dedicated database table.
 - Restart and convergence thresholds have not received a full equal-time multi-seed ablation.
 - Hard process termination cannot atomically checkpoint in-flight subprocess duration.

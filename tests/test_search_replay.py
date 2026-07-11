@@ -1,4 +1,6 @@
+import json
 import math
+from dataclasses import asdict
 
 from evotensile.candidate import Shape
 from evotensile.database import EvoTensileDB
@@ -6,6 +8,13 @@ from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search.hot_confirm import hot_confirm_topk
 from evotensile.search.replay import OracleRecord, ReplayCostModel, merge_oracle_records, simulate_candidate_stream
 from tests.helpers import sample_candidates
+
+
+def test_replay_cost_model_recursively_serializes_nested_protocols():
+    payload = json.loads(json.dumps(asdict(ReplayCostModel())))
+
+    assert payload["stabilization_protocol"]["role"] == "main"
+    assert payload["stabilization_policy"]["min_samples"] == 8
 
 
 def test_merge_oracle_records_keeps_exact_hash_measurements_and_hot_results():
