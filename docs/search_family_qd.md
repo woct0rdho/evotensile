@@ -98,7 +98,7 @@ This preserves complementary within-family genomes while ensuring the first arch
 
 ## Proposal Integration
 
-The `family-qd` proposal mode combines:
+The built-in family-QD provider combines:
 - stratified random exploration.
 - globally ranked DB elites.
 - diverse family archive elites.

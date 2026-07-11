@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from pathlib import Path
 
 from evotensile.database import EvoTensileDB
 from evotensile.structured_runner import RunnablePair, StructuredRunOutput
@@ -9,8 +8,6 @@ def record_structured_run(
     db: EvoTensileDB,
     output: StructuredRunOutput,
     *,
-    yaml_path: Path,
-    output_dir: Path,
     pairs: Sequence[RunnablePair],
     cost_phase: str,
 ) -> None:

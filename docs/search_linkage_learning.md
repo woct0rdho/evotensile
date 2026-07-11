@@ -119,7 +119,7 @@ If there is no model, GOMEA falls back to static groups plus a FOS built from cu
 
 ## CLI Controls And Metadata
 
-Learned linkage is enabled by default for GOMEA-style proposal modes. CLI controls are:
+Learned linkage is enabled by default in the built-in family-QD policy. Custom providers can import the learning and GOMEA building blocks from `evotensile.proposals` and choose their own activation rules. Built-in CLI controls are:
 
 ```text
 --learned-linkage

@@ -375,9 +375,8 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
         runner_bin=fake_runner,
         keep_going=True,
         prepare_workers=2,
-        adaptive_policy=AdaptivePolicy(),
+        adaptive_policy=AdaptivePolicy(max_rounds=2),
         probe_policy=ProbePolicy(samples=2, min_survivors=2),
-        adaptive_max_rounds=2,
     )
 
     events = events_path.read_text(encoding="utf-8").splitlines()
@@ -424,9 +423,8 @@ def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, mon
         tensilelite_bin=fake_tensile,
         runner_bin=fake_runner,
         keep_going=True,
-        adaptive_policy=AdaptivePolicy(),
+        adaptive_policy=AdaptivePolicy(max_rounds=0),
         probe_policy=probe_policy,
-        adaptive_max_rounds=0,
     )
 
     probe_protocol = main_protocol.with_overrides(
@@ -496,9 +494,8 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
         tensilelite_bin=fake_tensile,
         runner_bin=fake_runner,
         keep_going=True,
-        adaptive_policy=AdaptivePolicy(),
+        adaptive_policy=AdaptivePolicy(max_rounds=0),
         probe_policy=probe_policy,
-        adaptive_max_rounds=0,
     )
     second = execute_schedule(
         db,
@@ -511,9 +508,8 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
         tensilelite_bin=fake_tensile,
         runner_bin=fake_runner,
         keep_going=True,
-        adaptive_policy=AdaptivePolicy(),
+        adaptive_policy=AdaptivePolicy(max_rounds=0),
         probe_policy=probe_policy,
-        adaptive_max_rounds=0,
     )
     relaxed_policy = ProbePolicy(samples=3, max_slowdown_factor=20.0, min_survivors=1)
     third = execute_schedule(
@@ -527,9 +523,8 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
         tensilelite_bin=fake_tensile,
         runner_bin=fake_runner,
         keep_going=True,
-        adaptive_policy=AdaptivePolicy(),
+        adaptive_policy=AdaptivePolicy(max_rounds=0),
         probe_policy=relaxed_policy,
-        adaptive_max_rounds=0,
     )
 
     assert first.probe_screened_pairs == 1
@@ -581,9 +576,8 @@ def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch
         tensilelite_bin=fake_tensile,
         runner_bin=fake_runner,
         keep_going=True,
-        adaptive_policy=AdaptivePolicy(),
+        adaptive_policy=AdaptivePolicy(max_rounds=0),
         probe_policy=ProbePolicy(samples=3, max_slowdown_factor=4.0, min_survivors=1),
-        adaptive_max_rounds=0,
     )
 
     main_rank = db.rank_benchmarks(
@@ -1213,6 +1207,7 @@ def test_structured_maps_renumbered_normalized_final_yaml_solution(tmp_path: Pat
         candidates=candidates,
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        candidate_batch_size=2,
         tensilelite_bin=script,
         runner_bin=fake_structured_runner(tmp_path),
         keep_going=True,
@@ -1279,6 +1274,7 @@ def test_structured_records_rejected_candidate_from_final_yaml(tmp_path: Path):
         candidates=candidates,
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
+        candidate_batch_size=2,
         tensilelite_bin=script,
         runner_bin=fake_structured_runner(tmp_path),
         keep_going=True,

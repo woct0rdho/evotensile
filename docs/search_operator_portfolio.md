@@ -1,6 +1,6 @@
 # Adaptive Search Operator Portfolio
 
-This document describes EvoTensile's semantic mutation operator and adaptive allocation of variation budget between mutation, DE, GOMEA arms, semantic groups, and donor modes. The portfolio is an optional part of `family-qd`. General proposal modes are documented in `docs/search_algorithms.md`. Measured cost scaling is documented in `docs/search_cost_model.md`.
+This document describes EvoTensile's semantic mutation operator and adaptive allocation of variation budget between mutation, DE, GOMEA arms, semantic groups, and donor modes. The portfolio is part of the built-in family-QD policy and is also available to custom providers through `evotensile.proposals`. General proposal composition is documented in `docs/search_algorithms.md`. Measured cost scaling is documented in `docs/search_cost_model.md`.
 
 ## Motivation
 
@@ -108,14 +108,7 @@ The configured local, DE, and GOMEA counts define the total adaptive variation b
 
 ## Scheduler Integration
 
-Enable whole-operator allocation with:
-
-```text
---proposal family-qd
---adaptive-operators
-```
-
-Related opt-in controls are:
+The built-in family-QD policy enables whole-operator allocation by default. `--adaptive-operators` and `--no-adaptive-operators` override that policy for built-in runs. Related controls are:
 
 ```text
 --adaptive-group-credit

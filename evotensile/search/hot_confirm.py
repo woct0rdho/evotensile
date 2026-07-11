@@ -1,5 +1,6 @@
 import csv
 import json
+import statistics
 import time
 from pathlib import Path
 from typing import TypedDict
@@ -34,14 +35,6 @@ class HotConfirmationFailure(TypedDict):
     reason: str
 
 
-def _median(values: list[float]) -> float:
-    ordered = sorted(values)
-    midpoint = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[midpoint]
-    return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
-
-
 def hot_confirm_topk(
     *,
     db_path: str | Path,
@@ -50,12 +43,11 @@ def hot_confirm_topk(
     runner_bin: str | Path,
     shape_id: str,
     problem_type_hash: str,
-    screening_protocol_hash: str,
-    validation_protocol_hash: str,
+    screening_protocol: BenchmarkProtocol,
     hot_protocol: BenchmarkProtocol,
-    top_k: int = 8,
+    top_k: int,
+    runner_timeout_s: float,
     admission_deadline: float | None = None,
-    runner_timeout_s: float = 300.0,
 ) -> list[HotConfirmationRecord]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -65,15 +57,15 @@ def hot_confirm_topk(
     )
     summaries = db.rank_benchmarks(
         problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=screening_protocol_hash,
+        benchmark_protocol_hash=screening_protocol.protocol_hash(),
         shape_id=shape_id,
-        min_samples=2,
+        min_samples=screening_protocol.num_benchmarks,
         limit=top_k,
     )
     hashes = [summary.candidate_hash for summary in summaries]
     validated = db.validated_cache_entries(
         problem_type_hash=problem_type_hash,
-        validation_protocol_hash=validation_protocol_hash,
+        validation_protocol_hash=screening_protocol.validation_protocol_hash(),
         shape_ids=[shape_id],
         candidate_hashes=hashes,
     )
@@ -158,9 +150,9 @@ def hot_confirm_topk(
                 "returncode": run_output.returncode,
                 "duration_s": run_output.duration_s,
                 "samples": len(times),
-                "median_time_us": _median(times),
+                "median_time_us": statistics.median(times),
                 "best_time_us": min(times),
-                "median_gflops": _median(gflops),
+                "median_gflops": statistics.median(gflops),
                 "best_gflops": max(gflops),
                 "library_dir": str(artifact.library_dir),
                 "command": run_output.command,

@@ -11,10 +11,6 @@ from .utils import round_up
 MEDIAN_SE_FACTOR = 1.2533141373155001
 
 
-def _median(values: Sequence[float]) -> float:
-    return statistics.median(values)
-
-
 def _quantile(sorted_values: Sequence[float], q: float) -> float:
     if not sorted_values:
         raise ValueError("cannot compute quantile of an empty sequence")
@@ -26,10 +22,6 @@ def _quantile(sorted_values: Sequence[float], q: float) -> float:
     if lo == hi:
         return sorted_values[lo]
     return sorted_values[lo] * (hi - position) + sorted_values[hi] * (position - lo)
-
-
-def _sample_stddev(values: Sequence[float]) -> float:
-    return statistics.stdev(values) if len(values) >= 2 else 0.0
 
 
 @dataclass(frozen=True)
@@ -155,6 +147,7 @@ class AdaptivePolicy:
     sample_step: int = 10
     max_k: int = 8
     min_effect_pct: float = 0.5
+    max_rounds: int = 4
 
     def __post_init__(self) -> None:
         if self.epsilon_pct < 0.0:
@@ -171,6 +164,8 @@ class AdaptivePolicy:
             raise ValueError("adaptive max-k must be positive")
         if self.min_effect_pct <= 0.0:
             raise ValueError("adaptive minimum effect must be positive")
+        if self.max_rounds < 0:
+            raise ValueError("adaptive maximum rounds must be non-negative")
 
     @property
     def epsilon_log(self) -> float:
@@ -192,11 +187,11 @@ def timing_stats_from_times(shape_id: str, candidate_hash: str, times_us: Sequen
     logs = [math.log(value) for value in values]
     sorted_logs = sorted(logs)
     sorted_times = sorted(values)
-    median_log = _median(sorted_logs)
-    median_time = math.exp(median_log)
+    median_log = statistics.median(sorted_logs)
+    median_time = statistics.median(values)
     mean_log = statistics.fmean(logs)
-    stddev_log = _sample_stddev(logs)
-    mad_log = _median([abs(value - median_log) for value in logs])
+    stddev_log = statistics.stdev(logs) if len(logs) >= 2 else 0.0
+    mad_log = statistics.median(abs(value - median_log) for value in logs)
     q25 = _quantile(sorted_logs, 0.25)
     q75 = _quantile(sorted_logs, 0.75)
     iqr_log = q75 - q25

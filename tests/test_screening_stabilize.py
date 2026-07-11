@@ -189,6 +189,7 @@ def test_screening_stabilization_runner_budget_skips_later_fair_pair(tmp_path: P
             uncertainty_half_width_pct=0.0,
             max_runner_duration_s=0.01,
         ),
+        runner_timeout_s=300.0,
     )
 
     assert calls == [shapes[0].id]
@@ -237,6 +238,7 @@ def test_screening_stabilization_reuses_prior_artifacts(tmp_path: Path, monkeypa
             min_timer_ticks=0,
             uncertainty_half_width_pct=0.0,
         ),
+        runner_timeout_s=300.0,
     )
 
     ranked = db.rank_benchmarks(

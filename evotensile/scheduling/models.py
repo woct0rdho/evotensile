@@ -76,6 +76,14 @@ class ExecutedBatch:
 class ScheduleResult:
     planned_batches: list[PlannedBatch]
     executed_batches: list[ExecutedBatch] = field(default_factory=list)
+    build_timeout_s: float | None = None
+    runner_timeout_s: float | None = None
+    candidate_batch_size: int = 1
+    shape_batch_size: int = 1
+    prepare_workers: int = 1
+    prepare_wave_batches: int = 1
+    validation_workers: int = 1
+    runner_bin: str | None = None
     completed_waves: int = 0
     adaptive_rounds: int = 0
     probe_protocol_hash: str | None = None

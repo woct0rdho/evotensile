@@ -17,10 +17,11 @@ from evotensile.activity import apu_activity_lock
 from evotensile.candidate import Candidate
 from evotensile.database import BaselineSelectionInsert, EvoTensileDB
 from evotensile.profile import PROFILES, get_profile
-from evotensile.protocol import BenchmarkProtocol
+from evotensile.protocol import BenchmarkProtocol, apply_benchmark_protocol_overrides
 from evotensile.runner import DEFAULT_TENSILELITE_BIN
 from evotensile.scheduler import DEFAULT_COMPILE_THREADS, execute_schedule
 from evotensile.shapes import Shape, parse_shape
+from evotensile.subprocess_utils import resolve_timeout
 from evotensile.tensilelite_keys import DIRECT_SOLUTION_MATCH_KEYS
 
 DEFAULT_BENCH = Path.home() / "rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench"
@@ -67,13 +68,7 @@ class BaselineSelection:
 
 def _profile_protocol(args: argparse.Namespace) -> tuple[Any, BenchmarkProtocol]:
     profile = get_profile(args.profile)
-    protocol = profile.default_protocol.with_overrides(
-        num_warmups=args.num_warmups,
-        num_benchmarks=args.num_benchmarks,
-        enqueues_per_sync=args.enqueues_per_sync,
-        syncs_per_benchmark=args.syncs_per_benchmark,
-        num_elements_to_validate=args.num_elements_to_validate,
-    )
+    protocol = apply_benchmark_protocol_overrides(profile.default_protocol, vars(args))
     return profile, protocol
 
 
@@ -416,12 +411,6 @@ def main() -> int:
     profile, protocol = _profile_protocol(args)
     shapes = _parse_shapes(args, profile)
     runner_bin = args.runner_bin or profile.default_runner_bin
-    build_timeout = profile.default_build_timeout_s if args.build_timeout is None else args.build_timeout
-    runner_timeout = profile.default_runner_timeout_s if args.runner_timeout is None else args.runner_timeout
-    if build_timeout is not None and build_timeout <= 0:
-        build_timeout = None
-    if runner_timeout is not None and runner_timeout <= 0:
-        runner_timeout = None
     env = runtime_env(args.rocm_devel, args.rocm_libraries, args.tensile_libpath)
     discovery_started = time.perf_counter()
     selections = query_baselines(args, shapes, env)
@@ -486,8 +475,8 @@ def main() -> int:
                 compile_threads=args.compile_threads,
                 keep_going=not args.stop_on_error,
                 runner_bin=runner_bin,
-                build_timeout_s=build_timeout,
-                runner_timeout_s=runner_timeout,
+                build_timeout_s=args.build_timeout,
+                runner_timeout_s=args.runner_timeout,
             )
             status_counts: dict[str, int] = {}
             for executed in result.executed_batches:
@@ -519,8 +508,8 @@ def main() -> int:
         "selections_csv": str(selections_csv),
         "query_only": args.query_only,
         "stop_on_error": args.stop_on_error,
-        "build_timeout_s": build_timeout,
-        "runner_timeout_s": runner_timeout,
+        "build_timeout_s": resolve_timeout(args.build_timeout, profile.default_build_timeout_s),
+        "runner_timeout_s": resolve_timeout(args.runner_timeout, profile.default_runner_timeout_s),
         "executed_groups": executed_groups,
         "HIPBLASLT_TENSILE_LIBPATH": env["HIPBLASLT_TENSILE_LIBPATH"],
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),

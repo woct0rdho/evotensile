@@ -89,7 +89,7 @@ The feature projection is reused by:
 - campaign population diagnostics.
 - the proposal-side preparation-cost heuristic.
 
-The default evidence-free surrogate fallback remains family-diverse round-robin selection. Mechanical covering is opt-in and currently applies only when exactly one target shape is supplied.
+Mechanical covering currently applies only when exactly one target shape is supplied. The built-in family-QD policy enables that fallback. Custom providers that call `select_surrogate_pool()` choose it explicitly.
 
 ## Reporting And Tests
 

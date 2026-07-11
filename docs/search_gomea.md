@@ -4,7 +4,7 @@ This document describes EvoTensile's Gene-pool Optimal Mixing Evolutionary Algor
 
 ## Role In EvoTensile
 
-GOMEA is a proposal generator used by `schedule-batches` through proposal modes such as `gomea`, `seed-random-gomea`, `evolutionary`, and `family-qd`. It produces new complete TensileLite candidates from validation-passed parent candidates already stored in the SQLite database.
+GOMEA is a maintained proposal building block used by the built-in family-QD provider and available to custom providers through `evotensile.proposals`. It produces new complete TensileLite candidates from validation-passed parent candidates already stored in the SQLite database.
 
 GOMEA does not rank final winners and does not change validity. Its output still goes through candidate canonicalization, rule checks, TensileLite build/codegen, structured validation, timing ingestion, and DB ranking like any other proposal source.
 
@@ -84,23 +84,16 @@ If learned linkage is disabled or there is insufficient evidence, GOMEA falls ba
 - the static NT HHS linkage groups.
 - `fos_from_genomes()` built from current elite parent genomes.
 
-The scheduler enables learned linkage by default for GOMEA-style proposals and exposes `--no-learned-linkage` for A/B checks. The learned-linkage mechanics are documented in `docs/search_linkage_learning.md`.
+The built-in family-QD policy enables learned linkage by default and exposes `--no-learned-linkage` for A/B checks. Custom providers choose whether and how to call the linkage and GOMEA APIs. The learned-linkage mechanics are documented in `docs/search_linkage_learning.md`.
 
-## Scheduler Use
+## Provider Use
 
-`propose_candidates()` calls GOMEA when the selected proposal mode is one of:
-- `gomea`
-- `seed-random-gomea`
-- `evolutionary`
-- `family-qd`
+The built-in family-QD provider:
+- loads DB elites when enough ranked evidence exists.
+- adds nearest-shape transfer elites for multi-shape proposals.
+- splits the GOMEA budget between neighborhood trials and stochastic mixing.
+- allocates those arms separately from queried child-versus-parent evidence when adaptive operators are enabled.
+- uses family-local donors and an oversized surrogate-shortlisted pool according to its policy.
+- returns generated candidates to the common finalizer before missing `(shape, candidate)` work is planned.
 
-For these modes, the scheduler:
-- Loads DB elites when enough ranked evidence exists.
-- Adds nearest-shape transfer elites for multi-shape proposals.
-- Optionally adds random candidates first for seeded modes.
-- Splits the GOMEA budget between neighborhood trials and stochastic mixing.
-- Optionally allocates those arms separately from queried child-versus-parent evidence.
-- Optionally uses family-local donors and an oversized surrogate-shortlisted pool.
-- Deduplicates all generated candidates before planning missing `(shape, candidate)` pairs.
-
-GOMEA is therefore one proposal source inside the broader search loop, not a standalone executor. Adaptive allocation is documented in `docs/search_operator_portfolio.md`, and family-aware parent selection is documented in `docs/search_family_qd.md`.
+Custom providers can import `gomea_candidates()` and `gomea_neighborhood_candidates()` from `evotensile.proposals` and compose them with their own parent selection. GOMEA remains one proposal source inside the broader search loop, not a standalone executor. Adaptive allocation is documented in `docs/search_operator_portfolio.md`, and family-aware parent selection is documented in `docs/search_family_qd.md`.

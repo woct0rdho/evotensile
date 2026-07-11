@@ -6,6 +6,7 @@ from evotensile.campaign.models import CampaignConfiguration, ProposalArgs, Roun
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.profile import TargetProfile
+from evotensile.proposal import FamilyQDPolicy
 from evotensile.search.acquisition import propose_candidates
 from evotensile.search.campaign_control import (
     ProposalEvent,
@@ -76,15 +77,12 @@ def propose_campaign_candidates(
 ) -> RoundProposal:
     parent_hashes = tuple(sorted(candidate.hash for candidate in parents or ()))
     started = time.perf_counter()
-    proposal = propose_candidates(
-        db,
-        target_profile=profile,
-        proposal=configuration.proposal_mode,
-        seed=seed,
-        problem_type_hash=profile.problem_type_hash,
-        benchmark_protocol_hash=protocol_hash,
-        shape_id=shape.id,
-        target_shapes=[shape],
+    policy = FamilyQDPolicy(
+        num_random=proposal_args["num_random"],
+        elite_count=proposal_args["elite_count"],
+        local_count=proposal_args["local_count"],
+        de_count=proposal_args["de_count"],
+        gomea_count=proposal_args["gomea_count"],
         transfer_shape_count=configuration.transfer_shape_count,
         transfer_per_shape=configuration.transfer_per_shape,
         mutation_rate=configuration.mutation_rate,
@@ -95,13 +93,28 @@ def propose_campaign_candidates(
         linkage_min_samples=configuration.linkage_min_samples,
         linkage_max_clusters=configuration.linkage_max_clusters,
         linkage_ordinal_bins=configuration.linkage_ordinal_bins,
+        adaptive_operators=proposal_args["adaptive_operators"],
+        surrogate_pool_multiplier=proposal_args["surrogate_pool_multiplier"],
+        surrogate_min_evidence=proposal_args["surrogate_min_evidence"],
+        covering_cold_start=proposal_args["covering_cold_start"],
+        adaptive_group_credit=proposal_args["adaptive_group_credit"],
+        micro_exhaustive_neighborhoods=proposal_args["micro_exhaustive_neighborhoods"],
+        adaptive_donor_selection=proposal_args["adaptive_donor_selection"],
+        cost_aware_operator_credit=proposal_args["cost_aware_operator_credit"],
+    )
+    proposal = propose_candidates(
+        db,
+        target_profile=profile,
+        policy=policy,
+        seed=seed,
+        problem_type_hash=profile.problem_type_hash,
+        benchmark_protocol_hash=protocol_hash,
+        shape_id=shape.id,
+        target_shapes=[shape],
         parent_candidates=parents,
         cold_start_precovered_tokens=cold_start_precovered_tokens,
-        surrogate_jobs=configuration.surrogate_jobs,
-        workgroup_processor_count=configuration.workgroup_processor_count,
         proposal_island_id=island_id,
         proposal_restart_index=restart_index,
-        **proposal_args,
     )
     duration = time.perf_counter() - started
     generated_hashes = {candidate.hash for candidate in proposal.generated}

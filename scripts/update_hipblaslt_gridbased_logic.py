@@ -12,7 +12,7 @@ import yaml
 from evotensile.artifacts import load_artifact_mappings
 from evotensile.database import BenchmarkSummary, EvoTensileDB
 from evotensile.profile import PROFILES, TargetProfile, get_profile
-from evotensile.protocol import BenchmarkProtocol
+from evotensile.protocol import BenchmarkProtocol, apply_benchmark_protocol_overrides
 from evotensile.solution_mapping import find_solution_yamls, solution_matches_candidate
 
 DEFAULT_LOGIC_DIR = (
@@ -86,13 +86,7 @@ def _render_yaml(data: Any) -> str:
 
 
 def _protocol_from_args(args: argparse.Namespace, profile: TargetProfile) -> BenchmarkProtocol:
-    return profile.default_protocol.with_overrides(
-        num_warmups=args.num_warmups,
-        num_benchmarks=args.num_benchmarks,
-        enqueues_per_sync=args.enqueues_per_sync,
-        syncs_per_benchmark=args.syncs_per_benchmark,
-        num_elements_to_validate=args.num_elements_to_validate,
-    )
+    return apply_benchmark_protocol_overrides(profile.default_protocol, vars(args))
 
 
 def _winner_summaries(

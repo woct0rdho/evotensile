@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "evotensile"
 version = "0.1.0"
-description = "Evolutionary algorithm for hipBLASLt TensileLite config search"
+description = "Quality-diversity autotuner for hipBLASLt TensileLite configurations"
 readme = "README.md"
 license = "MIT"
 authors = [{name = "woctordho", email = "woctordho@outlook.com"}]

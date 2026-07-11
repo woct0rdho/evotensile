@@ -8,9 +8,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cache import NEGATIVE_CACHE_STATUSES
 from .candidate import Candidate, Shape, canonical_json
 from .metrics import gflops_from_us
+
+NEGATIVE_CACHE_STATUSES = ("rejected", "build_failed")
 
 
 def _median(values: list[float]) -> float | None:

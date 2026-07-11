@@ -8,7 +8,7 @@ import pytest
 from evotensile.campaign.configuration import CampaignConfigurationRequest, build_campaign_configuration
 from evotensile.campaign.one_shape import OneShapeCampaign, run_one_shape_campaign
 from evotensile.campaign.store import CampaignStore
-from evotensile.profile import DEFAULT_PROFILE
+from evotensile.profile import DEFAULT_PROFILE, PROFILES
 from evotensile.shapes import parse_shape
 from scripts import run_blind_one_shape
 from tests.helpers import fake_build_tensile, fake_structured_runner
@@ -68,6 +68,7 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
     assert summary["rounds"][0]["archive_diagnostics"]["candidates"] == 0
     assert configuration["version"] == 1
     assert configuration["adaptive_policy"]["confidence"] == 0.90
+    assert configuration["adaptive_policy"]["max_rounds"] == 0
     assert configuration["screening_protocol"]["num_benchmarks"] == 2
     assert configuration["hot_protocol"]["num_warmups"] == 20
     assert configuration["candidate_batch_size"] == 1
@@ -160,3 +161,42 @@ def test_campaign_soft_budget_does_not_clamp_admitted_job_timeout(
     assert summary["rounds"][0]["schedule"]["status_counts"]["ok"] > 0
     assert summary["elapsed_s"] > summary["configuration"]["time_budget_s"]
     assert summary["budget_overrun_s"] > 0.0
+
+
+def test_campaign_script_resolves_selected_profile_execution_defaults(tmp_path: Path, monkeypatch):
+    profile = replace(
+        DEFAULT_PROFILE,
+        name="script-profile",
+        default_runner_bin="profile-runner",
+        default_build_timeout_s=123.0,
+        default_runner_timeout_s=45.0,
+    )
+    requests: list[CampaignConfigurationRequest] = []
+    selected_profiles = []
+
+    def build_configuration(request, *, profile, shape):
+        requests.append(request)
+        selected_profiles.append(profile)
+        return object()
+
+    monkeypatch.setitem(PROFILES, profile.name, profile)
+    monkeypatch.setattr(run_blind_one_shape, "build_campaign_configuration", build_configuration)
+    monkeypatch.setattr(run_blind_one_shape, "run_one_shape_campaign", lambda campaign: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_blind_one_shape.py",
+            "--output",
+            str(tmp_path / "campaign"),
+            "--profile",
+            profile.name,
+        ],
+    )
+
+    assert run_blind_one_shape.main() == 0
+    request = requests[0]
+    assert selected_profiles == [profile]
+    assert request.runner_bin == Path(profile.default_runner_bin)
+    assert request.build_timeout_s == profile.default_build_timeout_s
+    assert request.runner_timeout_s == profile.default_runner_timeout_s

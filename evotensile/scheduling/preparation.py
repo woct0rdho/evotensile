@@ -254,8 +254,6 @@ def _prepare_current_batch(
             record_structured_run(
                 db,
                 validation_result,
-                yaml_path=yaml_path,
-                output_dir=run_dir,
                 pairs=runnable,
                 cost_phase="validation",
             )

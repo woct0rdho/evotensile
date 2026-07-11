@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 from textwrap import dedent
 
@@ -10,6 +11,66 @@ from evotensile.search_space import make_candidate
 from evotensile.shapes import pilot_100_shapes
 from evotensile.tensilelite_diagnostics import DiagnosticRecord, DiagnosticRunResult
 from tests.helpers import REFERENCE_CANDIDATE, sample_candidates
+
+
+def test_execute_schedule_resolves_profile_and_explicit_timeouts(tmp_path: Path):
+    profile = replace(
+        DEFAULT_PROFILE,
+        max_no_cache_candidate_batch_size=3,
+        default_shape_batch_size=7,
+        default_prepare_workers=5,
+        default_prepare_wave_batches=4,
+        default_validation_workers=2,
+        default_runner_bin="profile-runner",
+        default_build_timeout_s=41.0,
+        default_runner_timeout_s=17.0,
+    )
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    shapes = pilot_100_shapes()[:1]
+    candidates = sample_candidates(1)
+
+    defaults = execute_schedule(
+        db,
+        shapes=shapes,
+        candidates=candidates,
+        output_root=tmp_path / "defaults",
+        target_profile=profile,
+        dry_run=True,
+    )
+    assert defaults.build_timeout_s == 41.0
+    assert defaults.runner_timeout_s == 17.0
+    assert defaults.candidate_batch_size == 1
+    assert defaults.shape_batch_size == 7
+    assert defaults.prepare_workers == 5
+    assert defaults.prepare_wave_batches == 4
+    assert defaults.validation_workers == 2
+    assert defaults.runner_bin == "profile-runner"
+
+    explicit = execute_schedule(
+        db,
+        shapes=shapes,
+        candidates=candidates,
+        output_root=tmp_path / "explicit",
+        target_profile=profile,
+        dry_run=True,
+        build_timeout_s=9.0,
+        runner_timeout_s=5.0,
+    )
+    assert explicit.build_timeout_s == 9.0
+    assert explicit.runner_timeout_s == 5.0
+
+    disabled = execute_schedule(
+        db,
+        shapes=shapes,
+        candidates=candidates,
+        output_root=tmp_path / "disabled",
+        target_profile=profile,
+        dry_run=True,
+        build_timeout_s=0.0,
+        runner_timeout_s=-1.0,
+    )
+    assert disabled.build_timeout_s is None
+    assert disabled.runner_timeout_s is None
 
 
 def test_execute_schedule_records_shape_rule_rejection_without_build(tmp_path: Path):

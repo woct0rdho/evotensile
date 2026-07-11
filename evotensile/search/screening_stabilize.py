@@ -331,13 +331,13 @@ def stabilize_screening_leaders(
     validation_protocol_hash: str,
     output_dir: str | Path,
     runner_bin: str | Path,
-    policy: ScreeningStabilizationPolicy | None = None,
+    policy: ScreeningStabilizationPolicy,
+    runner_timeout_s: float,
     shape_clusters: Mapping[str, str] | None = None,
     admission_deadline: float | None = None,
-    runner_timeout_s: float = 300.0,
 ) -> ScreeningStabilizationResult:
     started = time.monotonic()
-    active_policy = policy or ScreeningStabilizationPolicy()
+    active_policy = policy
     shape_by_id = {shape.id: shape for shape in shapes}
     if not shape_by_id:
         raise ValueError("stabilization requires at least one shape")

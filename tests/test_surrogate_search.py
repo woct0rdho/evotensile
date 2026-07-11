@@ -3,6 +3,7 @@ import random
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
+from evotensile.proposal import FamilyQDPolicy
 from evotensile.search.acquisition import propose_candidates
 from evotensile.search.evidence import load_proposal_evidence_snapshot
 from evotensile.search.family import family_descriptor_counts
@@ -303,14 +304,22 @@ def test_scheduler_surrogate_multiplier_preserves_cold_measurement_budget(tmp_pa
 
     proposal = propose_candidates(
         db,
-        proposal="family-qd",
-        num_random=3,
-        local_count=0,
-        de_count=0,
-        gomea_count=0,
+        policy=FamilyQDPolicy(
+            num_random=3,
+            local_count=0,
+            de_count=0,
+            gomea_count=0,
+            transfer_shape_count=0,
+            transfer_per_shape=0,
+            adaptive_operators=False,
+            surrogate_pool_multiplier=2,
+            covering_cold_start=True,
+            adaptive_group_credit=False,
+            micro_exhaustive_neighborhoods=False,
+            adaptive_donor_selection=False,
+            cost_aware_operator_credit=False,
+        ),
         target_shapes=[shape],
-        surrogate_pool_multiplier=2,
-        covering_cold_start=True,
         seed=20260710,
     )
 
