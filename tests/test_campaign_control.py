@@ -17,7 +17,7 @@ from evotensile.search.campaign_control import (
 from evotensile.search.cost_model import load_candidate_evaluation_costs
 from evotensile.search.operator_credit import OperatorCredit, allocate_operator_budget
 from evotensile.shapes import pilot_100_shapes
-from scripts.run_blind_one_shape_20min import _candidate_from_payload, _candidate_payload, main
+from scripts.run_blind_one_shape import _candidate_from_payload, _candidate_payload, main
 from tests.helpers import sample_candidates
 from tests.test_structured_runner import _fake_build_tensile, _fake_structured_runner
 
@@ -171,7 +171,7 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
     fake_runner = _fake_structured_runner(tmp_path)
     output = tmp_path / "campaign"
     arguments = [
-        "run_blind_one_shape_20min.py",
+        "run_blind_one_shape.py",
         "--output",
         str(output),
         "--shape",

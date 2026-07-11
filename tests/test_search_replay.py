@@ -169,6 +169,7 @@ def test_hot_confirmation_handles_an_empty_validated_ranking(tmp_path):
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         screening_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
         validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
+        hot_protocol=DEFAULT_PROFILE.default_protocol.with_overrides(num_elements_to_validate=0),
     )
 
     assert records == []

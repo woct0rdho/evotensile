@@ -2,7 +2,7 @@
 
 EvoTensile is a smart-search autotuner for TensileLite. The implemented pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid in the `gfx1151-nt-hhs` profile.
 
-This file is the live project log and forward plan. Stable design details live in focused docs.
+This file is the live project log and forward plan. Stable design details live in focused docs. The current one-shape and production-grid readiness audit is in `docs/one_shape_workflow_review.md`.
 
 ## Current Status
 
@@ -12,14 +12,14 @@ Implemented and working:
 - Candidate emission through complete TensileLite `Groups`, not Cartesian-product fork parameters.
 - Structured scheduler path only: YAML + manifest generation, parallel build/map/diagnostic/validation preparation, a hard barrier, serial benchmark-only execution, and direct SQLite ingestion.
 - Separate correctness and timing identities: validation evidence is stored independently from benchmark samples.
-- Cache-aware exact-pair planning keyed by problem type, benchmark protocol, validation protocol, shape, and candidate.
+- Cache-aware exact-pair planning keyed by problem type, benchmark protocol, validation protocol, shape, and candidate, with latest-compatible correctness-state resolution.
 - Random, local and semantic mutation, categorical DE, GOMEA, learned-linkage GOMEA, family-QD proposals, adaptive operator allocation, transfer seeding, and imported hipBLASLt baseline participation.
 - Optional ExtraTrees shortlisting and mechanical covering from oversized proposal pools using validation-passed DB evidence or evidence-free soft mechanics.
-- Adaptive finalist top-ups plus campaign-level screening-leader stabilization that reuse original compiled and correctness-verified artifacts without recompilation or revalidation.
+- Adaptive finalist top-ups, screening stabilization, and strict hot confirmation that reuse content-verified registered build artifacts without recompilation or revalidation.
 - Optional cost-aware operator credit and longest-predicted-work-first preparation ordering.
 - A deterministic blind one-shape campaign harness with two isolated cold islands, later migration, exact-proposal checkpoints, and opt-in convergence stopping.
 - `repair-outliers` neighbor-seeded second-stage search.
-- DB-driven hipBLASLt GridBased YAML update helper for HHS/HHS+AuxH/BBS/BBS+AuxB variants.
+- DB-driven hipBLASLt GridBased YAML preview/staging helper for HHS/HHS+AuxH/BBS/BBS+AuxB variants, requiring complete-profile shape coverage, current validation, and complete registered artifacts before transactional source replacement.
 - Installed-library verification helper using `hipblaslt-bench --verify`.
 
 Current default workflow:
@@ -27,7 +27,7 @@ Current default workflow:
 - Run `schedule-batches` with the target profile and structured runner.
 - Let adaptive sampling top up plausible finalists.
 - Run `repair-outliers` before final GridBased update when expanding or retuning a grid.
-- Update hipBLASLt GridBased logic directly from the DB.
+- Preview and stage complete hipBLASLt GridBased logic from the DB, review it, then explicitly request transactional source replacement.
 - Rebuild/install hipBLASLt and validate performance/correctness.
 
 ## Recent Project Log
@@ -57,8 +57,16 @@ This result motivated integrated adaptive sampling, which is now the default sch
 Imported current hipBLASLt-selected configs into `out/grid100_full_20260618_repaired.sqlite`:
 - `100` queried shapes.
 - `22` unique installed candidates.
-- `1,000 ok` structured samples under benchmark protocol hash `bproto_d8085f528519ae64`.
+- `1,000 ok` structured samples, now retained under current benchmark protocol hash `bproto_9f4055f5f13232a3` with the complete 100-shape corpus.
 - Baselines now compete as normal DB candidates and can become proposal parents, transfer seeds, or final winners.
+
+### 100-Shape Protocol Consolidation
+
+The complete retained corpus was migrated through the proven role-only identity change and consolidated in `out/grid100_full_20260618_repaired.sqlite`:
+- `165,604 ok`, `6,616 rejected`, and `2,000` historical validation-failure audit rows remain under current benchmark protocol hash `bproto_9f4055f5f13232a3`.
+- Source and destination row multisets matched exactly before the obsolete identity was removed.
+- Before deleting historical run trees, their DB contributions were verified: `4,000 ok` top-four retiming rows, `15,204 ok` plus `816 rejected` outlier-repair rows, and `1,000 ok` installed-baseline rows.
+- No current validation evidence was synthesized. Future production promotion still requires the current validation protocol.
 
 ### Rebuilt hipBLASLt Validation
 

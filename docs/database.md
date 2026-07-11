@@ -42,7 +42,7 @@ Stores exact `M`, `N`, batch, and `K` dimensions. Shape IDs use `m{M}_n{N}_b{bat
 
 ### runs
 
-Stores every build, diagnostic, validation, and benchmark invocation. Metadata includes command, phase/mode, paths, duration, timeout state, and pair count. Cost-aware search reconstructs approximate candidate phase costs from these rows, pair files, and manifests rather than materializing a separate cost table.
+Stores every build, diagnostic, validation, and benchmark invocation. Metadata includes command, phase/mode, paths, duration, timeout state, and pair count. Cost-aware search reconstructs approximate candidate phase costs from these rows, pair files, and manifests rather than materializing a separate cost table. Runtime artifact consumers no longer infer libraries or final YAML from run metadata.
 
 ### evaluations
 
@@ -79,9 +79,20 @@ solution_index INTEGER
 created_at REAL NOT NULL
 ```
 
-Validation-only runs insert one row per pair. `status='passed'` is reusable correctness evidence. Failed validation also creates a `validation_fail` evaluation row so the pair remains reusable negative evidence under the active benchmark campaign.
+Validation-only runs insert one row per pair. Validation rows never count as timing samples.
 
-Validation rows never count as timing samples.
+### candidate_artifacts
+
+Stores one exact mapped artifact record per `(problem type, shape, candidate, library solution, library path, content identity)`. Each record contains:
+
+- runnable problem/requested/library/manifest solution indices.
+- originating build run and build output directory.
+- generated library directory.
+- all generated solution-YAML paths used for mapping.
+- optional manifest path.
+- SHA-256-derived identity over the complete generated library contents.
+
+Registration occurs immediately after authoritative final-YAML mapping and before validation/timing. Loading requires every recorded path to exist and the current library content identity to match. Stale, moved, incomplete, or modified artifacts are unavailable rather than inferred from surrounding directories.
 
 ## Candidate And Shape Registration
 
@@ -89,17 +100,16 @@ Before scheduling, candidates and shapes are inserted with `INSERT OR IGNORE`. I
 
 ## Evaluation Statuses
 
-Reusable groups are:
+Reusable benchmark-cache groups are:
 
 ```text
 POSITIVE_CACHE_STATUSES = ('ok',)
-NEGATIVE_CACHE_STATUSES = ('rejected', 'validation_fail', 'build_failed')
+NEGATIVE_CACHE_STATUSES = ('rejected', 'build_failed')
 ```
 
 Important statuses:
 - `ok`: finite positive benchmark sample admitted after compatible validation.
 - `rejected`: pair did not survive source-backed rules or final solution mapping.
-- `validation_fail`: correctness verification failed.
 - `build_failed`: attributable build/codegen failure.
 - `build_timeout`: singleton build timeout. Audit-only.
 - `runner_timeout`: benchmark timeout. Audit-only.
@@ -110,18 +120,18 @@ Only reusable statuses skip future work.
 
 ## Validation Semantics
 
-`validated_cache_entries()` queries the `validations` table for `status='passed'` under the active validation-protocol hash. It no longer infers correctness from timing rows.
+`validation_cache_states()` selects the latest row by `(created_at, validation_id)` for each pair under the active validation-protocol hash. `validated_cache_entries()` returns only pairs whose latest compatible state is `passed`.
 
-The validation-protocol identity includes validator version, backend, validation extent, input initialization settings, and relevant output behavior. A timing protocol change does not invalidate correctness unless one of those validation properties also changes.
+A latest `failed` state suppresses the pair only for that exact validation identity. Changing backend, extent, initialization, or protocol version produces a different hash and requires fresh validation. A later pass supersedes an earlier failure. A later failure supersedes an earlier pass.
 
 There is no trusted no-validation path. Benchmark mode is allowed only for pairs already represented in the prepared validation-passed set or compatible cached validation evidence.
 
 ## Cache Lookup
 
-`reusable_cache_entry_counts()` counts timing and reusable negative evaluations under one problem/benchmark protocol. `_missing_candidate_indices_by_shape()` combines:
+`reusable_cache_entry_counts()` counts timing and reusable build/mapping negatives under one problem/benchmark protocol. `_missing_candidate_indices_by_shape()` combines:
 - Existing timing sample count.
-- Reusable negative evidence.
-- Compatible correctness evidence from `validations`.
+- Reusable benchmark-cache negative evidence.
+- Latest compatible correctness state from `validations`.
 - Shape-dependent source-backed invalidity.
 
 A pair may therefore require more timing while not requiring validation.
@@ -153,4 +163,4 @@ The prepare-worker pool is fully joined before serial benchmark insertion begins
 
 ## Portability
 
-The schema is additive and has no migration framework. New DBs are recommended for incompatible campaigns. Existing DBs receive the `validations` table through `CREATE TABLE IF NOT EXISTS`. Old timing rows are not automatically converted into validation evidence.
+Use a new database for incompatible hardware, software, benchmark, or validation identities. The runtime schema contains only current operational tables. One-time historical migration code is not retained.

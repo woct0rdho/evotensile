@@ -227,17 +227,15 @@ def test_validation_samples_create_separate_correctness_evidence():
         runnable_pairs=[pair],
         problem_type_hash="ptype",
         validation_protocol_hash="vproto",
-        benchmark_protocol_hash="bproto",
         run_id="validation_run",
     )
 
     assert outcome.passed_pairs == [pair]
     assert outcome.validations[0].status == "passed"
     assert outcome.validations[0].detail == "PASSED checked=1 backend=hipblaslt_gpu_compare"
-    assert outcome.negative_evaluations == []
 
 
-def test_validation_failure_creates_reusable_negative_evaluation():
+def test_validation_failure_is_recorded_only_under_validation_identity():
     pair = _pair()
     outcome = validate_validation_samples(
         [
@@ -252,13 +250,12 @@ def test_validation_failure_creates_reusable_negative_evaluation():
         runnable_pairs=[pair],
         problem_type_hash="ptype",
         validation_protocol_hash="vproto",
-        benchmark_protocol_hash="bproto",
         run_id="validation_run",
     )
 
     assert outcome.passed_pairs == []
     assert outcome.validations[0].status == "failed"
-    assert outcome.negative_evaluations[0].status == "validation_fail"
+    assert outcome.validations[0].validation_protocol_hash == "vproto"
 
 
 def test_benchmark_samples_must_be_timing_only():
@@ -655,6 +652,7 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
         (shape.id, candidate.hash) for shape in shapes for candidate in candidates
     }
     assert all(sample.validation == "NO_CHECK" for sample in samples)
+    assert db.counts()["candidate_artifacts"] == 4
 
     with sqlite3.connect(tmp_path / "sched.sqlite") as con:
         rows = con.execute(
@@ -798,6 +796,7 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
     assert (build_dir / ".evotensile_compile_cache_ok").exists()
     assert first.executed_batches[0].output_dir != build_dir
     assert second.executed_batches[0].output_dir != build_dir
+    assert db.counts()["candidate_artifacts"] == 1
 
 
 def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):

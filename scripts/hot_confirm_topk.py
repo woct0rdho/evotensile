@@ -28,6 +28,14 @@ def main() -> int:
         enqueues_per_sync=1,
         syncs_per_benchmark=1,
     )
+    hot_protocol = BenchmarkProtocol(
+        num_warmups=20,
+        num_benchmarks=10,
+        enqueues_per_sync=10,
+        syncs_per_benchmark=1,
+        num_elements_to_validate=0,
+        validation_backend=screening_protocol.validation_backend,
+    )
     records = hot_confirm_topk(
         db_path=args.db,
         output_dir=args.output,
@@ -36,6 +44,7 @@ def main() -> int:
         problem_type_hash=profile.problem_type_hash,
         screening_protocol_hash=profile.benchmark_protocol_hash(screening_protocol),
         validation_protocol_hash=screening_protocol.validation_protocol_hash(),
+        hot_protocol=hot_protocol,
         top_k=args.top_k,
         runner_timeout_s=args.runner_timeout,
     )

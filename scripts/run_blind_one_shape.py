@@ -748,7 +748,6 @@ def main() -> int:
                 output_dir=round_dir / "leader_stabilization",
                 runner_bin=args.runner_bin,
                 policy=stabilization_policy,
-                architecture=str(profile.library_logic["ArchitectureName"]),
                 deadline=search_deadline,
                 runner_timeout_s=args.runner_timeout,
             )
@@ -817,6 +816,14 @@ def main() -> int:
     )
     hot_records = []
     if time.monotonic() < hard_deadline:
+        hot_protocol = BenchmarkProtocol(
+            num_warmups=20,
+            num_benchmarks=10,
+            enqueues_per_sync=10,
+            syncs_per_benchmark=1,
+            num_elements_to_validate=0,
+            validation_backend=protocol.validation_backend,
+        )
         hot_records = hot_confirm_topk(
             db_path=db_path,
             output_dir=args.output / "hot_loop_top8",
@@ -825,6 +832,7 @@ def main() -> int:
             problem_type_hash=profile.problem_type_hash,
             screening_protocol_hash=protocol_hash,
             validation_protocol_hash=protocol.validation_protocol_hash(),
+            hot_protocol=hot_protocol,
             top_k=8,
             deadline=hard_deadline,
             runner_timeout_s=args.runner_timeout,

@@ -1,6 +1,6 @@
 import pytest
 
-from evotensile.database import EvoTensileDB
+from evotensile.database import EvoTensileDB, ValidationInsert
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search.encoding import candidate_to_genome, hamming_distance
 from evotensile.search.family import (
@@ -88,13 +88,18 @@ def test_family_stratified_random_candidates_retry_failed_family(tmp_path):
     failed_family = family_descriptor(initial[0])
     db.register_candidates(initial)
     db.register_shapes([shape])
-    db.insert_evaluation(
-        shape_id=shape.id,
-        candidate_hash=initial[0].hash,
-        run_id="failed",
-        status="validation_fail",
-        problem_type_hash=p_hash,
-        benchmark_protocol_hash=b_hash,
+    db.insert_validations(
+        [
+            ValidationInsert(
+                shape_id=shape.id,
+                candidate_hash=initial[0].hash,
+                run_id="failed",
+                status="failed",
+                problem_type_hash=p_hash,
+                validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
+                detail="FAILED",
+            )
+        ]
     )
 
     followup = family_stratified_random_candidates(
@@ -131,13 +136,18 @@ def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
                 time_us=1.0 + idx,
                 validation="PASSED",
             )
-    db.insert_evaluation(
-        shape_id=shapes[0].id,
-        candidate_hash=candidates[0].hash,
-        run_id="cached",
-        status="validation_fail",
-        problem_type_hash=p_hash,
-        benchmark_protocol_hash=b_hash,
+    db.insert_validations(
+        [
+            ValidationInsert(
+                shape_id=shapes[0].id,
+                candidate_hash=candidates[0].hash,
+                run_id="cached",
+                status="failed",
+                problem_type_hash=p_hash,
+                validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
+                detail="FAILED",
+            )
+        ]
     )
 
     archive = load_family_archive(
@@ -153,7 +163,7 @@ def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
     assert archive[0].samples == 2
     assert archive[0].shape_count == 2
     assert archive[0].status_counts["ok"] >= 2
-    assert archive[0].status_counts["validation_fail"] == 1
+    assert archive[0].status_counts["validation_failed"] == 1
 
 
 def test_load_family_archive_keeps_diverse_quality_bounded_elites_per_family(tmp_path):

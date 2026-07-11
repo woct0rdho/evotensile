@@ -89,6 +89,8 @@ Timing budgets and validation extent are excluded when they do not affect code g
 
 Validation, probe, main benchmark, and adaptive top-up modes always use the same prepared library directory. None of the timing stages invoke TensileLite again.
 
+After final-YAML mapping, the scheduler registers every runnable pair in `candidate_artifacts` with its exact mapped indices, build root, generated solution YAML, library path, and a SHA-256-derived identity over the library contents. Registration failure blocks validation and timing for that prepared batch. Later stabilization, confirmation, and production export use only content-verified registry entries. They do not rediscover artifacts by scanning run directories.
+
 ## Accepted-Solution Mapping
 
 After build/codegen, `build_runnable_pairs()`:
@@ -145,7 +147,7 @@ Correctness evidence has its own validation-protocol hash. It includes:
 
 Timing compatibility uses the benchmark-protocol hash. `NumBenchmarks` remains an execution budget rather than a compatibility field. `BenchmarkRole` distinguishes low-fidelity probe timing from main timing even if their launch settings are configured identically.
 
-A timing row can be produced only for a pair present in the prepared batch's validation-passed set or in compatible cached validation evidence.
+A timing row can be produced only for a pair present in the prepared batch's validation-passed set or whose latest compatible validation row is `passed`. Validation failures are stored only under validation identity. They do not create benchmark-cache negatives. Changing validation backend or extent therefore requests fresh validation instead of reusing an incompatible failure.
 
 ## Validation Backends
 
@@ -180,12 +182,14 @@ Broad search normally uses a cheap main protocol so many candidates can provide 
 
 `hot_confirm_topk()`:
 - ranks screening candidates under the requested main protocol.
-- requires compatible passed validation evidence.
-- resolves each finalist's generated library and mapped solution from run metadata.
-- runs benchmark mode with `20` warmups, `10` samples, and `10` enqueues per sample.
-- writes JSON and CSV rankings without recompilation or repeated validation.
+- requires latest compatible passed validation evidence.
+- resolves each finalist's generated library and mapped solution from the content-verified artifact registry.
+- executes the explicit profile-derived hot protocol through `run_structured_phase()`.
+- validates pair identity, solution index, exact sample indices, finite positive timing, `NO_CHECK`, and return-code consistency through `validate_benchmark_samples()`.
+- records malformed or timed-out finalists in `summary.json` and continues while budget remains.
+- writes JSON and CSV rankings without recompilation, repeated validation, or DB timing insertion.
 
-Confirmation uses `NumElementsToValidate=0` in benchmark mode and relies on the validation table as its correctness gate. The helper is used by real blind campaign tooling described in `docs/blind_experiment_infrastructure.md`. Statistical interpretation of screening and confirmation is documented in `docs/noisy_measurements.md`.
+The blind campaign supplies `20` warmups, `10` samples, and `10` enqueues per sample. Confirmation uses `NumElementsToValidate=0` in benchmark mode and relies on the validation table as its correctness gate. The helper is used by real blind campaign tooling described in `docs/blind_experiment_infrastructure.md`. Statistical interpretation of screening and confirmation is documented in `docs/noisy_measurements.md`.
 
 ## Diagnostic Attribution
 

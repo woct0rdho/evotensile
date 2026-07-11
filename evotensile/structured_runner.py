@@ -62,7 +62,6 @@ class StructuredRunOutput:
 class ValidationOutcome:
     passed_pairs: list[RunnablePair]
     validations: list[ValidationInsert]
-    negative_evaluations: list[EvaluationInsert]
 
 
 def _finite_positive(value: Any) -> bool:
@@ -218,14 +217,12 @@ def validate_validation_samples(
     runnable_pairs: list[RunnablePair],
     problem_type_hash: str,
     validation_protocol_hash: str,
-    benchmark_protocol_hash: str,
     run_id: str,
     runner_returncode: int = 0,
 ) -> ValidationOutcome:
     allowed, grouped = _group_samples(samples, runnable_pairs)
     passed_pairs: list[RunnablePair] = []
     validations: list[ValidationInsert] = []
-    negative: list[EvaluationInsert] = []
     positive_seen = False
 
     for key, pair_samples in grouped.items():
@@ -251,24 +248,10 @@ def validate_validation_samples(
         if passed:
             positive_seen = True
             passed_pairs.append(allowed[key])
-            continue
-        status = sample.status if sample.status not in {"ok", "invalid"} else "validation_fail"
-        negative.append(
-            EvaluationInsert(
-                shape_id=sample.shape_id,
-                candidate_hash=sample.candidate_hash,
-                run_id=run_id,
-                status=status,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
-                validation=sample.validation,
-                solution_index=sample.solution_index,
-            )
-        )
 
     if runner_returncode != 0 and positive_seen:
         raise ValueError(f"validation runner returned {runner_returncode} with positive result rows")
-    return ValidationOutcome(passed_pairs=passed_pairs, validations=validations, negative_evaluations=negative)
+    return ValidationOutcome(passed_pairs=passed_pairs, validations=validations)
 
 
 def validate_benchmark_samples(

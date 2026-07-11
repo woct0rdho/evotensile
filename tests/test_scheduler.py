@@ -25,16 +25,26 @@ def _time_us_for_gflops(shape: Shape, gflops: float) -> float:
     return 2.0 * shape.m * shape.n * shape.batch * shape.k / (gflops * 1e9) * 1e6
 
 
-def _record_validation(db: EvoTensileDB, shape: Shape, candidate_hash: str, detail: str = "PASSED") -> None:
+def _record_validation(
+    db: EvoTensileDB,
+    shape: Shape,
+    candidate_hash: str,
+    detail: str = "PASSED",
+    *,
+    status: str = "passed",
+    validation_protocol_hash: str | None = None,
+) -> None:
     db.insert_validations(
         [
             ValidationInsert(
                 shape_id=shape.id,
                 candidate_hash=candidate_hash,
                 run_id="cached_validation",
-                status="passed",
+                status=status,
                 problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
-                validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
+                validation_protocol_hash=(
+                    validation_protocol_hash or DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
+                ),
                 detail=detail,
             )
         ]
@@ -223,6 +233,111 @@ def test_plan_batches_requires_validation_without_prior_validation_evidence(tmp_
 
     assert len(batches) == 1
     assert batches[0].requires_validation
+
+
+def test_validation_failure_is_scoped_to_validation_protocol(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidate = sample_candidates(1)[0]
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    gpu_vhash = DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
+    cpu_vhash = DEFAULT_PROFILE.default_protocol.with_overrides(validation_backend="cpu").validation_protocol_hash()
+    _record_validation(
+        db,
+        shape,
+        candidate.hash,
+        "FAILED gpu mismatch",
+        status="failed",
+        validation_protocol_hash=gpu_vhash,
+    )
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+        run_id="legacy_failure",
+        status="validation_fail",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+
+    assert (
+        plan_batches(
+            db,
+            shapes=[shape],
+            candidates=[candidate],
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            validation_protocol_hash=gpu_vhash,
+            candidate_batch_size=1,
+            shape_batch_size=1,
+        )
+        == []
+    )
+    cpu_batches = plan_batches(
+        db,
+        shapes=[shape],
+        candidates=[candidate],
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        validation_protocol_hash=cpu_vhash,
+        candidate_batch_size=1,
+        shape_batch_size=1,
+    )
+    assert len(cpu_batches) == 1
+    assert cpu_batches[0].requires_validation
+
+
+def test_latest_validation_result_resolves_pass_fail_conflicts(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidate = sample_candidates(1)[0]
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    v_hash = DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+        run_id="timing",
+        status="ok",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        time_us=1.0,
+        validation="PASSED prior_validation",
+    )
+    _record_validation(db, shape, candidate.hash, "FAILED first", status="failed")
+    _record_validation(db, shape, candidate.hash, "PASSED second")
+
+    pass_batches = plan_batches(
+        db,
+        shapes=[shape],
+        candidates=[candidate],
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        validation_protocol_hash=v_hash,
+        min_samples=2,
+        candidate_batch_size=1,
+        shape_batch_size=1,
+    )
+    assert len(pass_batches) == 1
+    assert not pass_batches[0].requires_validation
+
+    _record_validation(db, shape, candidate.hash, "FAILED latest", status="failed")
+    assert (
+        plan_batches(
+            db,
+            shapes=[shape],
+            candidates=[candidate],
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            validation_protocol_hash=v_hash,
+            min_samples=2,
+            candidate_batch_size=1,
+            shape_batch_size=1,
+        )
+        == []
+    )
 
 
 def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):

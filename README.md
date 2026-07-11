@@ -132,15 +132,26 @@ python3 -m evotensile.cli rank-evals \
   --min-samples 2
 ```
 
-### 5. Update hipBLASLt GridBased Logic
+### 5. Stage hipBLASLt GridBased Logic
 
-Update checked-in hipBLASLt logic YAMLs directly from the SQLite DB. The updater uses the selected profile to locate and retarget supported logic files. No intermediate winner export is required.
+The updater requires the complete profile shape set, latest compatible passed validation for every winner, and a content-verified registered artifact for every winner. It renders every selected variant before writing anything. With no destination option it is a no-write preview:
 
 ```bash
 python3 scripts/update_hipblaslt_gridbased_logic.py \
   --db out/evotensile.sqlite \
   --profile <profile-name>
 ```
+
+Stage the complete variant set outside the hipBLASLt source tree for review:
+
+```bash
+python3 scripts/update_hipblaslt_gridbased_logic.py \
+  --db out/evotensile.sqlite \
+  --profile <profile-name> \
+  --output-dir out/gridbased-logic-staged
+```
+
+After reviewing the staged YAML, use `--write-source` to transactionally replace the selected checked-in files. The updater rolls back all selected variants if any replacement fails. `--allow-partial` is an explicit development-only escape hatch. Normal production export requires exactly the profile shape set and rejects empty, duplicate, missing, or extra mappings.
 
 The updater writes TensileLite-style YAML formatting, retargets solution names, trims generated solution dictionaries to the key schema/order used by existing checked-in GridBased YAMLs, strips benchmark-only embedded `ProblemType`, and applies target-specific build-valid normalizations.
 

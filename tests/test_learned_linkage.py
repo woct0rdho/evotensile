@@ -67,7 +67,7 @@ def test_load_candidate_evidence_uses_shape_local_ranks_and_positive_rows(tmp_pa
         shape_id=shapes[1].id,
         candidate_hash=candidates[2].hash,
         run_id="run",
-        status="validation_fail",
+        status="build_failed",
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
         time_us=0.5,

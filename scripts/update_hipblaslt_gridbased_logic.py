@@ -3,12 +3,15 @@
 import argparse
 import copy
 import json
+import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from evotensile.artifacts import load_candidate_artifacts
 from evotensile.database import EvaluationSummary, EvoTensileDB
 from evotensile.profile import PROFILES, TargetProfile, get_profile
 from evotensile.protocol import BenchmarkProtocol
@@ -79,11 +82,43 @@ def _with_problem_header_bool_style(text: str) -> str:
     )
 
 
-def _write_yaml(path: Path, data: Any) -> None:
-    # Match TensileLite merge/update tools: compact simple lists/dicts such as
-    # [Device 1536] and {MinimumRequiredVersion: 5.0.0}, with stable key order.
+def _render_yaml(data: Any) -> str:
     text = yaml.safe_dump(data, default_flow_style=None, sort_keys=False)
-    path.write_text(_with_problem_header_bool_style(text), encoding="utf-8")
+    return _with_problem_header_bool_style(text)
+
+
+def _write_files_transactionally(rendered_files: dict[Path, str]) -> None:
+    transaction_id = uuid.uuid4().hex
+    staged: dict[Path, Path] = {}
+    backups: dict[Path, Path] = {}
+    committed: set[Path] = set()
+    try:
+        for path, text in rendered_files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            staged_path = path.with_name(f".{path.name}.{transaction_id}.tmp")
+            staged_path.write_text(text, encoding="utf-8")
+            staged[path] = staged_path
+        for path in rendered_files:
+            if path.exists():
+                backup_path = path.with_name(f".{path.name}.{transaction_id}.bak")
+                os.replace(path, backup_path)
+                backups[path] = backup_path
+        for path, staged_path in staged.items():
+            os.replace(staged_path, path)
+            committed.add(path)
+    except Exception:
+        for path in reversed(list(rendered_files)):
+            if path in committed and path.exists():
+                path.unlink()
+            backup_path = backups.get(path)
+            if backup_path is not None and backup_path.exists():
+                os.replace(backup_path, path)
+        raise
+    finally:
+        for staged_path in staged.values():
+            staged_path.unlink(missing_ok=True)
+        for backup_path in backups.values():
+            backup_path.unlink(missing_ok=True)
 
 
 def _protocol_from_args(args: argparse.Namespace, profile: TargetProfile) -> BenchmarkProtocol:
@@ -132,7 +167,46 @@ def _load_winners_from_db(
                 median_gflops=summary.median_gflops,
             )
         )
+    validated = db.validated_cache_entries(
+        problem_type_hash=profile.problem_type_hash,
+        validation_protocol_hash=protocol.validation_protocol_hash(),
+        shape_ids=[winner.shape_id for winner in winners],
+        candidate_hashes=[winner.candidate_hash for winner in winners],
+    )
+    missing = sorted(
+        f"{winner.shape_id}:{winner.candidate_hash}"
+        for winner in winners
+        if (winner.shape_id, winner.candidate_hash) not in validated
+    )
+    if missing:
+        raise ValueError(f"winners lack current passed validation evidence: {', '.join(missing)}")
     return winners
+
+
+def _validate_winner_shape_set(
+    winners: list[Winner],
+    *,
+    profile: TargetProfile,
+    allow_partial: bool,
+) -> dict[str, list[str]]:
+    winner_shape_ids = [winner.shape_id for winner in winners]
+    duplicate_shape_ids = sorted(shape_id for shape_id in set(winner_shape_ids) if winner_shape_ids.count(shape_id) > 1)
+    if duplicate_shape_ids:
+        raise ValueError(f"duplicate winner shapes: {', '.join(duplicate_shape_ids)}")
+    if not winner_shape_ids:
+        raise ValueError("refusing to generate logic without winners")
+
+    expected = {shape.id for shape in profile.shapes()}
+    actual = set(winner_shape_ids)
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    if extra:
+        raise ValueError(f"winner set contains shapes outside profile {profile.name}: {', '.join(extra)}")
+    if missing and not allow_partial:
+        raise ValueError(
+            f"winner set is incomplete for profile {profile.name}: missing {len(missing)} of {len(expected)} shapes"
+        )
+    return {"expected": sorted(expected), "actual": sorted(actual), "missing": missing}
 
 
 def _candidate_params_by_hash(db: EvoTensileDB, winners: list[Winner]) -> dict[str, dict[str, Any]]:
@@ -167,45 +241,6 @@ def _solution_records_from_final_yaml(path: Path) -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict) and "SolutionIndex" in item]
 
 
-def _run_solution_dirs(
-    db: EvoTensileDB,
-    *,
-    profile: TargetProfile,
-    protocol: BenchmarkProtocol,
-    candidate_hashes: list[str],
-) -> list[Path]:
-    if not candidate_hashes:
-        return []
-    placeholders = ",".join("?" for _ in candidate_hashes)
-    with db.connection() as con:
-        rows = con.execute(
-            f"""
-            SELECT DISTINCT r.output_dir
-            FROM evaluations AS e
-            JOIN runs AS r ON r.run_id = e.run_id
-            WHERE e.problem_type_hash = ?
-              AND e.benchmark_protocol_hash = ?
-              AND e.status = 'ok'
-              AND e.time_us IS NOT NULL
-              AND e.time_us > 0
-              AND UPPER(CASE
-                WHEN INSTR(TRIM(COALESCE(e.validation, '')), ' ') = 0
-                  THEN TRIM(COALESCE(e.validation, ''))
-                ELSE SUBSTR(TRIM(COALESCE(e.validation, '')), 1,
-                            INSTR(TRIM(COALESCE(e.validation, '')), ' ') - 1)
-              END) IN ('PASSED', 'OK', 'VALID')
-              AND e.candidate_hash IN ({placeholders})
-              AND r.output_dir IS NOT NULL
-            """,
-            (
-                profile.problem_type_hash,
-                profile.benchmark_protocol_hash(protocol),
-                *candidate_hashes,
-            ),
-        ).fetchall()
-    return sorted({path for row in rows if row["output_dir"] and (path := Path(row["output_dir"])).exists()})
-
-
 def _collect_solution_pool(paths: list[Path]) -> list[dict[str, Any]]:
     solutions: dict[str, dict[str, Any]] = {}
     solution_roots: list[str | Path] = [path for path in paths if path.exists()]
@@ -220,16 +255,6 @@ def _collect_solution_pool(paths: list[Path]) -> list[dict[str, Any]]:
     return list(solutions.values())
 
 
-def _source_solutions_by_index(path: Path) -> dict[int, dict[str, Any]]:
-    out: dict[int, dict[str, Any]] = {}
-    for solution in _solution_records_from_logic(path):
-        if "SolutionIndex" in solution:
-            out[int(solution["SolutionIndex"])] = solution
-    if not out:
-        raise ValueError(f"unsupported source logic YAML layout: {path}")
-    return out
-
-
 def _find_matching_solution(candidate_params: dict[str, Any], solutions: list[dict[str, Any]]) -> dict[str, Any] | None:
     for solution in solutions:
         if solution_matches_candidate(solution, candidate_params):
@@ -242,14 +267,10 @@ def _build_base_solutions(
     winners: list[Winner],
     candidate_params: dict[str, dict[str, Any]],
     artifact_solutions: list[dict[str, Any]],
-    source_hhs_solutions: dict[int, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    source_solutions = list(source_hhs_solutions.values())
     by_candidate: dict[str, dict[str, Any]] = {}
     for candidate_hash, params in candidate_params.items():
         solution = _find_matching_solution(params, artifact_solutions)
-        if solution is None:
-            solution = _find_matching_solution(params, source_solutions)
         if solution is not None:
             by_candidate[candidate_hash] = solution
 
@@ -367,39 +388,52 @@ def update_logic_files(
     profile: TargetProfile,
     protocol: BenchmarkProtocol,
     min_samples: int,
-    extra_solution_dirs: list[Path],
     logic_dir: Path,
     variant_names: list[str],
+    destination_dir: Path | None = None,
+    allow_partial: bool = False,
 ) -> dict[str, Any]:
     db = EvoTensileDB.connect(db_path)
     logic_dir = logic_dir.resolve()
+    destination_dir = destination_dir.resolve() if destination_dir is not None else None
     unknown = sorted(set(variant_names) - set(VARIANTS))
     if unknown:
         raise ValueError(f"unknown variants: {', '.join(unknown)}")
 
     winners = _load_winners_from_db(db, profile=profile, protocol=protocol, min_samples=min_samples)
+    shape_set = _validate_winner_shape_set(winners, profile=profile, allow_partial=allow_partial)
     candidate_params = _candidate_params_by_hash(db, winners)
     candidate_hashes = list(candidate_params)
-    db_solution_dirs = _run_solution_dirs(db, profile=profile, protocol=protocol, candidate_hashes=candidate_hashes)
-    solution_roots = [*db_solution_dirs, *extra_solution_dirs]
-    artifact_solutions = _collect_solution_pool(solution_roots)
+    artifacts = load_candidate_artifacts(
+        db,
+        problem_type_hash=profile.problem_type_hash,
+        shape_ids=[winner.shape_id for winner in winners],
+        candidate_hashes=candidate_hashes,
+    )
+    missing_artifacts = sorted(
+        f"{winner.shape_id}:{winner.candidate_hash}"
+        for winner in winners
+        if (winner.shape_id, winner.candidate_hash) not in artifacts
+    )
+    if missing_artifacts:
+        raise ValueError(f"winners lack complete registered artifacts: {', '.join(missing_artifacts)}")
+    artifact_solution_paths = sorted({path for artifact in artifacts.values() for path in artifact.solution_yaml_paths})
+    artifact_solutions = _collect_solution_pool(artifact_solution_paths)
     solution_key_order = _reference_solution_key_order(logic_dir)
-    source_hhs_path = logic_dir / VARIANTS["hhs"].filename
-    source_hhs_solutions = _source_solutions_by_index(source_hhs_path)
     base_solutions = _build_base_solutions(
         winners=winners,
         candidate_params=candidate_params,
         artifact_solutions=artifact_solutions,
-        source_hhs_solutions=source_hhs_solutions,
     )
 
+    rendered_files: dict[Path, str] = {}
     files: dict[str, Any] = {}
     for variant_name in variant_names:
         variant = VARIANTS[variant_name]
-        path = logic_dir / variant.filename
-        template_data = _load_yaml(path)
+        template_path = logic_dir / variant.filename
+        template_data = _load_yaml(template_path)
         if not isinstance(template_data, list) or len(template_data) < 8:
-            raise ValueError(f"unsupported logic YAML layout: {path}")
+            raise ValueError(f"unsupported logic YAML layout: {template_path}")
         updated, solution_count, exact_count = _update_logic_data(
             template_data=template_data,
             variant=variant,
@@ -407,13 +441,18 @@ def update_logic_files(
             base_solutions=base_solutions,
             solution_key_order=solution_key_order,
         )
-        _write_yaml(path, updated)
+        output_path = (destination_dir / variant.filename) if destination_dir is not None else template_path
+        rendered_files[output_path] = _render_yaml(updated)
         files[variant_name] = {
-            "path": str(path),
+            "template_path": str(template_path),
+            "output_path": str(output_path),
             "solution_count": solution_count,
             "exact_mapping_count": exact_count,
-            "written": True,
+            "written": destination_dir is not None,
         }
+
+    if destination_dir is not None:
+        _write_files_transactionally(rendered_files)
 
     return {
         "db": str(db_path),
@@ -423,10 +462,18 @@ def update_logic_files(
         "protocol": protocol.global_parameters(),
         "min_samples": min_samples,
         "logic_dir": str(logic_dir),
+        "destination_dir": str(destination_dir) if destination_dir is not None else None,
+        "write_mode": "staged"
+        if destination_dir is not None and destination_dir != logic_dir
+        else ("source" if destination_dir is not None else "preview"),
+        "allow_partial": allow_partial,
+        "expected_shape_count": len(shape_set["expected"]),
+        "missing_shape_ids": shape_set["missing"],
         "shape_count": len(winners),
         "candidate_count": len(candidate_params),
-        "db_solution_dir_count": len(db_solution_dirs),
-        "extra_solution_dirs": [str(path) for path in extra_solution_dirs],
+        "registered_artifact_count": len(artifacts),
+        "artifact_identities": sorted({artifact.code_object_identity for artifact in artifacts.values()}),
+        "artifact_solution_paths": [str(path) for path in artifact_solution_paths],
         "artifact_solution_pool_count": len(artifact_solutions),
         "reference_solution_key_count": len(solution_key_order),
         "files": files,
@@ -444,13 +491,17 @@ def main() -> int:
     parser.add_argument("--enqueues-per-sync", type=int, default=None)
     parser.add_argument("--syncs-per-benchmark", type=int, default=None)
     parser.add_argument("--num-elements-to-validate", type=int, default=None)
-    parser.add_argument("--solution-dir", type=Path, action="append", default=[])
     parser.add_argument("--logic-dir", type=Path, default=DEFAULT_LOGIC_DIR)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--write-source", action="store_true")
+    parser.add_argument("--allow-partial", action="store_true")
     parser.add_argument("--variant", action="append", choices=sorted(VARIANTS), default=[])
     args = parser.parse_args()
 
     if not args.db.exists():
         raise FileNotFoundError(args.db)
+    if args.output_dir is not None and args.write_source:
+        parser.error("--output-dir and --write-source are mutually exclusive")
     profile = get_profile(args.profile)
     protocol = _protocol_from_args(args, profile)
     variant_names = args.variant or ["hhs", "hhs_auxh", "bbs", "bbs_auxb"]
@@ -459,9 +510,10 @@ def main() -> int:
         profile=profile,
         protocol=protocol,
         min_samples=args.min_samples,
-        extra_solution_dirs=args.solution_dir,
         logic_dir=args.logic_dir,
         variant_names=variant_names,
+        destination_dir=args.logic_dir if args.write_source else args.output_dir,
+        allow_partial=args.allow_partial,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
