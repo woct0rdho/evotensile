@@ -2,20 +2,6 @@
 
 ## Production-Grid Search Quality And Scaling Findings
 
-### G3. Screening Stabilization Is One-Shape-Specific And Its Duration Default Does Not Scale
-
-Affected code:
-- `evotensile/search/screening_stabilize.py`
-
-The helper accepts exactly one shape and scans all artifact history for every call.
-
-The default requests at least 100,000 microseconds of accumulated timed kernel duration but caps samples at 10. Any kernel faster than 10,000 microseconds cannot reach the duration target. Most small production-grid shapes will hit the cap without satisfying the stated reliability criterion.
-
-Recommended correction:
-- Use launch count, timer resolution, observed variance, and total runner duration as separate controls.
-- Report when a duration target is unattainable under the sample cap.
-- Support per-shape/cluster finalist queues rather than one global one-shape top-k.
-
 ### Monolithic Responsibilities
 
 - `scripts/run_blind_one_shape.py` still combines configuration, proposal orchestration, checkpoint serialization, resume, soft-budget accounting, execution, stabilization, diagnostics, and confirmation.
@@ -27,16 +13,6 @@ Recommended extraction:
 - evidence snapshot and acquisition interfaces.
 - preparation-wave executor.
 - serialized timing allocator.
-
-## Documentation Issues
-
-### Documentation That Overstates Current Behavior
-
-- `docs/database.md` says validation identity includes validator version. It contains a manually incremented protocol version, but not the structured-runner binary, hipBLASLt version, ROCm version, GPU identity, or generated-library identity.
-
-### Stale Artifact References
-
-`docs/blind_one_shape_experiment.md` still lists removed paths under its artifact section, including prior blind campaigns, aggregate analysis, and failed-attempt summaries. The chronological results can remain, but retained-artifact lists should contain only existing files or clearly label pruned paths as historical.
 
 ## Final Recommendation
 

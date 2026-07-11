@@ -9,12 +9,15 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from evotensile.adaptive_retime import load_timing_stats
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.metrics import gflops_from_us
 from evotensile.profile import DEFAULT_PROFILE
+from evotensile.protocol import BenchmarkProtocol
 from evotensile.search.campaign_control import convergence_detected, population_diagnostics, split_budget
 from evotensile.search.evidence import load_proposal_evidence_snapshot
+from evotensile.search.screening_stabilize import ScreeningStabilizationPolicy, plan_screening_stabilization
 from evotensile.search.surrogate import select_surrogate_pool
 
 
@@ -40,10 +43,15 @@ class ReplayCostModel:
     hot_reserve_s: float = 60.0
     probe_max_slowdown_factor: float = 4.0
     probe_min_survivors: int = 8
-    leader_stabilization_samples: int = 6
-    leader_stabilization_max_samples: int = 10
-    leader_stabilization_top_k: int = 4
-    leader_min_timed_duration_us: float = 100_000.0
+    stabilization_protocol: BenchmarkProtocol = field(
+        default_factory=lambda: BenchmarkProtocol(
+            num_warmups=1,
+            num_benchmarks=2,
+            enqueues_per_sync=1,
+            syncs_per_benchmark=1,
+        )
+    )
+    stabilization_policy: ScreeningStabilizationPolicy = field(default_factory=ScreeningStabilizationPolicy)
 
 
 @dataclass
@@ -447,27 +455,25 @@ def simulate_candidate_stream(
             stabilized_candidates = 0
             stabilization_samples = 0
             if leader_stabilization:
-                leaders = db.rank_evaluations(
+                stats_by_shape = load_timing_stats(
+                    db,
                     problem_type_hash=problem_type_hash,
-                    benchmark_protocol_hash=benchmark_protocol_hash,
-                    shape_id=shape.id,
-                    min_samples=2,
-                    limit=cost.leader_stabilization_top_k,
+                    benchmark_protocol_hashes=[benchmark_protocol_hash],
+                    min_samples=1,
+                    shape_ids={shape.id},
                 )
-                for summary in leaders:
-                    record = oracle.get(summary.candidate_hash)
+                stabilization_plan = plan_screening_stabilization(
+                    stats_by_shape,
+                    shapes=[shape],
+                    protocol=cost.stabilization_protocol,
+                    policy=cost.stabilization_policy,
+                )
+                for request in stabilization_plan.requests:
+                    record = oracle.get(request.candidate_hash)
                     if record is None or record.screening_gflops is None or record.screening_gflops <= 0.0:
                         continue
                     launch_seconds = _launch_seconds(shape, record.screening_gflops)
-                    duration_target = math.ceil(cost.leader_min_timed_duration_us / max(launch_seconds * 1e6, 1.0))
-                    target_samples = min(
-                        cost.leader_stabilization_max_samples,
-                        max(cost.leader_stabilization_samples, duration_target),
-                    )
-                    remaining = max(0, target_samples - summary.samples)
-                    if remaining <= 0:
-                        continue
-                    topup_cost = (remaining + 1) * launch_seconds
+                    topup_cost = (request.remaining_samples + 1) * launch_seconds
                     if result.simulated_time_s + topup_cost > search_time_limit:
                         continue
                     result.simulated_time_s += topup_cost
@@ -477,10 +483,10 @@ def simulate_candidate_stream(
                         record=record,
                         problem_type_hash=problem_type_hash,
                         benchmark_protocol_hash=benchmark_protocol_hash,
-                        samples=remaining,
+                        samples=request.remaining_samples,
                     )
                     stabilized_candidates += 1
-                    stabilization_samples += remaining
+                    stabilization_samples += request.remaining_samples
             if result.best_screening_gflops is not None:
                 best_history.append(result.best_screening_gflops)
             diagnostics = population_diagnostics(

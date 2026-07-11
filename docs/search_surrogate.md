@@ -147,6 +147,6 @@ Current limitations include:
 - acquisition weights and shortlist fractions are fixed rather than cost-adaptive.
 - uncertainty is ensemble disagreement, not a calibrated posterior interval.
 - there is no cross-campaign transfer model beyond evidence explicitly present in the DB.
-- campaign-level screening stabilization improves a few global contenders but is not a general surrogate-training fidelity policy.
+- campaign-level screening stabilization improves bounded per-shape contenders but is not a general surrogate-training fidelity policy.
 
 Screening stabilization is documented in `docs/search_screening_stabilization.md`.

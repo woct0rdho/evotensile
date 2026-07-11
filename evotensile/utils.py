@@ -1,10 +1,7 @@
 import math
 from collections.abc import Iterable
-from typing import TypeVar
 
 from .candidate import Candidate
-
-T = TypeVar("T")
 
 
 def dedupe_candidates(candidates: Iterable[Candidate]) -> list[Candidate]:
