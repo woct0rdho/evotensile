@@ -159,7 +159,7 @@ def population_diagnostics(
     candidates: Sequence[Candidate],
     shape: Shape,
     *,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> PopulationDiagnostics:
     deduped = list({candidate.hash: candidate for candidate in candidates}.values())
     if not deduped:
@@ -172,7 +172,7 @@ def population_diagnostics(
             mechanical_coverage_tokens(
                 candidate,
                 shape,
-                effective_cu_count=effective_cu_count,
+                workgroup_processor_count=workgroup_processor_count,
             )
             for candidate in deduped
         )

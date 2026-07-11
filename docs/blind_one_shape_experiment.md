@@ -201,7 +201,7 @@ After termination, even a singleton from a previously successful library could n
 
 This attempt was stopped after about `135s` before round zero completed. The exact-MI cold selector had chosen two `16x16` workgroups requiring about `8.7-9.0s` per launch. Their six launches consumed about `53s` of one `55.0s` probe batch. The next policy revision removed exact MI identities from coverage, added the soft dispatch-efficiency prior, and staged the probe so the slow tail received one launch before screening.
 
-For the same seed, the revised cold pool increased mechanical-token coverage from `226` to `236`, retained `42` rather than `44` distinct MatrixInstruction values, removed all five single-instruction workgroups, reduced median CU rounds from `740` to `276`, and raised median macro-tile area from `4608` to `12288`.
+For the same seed, the revised cold pool increased mechanical-token coverage from `226` to `236`, retained `42` rather than `44` distinct MatrixInstruction values, removed all five single-instruction workgroups, reduced median WGP rounds from `740` to `276`, and raised median macro-tile area from `4608` to `12288`.
 
 ### Attempt 3: Completed Corrected Campaign
 

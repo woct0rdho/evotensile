@@ -405,7 +405,7 @@ def test_cost_aware_prepare_order_does_not_change_timing_order(tmp_path: Path, m
     monkeypatch.setattr(
         scheduler_module,
         "predicted_batch_prepare_weight",
-        lambda batch_candidates, shapes, effective_cu_count: weights[batch_candidates[0].hash],
+        lambda batch_candidates, shapes, workgroup_processor_count: weights[batch_candidates[0].hash],
     )
 
     result = execute_schedule(

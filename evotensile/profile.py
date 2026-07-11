@@ -26,6 +26,9 @@ class TargetProfile:
     library_logic: dict[str, Any]
     default_protocol: BenchmarkProtocol
     shapes_fn: Callable[[], list[Shape]]
+    compute_unit_count: int
+    workgroup_processor_count: int
+    compute_units_per_workgroup_processor: int
     default_proposal: str = "seed-random-gomea"
     default_num_random: int = 64
     default_elite_count: int = 8
@@ -43,10 +46,17 @@ class TargetProfile:
     default_prepare_wave_batches: int = 32
     default_validation_workers: int = 1
     default_surrogate_jobs: int = 1
-    effective_cu_count: int = 20
     default_runner_bin: str = "./build/evotensile-structured-runner"
     default_build_timeout_s: float | None = 1800.0
     default_runner_timeout_s: float | None = 600.0
+
+    def __post_init__(self) -> None:
+        if self.compute_unit_count <= 0 or self.workgroup_processor_count <= 0:
+            raise ValueError("hardware execution-unit counts must be positive")
+        if self.compute_units_per_workgroup_processor <= 0:
+            raise ValueError("compute units per work-group processor must be positive")
+        if self.compute_unit_count != (self.workgroup_processor_count * self.compute_units_per_workgroup_processor):
+            raise ValueError("compute-unit and work-group-processor topology is inconsistent")
 
     @property
     def problem_type_hash(self) -> str:
@@ -71,6 +81,9 @@ GFX1151_NT_HHS = TargetProfile(
     library_logic=LIBRARY_LOGIC_GRIDBASED_GFX1151,
     default_protocol=DEFAULT_BENCHMARK_PROTOCOL,
     shapes_fn=pilot_100_shapes,
+    compute_unit_count=40,
+    workgroup_processor_count=20,
+    compute_units_per_workgroup_processor=2,
 )
 
 PROFILES = {GFX1151_NT_HHS.name: GFX1151_NT_HHS}

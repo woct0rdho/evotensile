@@ -95,12 +95,12 @@ def candidate_shape_features(
     candidate: Candidate,
     shape: Shape,
     *,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> dict[str, float | str]:
     params = candidate.canonical_params()
     macro_tile0, macro_tile1 = macro_tile(params["MatrixInstruction"])
     workgroup_threads = math.prod(params["WorkGroup"])
-    mechanics = candidate_shape_mechanics(candidate, shape, effective_cu_count=effective_cu_count)
+    mechanics = candidate_shape_mechanics(candidate, shape, workgroup_processor_count=workgroup_processor_count)
     features: dict[str, float | str] = {
         f"gene:{name}": json.dumps(params[name], sort_keys=True, separators=(",", ":")) for name in PARAM_NAMES
     }
@@ -121,9 +121,9 @@ def candidate_shape_features(
             "tile:fill_n": mechanics["tile_fill_n"],
             "grid:log2_tiles": math.log2(mechanics["output_tiles"]),
             "grid:log2_workgroups": math.log2(mechanics["workgroups"]),
-            "grid:tiles_per_cu": mechanics["tiles_per_cu"],
-            "grid:log2_cu_rounds": math.log2(mechanics["cu_rounds"]),
-            "grid:cu_granularity": mechanics["cu_granularity"],
+            "grid:workgroups_per_wgp": mechanics["workgroups_per_wgp"],
+            "grid:log2_wgp_rounds": math.log2(mechanics["wgp_rounds"]),
+            "grid:wgp_granularity": mechanics["wgp_granularity"],
             "reduction:log2_iterations": math.log2(mechanics["reduction_iterations"]),
             "reduction:k_fill": mechanics["k_fill"],
             "workgroup:log2_threads": math.log2(workgroup_threads),
@@ -150,7 +150,7 @@ def _training_observations(
     snapshot: ProposalEvidenceSnapshot,
     *,
     shapes: Sequence[Shape] | None,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> list[TrainingObservation]:
     allowed_shapes = {shape.id: shape for shape in shapes} if shapes is not None else {}
     summaries = snapshot.summaries
@@ -172,7 +172,7 @@ def _training_observations(
                 features=candidate_shape_features(
                     candidate,
                     shape,
-                    effective_cu_count=effective_cu_count,
+                    workgroup_processor_count=workgroup_processor_count,
                 ),
                 log_time=math.log(summary.median_time_us),
             )
@@ -242,7 +242,7 @@ def _grid_predictions(
     shapes: Sequence[Shape],
     models: Mapping[str, ExtraTreesSurrogate],
     incumbents: Mapping[str, float],
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> list[GridCandidatePrediction]:
     predictions_by_hash: dict[str, list[ShapePrediction]] = {candidate.hash: [] for candidate in candidates}
     for shape in shapes:
@@ -254,7 +254,7 @@ def _grid_predictions(
                 candidate_shape_features(
                     candidate,
                     shape,
-                    effective_cu_count=effective_cu_count,
+                    workgroup_processor_count=workgroup_processor_count,
                 )
                 for candidate in candidates
             ]
@@ -332,13 +332,13 @@ def _unresolved_shape_order(
     candidates: Sequence[Candidate],
     shapes: Sequence[Shape],
     *,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> list[Candidate]:
     queues = [
         sorted(
             candidates,
             key=lambda candidate: (
-                -mechanical_prior_score(candidate, shape, effective_cu_count=effective_cu_count),
+                -mechanical_prior_score(candidate, shape, workgroup_processor_count=workgroup_processor_count),
                 candidate.hash,
             ),
         )
@@ -374,7 +374,7 @@ def select_surrogate_pool(
     covering_cold_start: bool = False,
     cold_start_precovered_tokens: set[str] | None = None,
     surrogate_jobs: int,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> list[Candidate]:
     deduped = list({candidate.hash: candidate for candidate in candidates}.values())
     if count <= 0:
@@ -386,7 +386,7 @@ def select_surrogate_pool(
     observations = _training_observations(
         evidence,
         shapes=shapes,
-        effective_cu_count=effective_cu_count,
+        workgroup_processor_count=workgroup_processor_count,
     )
     models, incumbents = _shape_models(
         observations,
@@ -403,7 +403,7 @@ def select_surrogate_pool(
                 count=count,
                 seed=seed,
                 precovered_tokens=cold_start_precovered_tokens,
-                effective_cu_count=effective_cu_count,
+                workgroup_processor_count=workgroup_processor_count,
             )
         if len(shapes) > 1:
             selected: list[Candidate] = []
@@ -412,7 +412,7 @@ def select_surrogate_pool(
                 _unresolved_shape_order(
                     deduped,
                     shapes,
-                    effective_cu_count=effective_cu_count,
+                    workgroup_processor_count=workgroup_processor_count,
                 ),
                 max(1, count // 2),
             )
@@ -426,7 +426,7 @@ def select_surrogate_pool(
         shapes=shapes,
         models=models,
         incumbents=incumbents,
-        effective_cu_count=effective_cu_count,
+        workgroup_processor_count=workgroup_processor_count,
     )
     specialist_count = max(1, int(count * 0.35))
     generalist_count = max(1, int(count * 0.25))
@@ -460,7 +460,7 @@ def select_surrogate_pool(
             _unresolved_shape_order(
                 deduped,
                 unresolved_shapes,
-                effective_cu_count=effective_cu_count,
+                workgroup_processor_count=workgroup_processor_count,
             ),
             specialist_count + generalist_count + uncertainty_count + unresolved_count,
         )

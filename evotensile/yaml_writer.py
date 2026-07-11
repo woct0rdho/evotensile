@@ -84,9 +84,9 @@ DEFAULT_GLOBAL_PARAMETERS: dict[str, Any] = {
 LIBRARY_LOGIC_GRIDBASED_GFX1151: dict[str, Any] = {
     "ScheduleName": "gfx1151",
     "DeviceNames": ["Device 150e", "Device 150f", "Device 1510", "Device 1511"],
-    # Keep CUCount out of the generated logic predicate: Strix Halo gfx1151 can
-    # report 20 CUs, while some source examples use 16. A CUCount predicate makes
-    # TensileLite's post-benchmark library-client pass print WRONG_HARDWARE/nan.
+    # Keep CUCount out of the generated logic predicate. gfx1151 has 40 physical
+    # CUs, but HIP in RDNA WGP mode reports 20 multi-processors (one per 2-CU WGP).
+    # A predicate tied to either ambiguous count can produce WRONG_HARDWARE/nan.
     "ArchitectureName": "gfx1151",
     "LibraryType": "GridBased",
 }

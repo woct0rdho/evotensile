@@ -349,7 +349,7 @@ def _propose_candidates_for_shapes(
         adaptive_donor_selection=args.adaptive_donor_selection,
         cost_aware_operator_credit=args.cost_aware_operator_credit,
         surrogate_jobs=getattr(args, "surrogate_jobs", _profile(args).default_surrogate_jobs),
-        effective_cu_count=_profile(args).effective_cu_count,
+        workgroup_processor_count=_profile(args).workgroup_processor_count,
     )
     return list(proposal.selected)
 
@@ -520,7 +520,9 @@ def _schedule_metadata_common(
         "prepare_wave_batches": args.prepare_wave_batches,
         "validation_workers": args.validation_workers,
         "surrogate_jobs": args.surrogate_jobs,
-        "effective_cu_count": context.profile.effective_cu_count,
+        "compute_unit_count": context.profile.compute_unit_count,
+        "workgroup_processor_count": context.profile.workgroup_processor_count,
+        "compute_units_per_workgroup_processor": context.profile.compute_units_per_workgroup_processor,
         "compile_cache_root": None
         if args.no_compile_cache
         else str(args.compile_cache_dir or Path(args.output_dir) / "compile_cache"),

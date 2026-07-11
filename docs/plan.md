@@ -107,7 +107,7 @@ Implemented proposal scopes, shape-normalized parent and transfer selection, gri
 
 ### Staged Shape Evaluation
 
-Add a production controller that clusters shapes by mechanical behavior rather than only raw dimension distance. Clustering inputs should include aspect, batch and K regimes, arithmetic intensity, tile efficiency across macro-tile families, CU-round behavior, and compatible coarse kernel families.
+Add a production controller that clusters shapes by mechanical behavior rather than only raw dimension distance. Clustering inputs should include aspect, batch and K regimes, arithmetic intensity, tile efficiency across macro-tile families, WGP-round behavior, and compatible coarse kernel families.
 
 The controller should:
 - choose representative or medoid shapes for each cluster.

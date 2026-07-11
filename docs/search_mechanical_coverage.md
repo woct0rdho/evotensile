@@ -14,14 +14,14 @@ Every selected candidate still follows normal linked repair, source-backed rule 
 
 ## Candidate-Shape Mechanics
 
-`candidate_shape_mechanics()` projects one complete candidate and one shape into generic execution features. Effective CU count is required explicitly and comes from the selected target profile. gfx1151 uses `20`. Generic helpers do not silently import a target-specific hardware value.
+`candidate_shape_mechanics()` projects one complete candidate and one shape into generic execution features. Work-group-processor count is required explicitly and comes from the selected target profile. On this gfx1151 system, `rocminfo` and KFD report 40 physical CUs (`80` SIMDs with `2` SIMDs/CU), while HIP reports `multiProcessorCount=20` because RDNA runs in WGP mode. A direct probe also returns `20` from `hipDeviceAttributePhysicalMultiProcessorCount`. Despite that attribute's name, it must not be treated as the physical-CU count on this target. Each WGP contains two CUs and is the scheduling/resource-sharing unit for one WMMA workgroup, so dispatch mechanics use `20` WGPs. The profile separately records 40 physical CUs for compute-capacity facts. Generic helpers do not silently import either target-specific value.
 
 Tile and dispatch features include:
 - M and N tile fill.
 - output tile count.
 - GSU-expanded workgroup count.
-- tiles per effective CU.
-- integer CU rounds and final-round CU granularity.
+- workgroups per WGP.
+- integer WGP rounds and final-round WGP granularity.
 - workgroup threads and waves.
 - macro-tile area, one-instruction output area, and their ratio.
 - WMMA wave-tile area and wave-group size.
@@ -47,7 +47,7 @@ dispatch_efficiency = 1 - 1 / sqrt(max(1, workgroup_tile_multiple))
 
 A workgroup that covers only one instruction output tile receives zero dispatch-efficiency contribution. Larger workgroups approach one smoothly. This is a ranking term, not a hard minimum macro-tile rule.
 
-`mechanical_prior_score()` multiplies tile fill, CU granularity, minimum parallel depth, K fill, and dispatch efficiency, then adds small VGPR and LDS headroom terms. The score is used only inside cold-start selection.
+`mechanical_prior_score()` multiplies tile fill, WGP granularity, minimum parallel depth, K fill, and dispatch efficiency, then adds small VGPR and LDS headroom terms. The score is used only inside cold-start selection.
 
 ## Coverage Tokens
 
@@ -55,7 +55,7 @@ A workgroup that covers only one instruction output tile receives zero dispatch-
 - coarse family descriptor.
 - WMMA wave-tile and wave-group geometry.
 - macro-area and macro-aspect log buckets.
-- CU-round and CU-granularity buckets.
+- WGP-round and WGP-granularity buckets.
 - wave count and K-fill bucket.
 - LDS and VGPR fraction buckets.
 - exact marginal values for every parameter except `MatrixInstruction`.

@@ -22,7 +22,7 @@ A new campaign writes `campaign_configuration.json` before measurement. One immu
 - seed, shape, profile, problem identity, proposal mode/counts/operator controls, linkage settings, and profile mutation rates.
 - screening, validation, probe, adaptive-retiming, stabilization, and hot-confirmation protocols.
 - sample limits, round limits, restart/convergence controls, soft search budget, and confirmation reserve.
-- batch sizes, compile threads, preparation/validation concurrency, cache behavior, and timeouts.
+- batch sizes, compile threads, preparation/validation concurrency, cache behavior, timeouts, and explicit physical-CU/WGP topology.
 - absolute runner and TensileLite paths, SHA-256 content/source fingerprints, the EvoTensile implementation fingerprint, and behavior-affecting environment variables.
 
 The current defaults remain `48` cold candidates, `24` requested feedback candidates, six isolated rounds, `16` island-local elites, `32` merged elites, an `8x` pool, `32` preparation workers, a `32`-batch preparation wave, one validation worker, and a `60s` confirmation reserve.

@@ -776,7 +776,7 @@ def propose_candidates(
     adaptive_donor_selection: bool = False,
     cost_aware_operator_credit: bool = False,
     surrogate_jobs: int | None = None,
-    effective_cu_count: int | None = None,
+    workgroup_processor_count: int | None = None,
     parent_candidates: Sequence[Candidate] | None = None,
     cold_start_precovered_tokens: set[str] | None = None,
 ) -> ProposalResult:
@@ -795,7 +795,9 @@ def propose_candidates(
     crossover_rate = target_profile.default_crossover_rate if crossover_rate is None else crossover_rate
     random_gene_rate = target_profile.default_random_gene_rate if random_gene_rate is None else random_gene_rate
     surrogate_jobs = target_profile.default_surrogate_jobs if surrogate_jobs is None else surrogate_jobs
-    effective_cu_count = target_profile.effective_cu_count if effective_cu_count is None else effective_cu_count
+    workgroup_processor_count = (
+        target_profile.workgroup_processor_count if workgroup_processor_count is None else workgroup_processor_count
+    )
     if proposal not in PROPOSAL_MODES:
         raise ValueError(f"unknown proposal mode: {proposal}")
     evidence = load_proposal_evidence_snapshot(
@@ -1040,7 +1042,7 @@ def propose_candidates(
             covering_cold_start=covering_cold_start,
             cold_start_precovered_tokens=cold_start_precovered_tokens,
             surrogate_jobs=surrogate_jobs,
-            effective_cu_count=effective_cu_count,
+            workgroup_processor_count=workgroup_processor_count,
         )
         selected = dedupe_candidates(
             [*preserved, *(scoped_generated[candidate.hash] for candidate in selected_generated)]
@@ -2173,7 +2175,7 @@ def execute_schedule(
                 -predicted_batch_prepare_weight(
                     batch.candidates,
                     batch.shapes,
-                    effective_cu_count=target_profile.effective_cu_count,
+                    workgroup_processor_count=target_profile.workgroup_processor_count,
                 ),
                 batch.batch_index,
             ),
