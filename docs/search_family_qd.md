@@ -42,12 +42,12 @@ Descriptor design rules:
 `family_stratified_random_candidates()` targets coarse family cells rather than accepting whichever cells ordinary random sampling happens to produce.
 
 The sampler:
-- enumerates compatible family cells for the target shapes.
+- enumerates the broad family cells, including every GSU value in the domain.
 - loads prior attempt counts from the active DB and protocol.
 - prioritizes cells with insufficient occupancy.
 - retries a negative-only cell once before treating its evidence as representative.
 - constructs candidates through the normal broad random generator and linked repair path.
-- applies shape-dependent cheap constraints before returning proposals.
+- requires each proposal to be eligible for at least one shape in its declared scope.
 - falls back to ordinary shape-aware random generation when necessary.
 
 The NT HHS random generator keeps compatible TLDS0 and TLDS2 construction branches balanced. This is a proposal policy, not a validity restriction.
@@ -62,10 +62,18 @@ An optional one-shape covering cold selector operates after stratified generatio
 
 Positive archive scoring uses validation-passed `status='ok'` timing evidence under the requested problem and benchmark protocol. For multi-shape evidence, candidates are compared using shape-local rank percentiles rather than pooled absolute time or GFLOP/s.
 
+Each archive query requires one explicit objective:
+- `specialist`: best observed shape-local percentile, with sparse evidence winning ties.
+- `generalist`: mean percentile with every unresolved target shape imputed at worst percentile.
+- `coverage`: measured target-shape coverage fraction.
+- `uncertainty`: unresolved target-shape coverage, prioritizing candidates with sparse evidence.
+
+Family-QD breeding requests all four objectives and drains their leader lists round-robin under the global `elite_count` cap. One-shape search yields equivalent specialist/generalist/coverage ordering and has no unresolved-shape ambiguity. Learned linkage explicitly consumes the generalist score.
+
 Each archive entry records:
-- descriptor and descriptor version.
-- candidate and aggregate score.
-- timing sample count and represented shape count.
+- descriptor, descriptor version, and objective.
+- candidate, selected objective score, specialist score, and generalist score.
+- timing sample count, represented shape count, coverage fraction, and unresolved-shape count.
 - observed candidate count for the cell.
 - family-level build, rejection, and validation status counts.
 - rank inside the family.
@@ -73,12 +81,14 @@ Each archive entry records:
 
 Negative statuses are health and audit evidence. They do not teach positive performance linkage and do not create new hard invalidity rules.
 
+This is a search-time breeding archive, not a deployment solution bank. It preserves specialist, generalist, coverage, and unresolved-evidence lanes during proposal generation, but it does not minimize the final number of code objects or apply a performance-loss tolerance. Confidence-aware final retiming, tolerance-aware set cover, and final pair revalidation remain downstream deployment work.
+
 ## Diverse Multi-Elite Selection
 
 A family cell keeps up to four elites by default.
 
 Selection proceeds as follows:
-- Select the best candidate by aggregate score, then sample count and shape coverage.
+- Select the best candidate by the requested objective score, objective-specific coverage tie-break, and sample count.
 - Define a quality window relative to that leader. The default score slack is `0.25`.
 - Within the quality window, choose the candidate with maximum minimum Hamming distance from already selected elites.
 - Break ties by quality, evidence count, shape count, and candidate hash.

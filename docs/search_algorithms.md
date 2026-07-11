@@ -49,9 +49,13 @@ The default profile proposal is `seed-random-gomea`.
 
 `family-qd` is the family-aware quality-diversity proposal mode. Its descriptors, archive, and stratified initialization are documented in `docs/search_family_qd.md`.
 
+### Proposal Scope
+
+Every proposal has an explicit global, one-shape, cluster, or shape-set scope. Generated candidates must pass global rules and have at least one eligible `(shape, candidate)` pair in a non-global scope. They do not need to satisfy every shape in a cluster or shape set. Pair-specific rejection remains authoritative in the scheduler. Scope kind and shape IDs are recorded in proposal results, generated-candidate lineage, CLI metadata, and campaign proposal events without changing candidate identity. One-shape search is the one-element special case.
+
 ### Random
 
-Random proposal samples from the target `DOMAINS`, applies linked repairs, and rejects candidates with known invalid rules. When target shapes are known, random generation also enforces shape-dependent cheap constraints before returning a candidate.
+Random proposal samples from the target `DOMAINS`, applies linked repairs, and rejects candidates with known invalid rules. When a shape scope is declared, random generation requires at least one eligible pair in that scope. GSU is sampled from the full domain and shape viability decides whether the candidate can proceed.
 
 The current NT HHS generator samples the compatible TLDS0 and TLDS2 construction branches with equal probability and applies a proposal-side VALU register headroom check. Branch balance and headroom are proposal policies, not validity rules.
 
@@ -109,7 +113,7 @@ gomea-neighborhood
 gomea-mixing
 ```
 
-The scheduler loads compatible child-versus-parent timing outcomes and allocates the variation budget with a UCB-style score. Every arm retains minimum exploration when budget permits. Optional semantic-group and donor-mode credit use persisted proposal metadata, and optional cost-aware credit scales UCB scores from measured proposal/evaluation cost.
+The scheduler loads compatible event-level child-versus-parent timing outcomes and allocates the variation budget with a UCB-style score. Correlated shape comparisons are workload-weighted within one proposal-occurrence trial, and evaluation cost is charged once per occurrence. Every arm retains minimum exploration when budget permits. Optional semantic-group and donor-mode credit use append-only occurrence metadata, so later appearances of an existing candidate hash remain attributable, and optional cost-aware credit scales UCB scores from measured proposal/evaluation cost.
 
 The portfolio changes proposal counts and proposal ordering only. It does not change validity, measurement, or ranking. See `docs/search_operator_portfolio.md` and `docs/search_cost_model.md`.
 
@@ -117,20 +121,23 @@ The portfolio changes proposal counts and proposal ordering only. It does not ch
 
 `--surrogate-pool-multiplier N` generates `N` times the configured random and variation budget, then shortlists the original requested measurement count.
 
-After at least `--surrogate-min-evidence` compatible positive rows, an ExtraTrees model predicts log median time and ensemble uncertainty from candidate, shape, tile, vectorization, and resource features. The shortlist mixes exploitation, uncertainty, family diversity, and random exploration. Before enough evidence exists, selection falls back to family-diverse round-robin sampling.
+After at least `--surrogate-min-evidence` unique varied candidates on a shape, a shape-local ExtraTrees model predicts log median time and ensemble disagreement from candidate, shape, tile, vectorization, and resource features. Multi-shape acquisition compares predictions with each shape incumbent and separates complementary specialist gain, broad generalist regret, epistemic uncertainty, unresolved-shape mechanics, family diversity, and random exploration. Before any shape has enough evidence, multi-shape selection combines per-shape mechanical priority with family-diverse round-robin sampling.
 
 Archive and transfer parents are preserved outside the generated-candidate shortlist. Before enough model evidence exists, an opt-in one-shape covering selector can use decomposed mechanical coverage instead of the default family round-robin fallback. The default multiplier is `1`, so oversized shortlisting remains opt-in. See `docs/search_surrogate.md` and `docs/search_mechanical_coverage.md`.
 
 ## Elite And Transfer Sources
 
-Proposal modes that need parents load validation-passed DB elites through `rank_evaluations()`.
+Proposal modes that need one-shape parents load that shape's validation-passed DB ranking directly. Multi-shape parent selection never pools absolute latency. Half of the available parent lane is filled round-robin from shape-local specialist rankings. The remainder prefers candidates with broad measured coverage and low mean incumbent-normalized regret. One-shape search is the one-ranking special case.
 
-For multi-shape schedules, the scheduler can also seed from nearest previously tuned shapes:
-- `--transfer-shapes` controls how many nearest source shapes are considered.
+For scoped schedules, the scheduler can also seed from nearest previously tuned shapes:
+- `--transfer-shapes` controls the nearest source-shape depth considered independently for each target.
 - `--transfer-per-shape` controls how many top candidates are copied from each source shape.
 - Shape distance uses Euclidean distance in `log2(M)`, `log2(N)`, `log2(K)`, `log2(M/N)`, `log2(K/M)`, and `log2(K/N)`.
+- Per-target candidate queues are drained round-robin, deduplicated, and bounded by one global transfer cap.
 
-Transfer candidates are inserted before random restarts so they are retained when candidate lists are truncated or batch budgets are tight.
+Transfer candidates record the target and source shape IDs that caused selection. Target lanes are ordered by deterministic farthest-point mechanical coverage, then drained round-robin under one global cap so input or lexical shape order cannot monopolize a small transfer budget. They are inserted before random restarts so they are retained when candidate lists are truncated or batch budgets are tight.
+
+A `cluster` proposal scope is an explicit label and shape set. It does not itself discover clusters, select medoids, stage representative-first evaluation, or promote candidates to unmeasured members. Those actions require the production grid controller tracked in `docs/plan.md`.
 
 Imported hipBLASLt baselines are normal DB candidates. Once imported, they can become elites, transfer seeds, GOMEA parents, and final winners like any other candidate.
 

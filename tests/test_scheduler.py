@@ -467,6 +467,48 @@ def test_local_proposal_mutates_cached_elites(tmp_path: Path):
     assert {candidate.source for candidate in proposed} == {"mutation"}
 
 
+def test_multi_shape_elites_include_shape_normalized_specialists(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = sample_candidates(4)
+    small = Shape(512, 128, 1, 256)
+    large = Shape(8192, 8192, 1, 8192)
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes([small, large])
+    for shape, rows in (
+        (small, ((candidates[0], 1.0), (candidates[1], 2.0))),
+        (large, ((candidates[2], 1000.0), (candidates[3], 1200.0))),
+    ):
+        for candidate, time_us in rows:
+            db.insert_evaluation(
+                shape_id=shape.id,
+                candidate_hash=candidate.hash,
+                run_id="cached",
+                status="ok",
+                problem_type_hash=p_hash,
+                benchmark_protocol_hash=b_hash,
+                time_us=time_us,
+                validation="PASSED",
+            )
+
+    proposed = propose_candidates(
+        db,
+        proposal="local",
+        local_count=8,
+        elite_count=2,
+        target_shapes=[small, large],
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        seed=7,
+    ).selected
+
+    parent_hashes = {parent_hash for candidate in proposed for parent_hash in candidate.parent_hashes}
+    assert candidates[0].hash in parent_hashes
+    assert candidates[2].hash in parent_hashes
+
+
 def test_exact_shape_transfer_seeds_cached_winner(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -501,6 +543,49 @@ def test_exact_shape_transfer_seeds_cached_winner(tmp_path: Path):
 
     transfer = [candidate for candidate in proposed if candidate.source == "transfer"]
     assert [candidate.hash for candidate in transfer] == [candidates[1].hash]
+
+
+def test_multi_target_transfer_round_robins_target_neighborhoods(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = sample_candidates(2)
+    first = Shape(512, 128, 1, 256)
+    second = Shape(8192, 8192, 1, 8192)
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes([first, second])
+    for shape, candidate, time_us in ((first, candidates[0], 1.0), (second, candidates[1], 1000.0)):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=time_us,
+            validation="PASSED",
+        )
+
+    proposed = propose_candidates(
+        db,
+        proposal="seed-random-gomea",
+        num_random=0,
+        gomea_count=0,
+        target_shapes=[first, second],
+        transfer_shape_count=2,
+        transfer_per_shape=1,
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    ).selected
+
+    transfer = [candidate for candidate in proposed if candidate.source == "transfer"]
+    assert {candidate.hash for candidate in transfer} == {candidate.hash for candidate in candidates}
+    assert set().union(*(set(candidate.proposal_metadata["transfer_target_shape_ids"]) for candidate in transfer)) == {
+        first.id,
+        second.id,
+    }
+    assert all(candidate.proposal_metadata["transfer_source_shape_ids"] for candidate in transfer)
 
 
 def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
@@ -896,6 +981,37 @@ def test_random_proposals_respect_target_shape_rules(tmp_path: Path):
 
     assert len(proposed) == 16
     assert all(cheap_constraints(candidate.canonical_params(), shape=shape) for candidate in proposed)
+
+
+def test_multi_shape_random_proposal_keeps_scoped_specialists(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    small = Shape(m=512, n=128, batch=1, k=256)
+    large = Shape(m=8192, n=8192, batch=1, k=8192)
+
+    result = propose_candidates(
+        db,
+        proposal="random",
+        num_random=64,
+        seed=20260701,
+        target_shapes=[small, large],
+        scope_kind="cluster",
+    )
+
+    specialists = [
+        candidate
+        for candidate in result.selected
+        if cheap_constraints(candidate.canonical_params(), shape=small)
+        and not cheap_constraints(candidate.canonical_params(), shape=large)
+    ]
+    assert specialists
+    assert result.scope.kind == "cluster"
+    assert result.scope.shape_ids == (small.id, large.id)
+    assert all(
+        candidate.proposal_metadata["proposal_scope_kind"] == "cluster"
+        and candidate.proposal_metadata["proposal_scope_shape_ids"] == [small.id, large.id]
+        for candidate in result.generated
+    )
 
 
 def test_non_random_proposals_return_empty_without_evidence(tmp_path: Path):

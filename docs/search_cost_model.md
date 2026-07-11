@@ -77,6 +77,8 @@ A batch weight sums candidate weights averaged over its shapes.
 
 With `--cost-aware-scheduling`, the scheduler submits higher-weight preparation batches first. This is a longest-predicted-work-first heuristic intended to reduce the tail before the hard preparation/timing barrier. It does not change the batch contents or allow timing overlap.
 
+The predictor is analytical rather than fitted from observed build and validation history. Preparation completion order currently also determines the subsequent serial benchmark order. Expected improvement, information gain, unresolved-shape priority, and deadline fit do not yet reorder timing independently. A production grid controller must separate those two orderings and may replace the analytical weight with a measured predictor when enough evidence exists.
+
 ## Campaign Round Admission
 
 The one-shape campaign does not use the analytical preparation weight as its wall-time estimate. It computes recent measured seconds per missing pair and applies a robust margin before admitting another round. The campaign budget is a soft admission deadline: an admitted schedule retains normal build and runner timeouts and may finish afterward. The confirmation reserve is recalculated from measured finalist launch cost with a configured minimum floor. That policy is described in `docs/blind_campaign_control.md`.
@@ -102,4 +104,5 @@ Run durations and commands remain the authoritative low-level provenance. Derive
 - The preparation predictor is a hand-sized generic heuristic, not a fitted duration model.
 - Validation and benchmark startup costs can dominate small candidate sets.
 - Cost is pooled across selected shapes and phases rather than modeled conditionally by family or hardware state.
+- There is no explicit workload-priority model combining call count, baseline latency, headroom, uncertainty, and evaluation cost.
 - Cost-aware allocation has observational support but no complete real component ablation.

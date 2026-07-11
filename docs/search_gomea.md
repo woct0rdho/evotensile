@@ -71,7 +71,7 @@ A GOMEA child records parent hashes plus donor mode, family locality, donor dist
 
 The GOMEA proposal gate is stricter than general candidate validity. A child must:
 - Pass `explain_invalid_nt_hhs()` without global invalid reasons.
-- Pass shape-specific `cheap_constraints()` for all target shapes when target shapes are supplied.
+- Have at least one shape-specific `cheap_constraints()` pass in the declared shape or cluster scope.
 - Stay under the proposal-side VALU VGPR lower-bound headroom used by random/GOMEA generation.
 
 This is a throughput heuristic for generated proposals. Imported candidates, existing DB candidates, or explicit hand-authored candidates are not invalidated merely because they sit outside the proposal headroom.

@@ -29,6 +29,7 @@ from .search.family import (
     load_family_archive,
 )
 from .search.gomea import gomea_candidates, gomea_neighborhood_candidates
+from .search.grid_evidence import GridObjective
 from .search.learned_linkage import (
     DEFAULT_MAX_CLUSTERS,
     DEFAULT_MIN_LINKAGE_SAMPLES,
@@ -48,7 +49,7 @@ from .search.operator_credit import (
 )
 from .search.random_search import initial_random_batch
 from .search.surrogate import DEFAULT_SURROGATE_MIN_EVIDENCE, select_surrogate_pool
-from .search_space import cheap_constraints, explain_invalid_nt_hhs, random_candidate
+from .search_space import explain_invalid_nt_hhs, random_candidate
 from .shapes import shape_from_id
 from .solution_mapping import find_solution_yamls
 from .structured_runner import (
@@ -65,7 +66,14 @@ from .yaml_writer import write_tensilelite_yaml
 
 
 @dataclass(frozen=True)
+class ProposalScope:
+    kind: str
+    shape_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ProposalResult:
+    scope: ProposalScope
     preserved: tuple[Candidate, ...]
     generated: tuple[Candidate, ...]
     selected: tuple[Candidate, ...]
@@ -155,6 +163,25 @@ class ScheduleResult:
 
 
 @dataclass(frozen=True)
+class GridCandidateEvidence:
+    candidate_hash: str
+    shape_regrets: tuple[tuple[str, float], ...]
+    samples: int
+
+    @property
+    def coverage(self) -> int:
+        return len(self.shape_regrets)
+
+    @property
+    def mean_regret(self) -> float:
+        return sum(regret for _, regret in self.shape_regrets) / max(self.coverage, 1)
+
+    @property
+    def specialist_regret(self) -> float:
+        return min((regret for _, regret in self.shape_regrets), default=math.inf)
+
+
+@dataclass(frozen=True)
 class ShapeOutlier:
     shape: Shape
     candidate_hash: str
@@ -236,12 +263,43 @@ def _dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
     return list(by_hash.values())
 
 
+def _grid_candidate_evidence(summaries: Sequence[EvaluationSummary]) -> list[GridCandidateEvidence]:
+    incumbent_time_by_shape: dict[str, float] = {}
+    for summary in summaries:
+        if summary.median_time_us is None or summary.median_time_us <= 0.0:
+            continue
+        incumbent_time_by_shape[summary.shape_id] = min(
+            incumbent_time_by_shape.get(summary.shape_id, math.inf), summary.median_time_us
+        )
+    regrets_by_candidate: dict[str, list[tuple[str, float]]] = {}
+    samples_by_candidate: dict[str, int] = {}
+    for summary in summaries:
+        incumbent = incumbent_time_by_shape.get(summary.shape_id)
+        if incumbent is None or summary.median_time_us is None or summary.median_time_us <= 0.0:
+            continue
+        regrets_by_candidate.setdefault(summary.candidate_hash, []).append(
+            (summary.shape_id, summary.median_time_us / incumbent - 1.0)
+        )
+        samples_by_candidate[summary.candidate_hash] = (
+            samples_by_candidate.get(summary.candidate_hash, 0) + summary.samples
+        )
+    return [
+        GridCandidateEvidence(
+            candidate_hash=candidate_hash,
+            shape_regrets=tuple(sorted(shape_regrets)),
+            samples=samples_by_candidate[candidate_hash],
+        )
+        for candidate_hash, shape_regrets in regrets_by_candidate.items()
+    ]
+
+
 def _ranked_elites(
     db: EvoTensileDB,
     *,
     problem_type_hash: str | None,
     benchmark_protocol_hash: str | None,
     shape_id: str | None,
+    target_shapes: Sequence[Shape] | None,
     elite_count: int,
 ) -> list[Candidate]:
     summaries = db.rank_evaluations(
@@ -249,9 +307,51 @@ def _ranked_elites(
         benchmark_protocol_hash=benchmark_protocol_hash,
         shape_id=shape_id,
         min_samples=1,
-        limit=elite_count,
     )
-    return db.get_candidates([summary.candidate_hash for summary in summaries])
+    if shape_id is not None:
+        return db.get_candidates([summary.candidate_hash for summary in summaries[:elite_count]])
+    target_shape_ids = {shape.id for shape in target_shapes or ()}
+    if target_shape_ids:
+        summaries = [summary for summary in summaries if summary.shape_id in target_shape_ids]
+    evidence = _grid_candidate_evidence(summaries)
+    specialist_count = min(len(evidence), (elite_count + 1) // 2)
+    summaries_by_shape: dict[str, list[EvaluationSummary]] = {}
+    for summary in summaries:
+        summaries_by_shape.setdefault(summary.shape_id, []).append(summary)
+    for shape_summaries in summaries_by_shape.values():
+        shape_summaries.sort(key=lambda item: (item.median_time_us or math.inf, item.candidate_hash))
+    ranked_shapes = [
+        shape for shape in _representative_shape_order(target_shapes or ()) if shape.id in summaries_by_shape
+    ]
+    if not ranked_shapes:
+        ranked_shapes = _representative_shape_order([shape_from_id(shape_id) for shape_id in summaries_by_shape])
+    selected_hashes: list[str] = []
+    rank_index = 0
+    while len(selected_hashes) < specialist_count:
+        added = False
+        for shape in ranked_shapes:
+            shape_id = shape.id
+            shape_summaries = summaries_by_shape[shape_id]
+            if rank_index >= len(shape_summaries):
+                continue
+            candidate_hash = shape_summaries[rank_index].candidate_hash
+            if candidate_hash not in selected_hashes:
+                selected_hashes.append(candidate_hash)
+                added = True
+                if len(selected_hashes) >= specialist_count:
+                    break
+        if not added:
+            break
+        rank_index += 1
+    generalist_order = sorted(
+        (item for item in evidence if item.candidate_hash not in selected_hashes),
+        key=lambda item: (-item.coverage, item.mean_regret, item.specialist_regret, item.candidate_hash),
+    )
+    selected_hashes.extend(
+        item.candidate_hash for item in generalist_order[: max(0, elite_count - len(selected_hashes))]
+    )
+    candidates_by_hash = {candidate.hash: candidate for candidate in db.get_candidates(selected_hashes)}
+    return [candidates_by_hash[candidate_hash] for candidate_hash in selected_hashes]
 
 
 def _shape_distance(left: Shape, right: Shape) -> float:
@@ -259,6 +359,32 @@ def _shape_distance(left: Shape, right: Shape) -> float:
     right_features = right.features()
     keys = ("log2_m", "log2_n", "log2_k", "log2_m_over_n", "log2_k_over_m", "log2_k_over_n")
     return math.sqrt(sum((left_features[key] - right_features[key]) ** 2 for key in keys))
+
+
+def _representative_shape_order(shapes: Sequence[Shape]) -> list[Shape]:
+    remaining = {shape.id: shape for shape in shapes}
+    if not remaining:
+        return []
+    first = max(
+        remaining.values(),
+        key=lambda shape: (
+            sum(_shape_distance(shape, other) for other in remaining.values()),
+            shape.id,
+        ),
+    )
+    ordered = [first]
+    del remaining[first.id]
+    while remaining:
+        chosen = max(
+            remaining.values(),
+            key=lambda shape: (
+                min(_shape_distance(shape, selected) for selected in ordered),
+                shape.id,
+            ),
+        )
+        ordered.append(chosen)
+        del remaining[chosen.id]
+    return ordered
 
 
 def _learned_linkage_models_for_proposal(
@@ -287,21 +413,15 @@ def _learned_linkage_models_for_proposal(
     )
 
 
-def _nearest_shape_ids(targets: list[Shape], source_shape_ids: set[str], *, limit: int) -> list[str]:
-    if limit <= 0 or not targets or not source_shape_ids:
-        return []
-    source_shapes: list[Shape] = []
+def _nearest_source_shape_ids(target: Shape, source_shape_ids: set[str], *, limit: int) -> list[str]:
+    ranked: list[tuple[float, str]] = []
     for shape_id in source_shape_ids:
         try:
-            source_shapes.append(shape_from_id(shape_id))
+            source = shape_from_id(shape_id)
         except ValueError:
             continue
-
-    best_by_shape: dict[str, float] = {}
-    for source in source_shapes:
-        # Use nearest target distance so exact target-shape winners and nearby-shape winners seed new work.
-        best_by_shape[source.id] = min(_shape_distance(source, target) for target in targets)
-    return [shape_id for shape_id, _ in sorted(best_by_shape.items(), key=lambda item: (item[1], item[0]))[:limit]]
+        ranked.append((_shape_distance(source, target), source.id))
+    return [shape_id for _, shape_id in sorted(ranked)[:limit]]
 
 
 def _weighted_quantile(values: list[tuple[float, float]], quantile: float) -> float | None:
@@ -546,46 +666,77 @@ def _transfer_elites(
         min_samples=1,
     )
     source_shape_ids = {summary.shape_id for summary in summaries}
-    nearest_shape_ids = _nearest_shape_ids(target_shapes, source_shape_ids, limit=nearest_shape_count)
-    hashes: list[str] = []
+    queues: list[list[tuple[str, str, str]]] = []
+    for target in _representative_shape_order(target_shapes):
+        queue: list[tuple[str, str, str]] = []
+        for source_shape_id in _nearest_source_shape_ids(target, source_shape_ids, limit=nearest_shape_count):
+            source_summaries = db.rank_evaluations(
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                shape_id=source_shape_id,
+                min_samples=1,
+                limit=per_shape,
+            )
+            for summary in source_summaries:
+                queue.append((summary.candidate_hash, target.id, source_shape_id))
+        queues.append(queue)
+    selected_causes: list[tuple[str, str, str]] = []
     seen_hashes: set[str] = set()
-    for source_shape_id in nearest_shape_ids:
-        source_summaries = db.rank_evaluations(
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            shape_id=source_shape_id,
-            min_samples=1,
-            limit=per_shape,
+    global_cap = nearest_shape_count * per_shape
+    while queues and len(selected_causes) < global_cap:
+        remaining: list[list[tuple[str, str, str]]] = []
+        for queue in queues:
+            while queue and queue[0][0] in seen_hashes:
+                queue.pop(0)
+            if queue and len(selected_causes) < global_cap:
+                cause = queue.pop(0)
+                selected_causes.append(cause)
+                seen_hashes.add(cause[0])
+            if queue:
+                remaining.append(queue)
+        queues = remaining
+    candidates_by_hash = {
+        candidate.hash: candidate
+        for candidate in db.get_candidates([candidate_hash for candidate_hash, _, _ in selected_causes])
+    }
+    return [
+        Candidate(
+            params=candidates_by_hash[candidate_hash].canonical_params(),
+            source="transfer",
+            parent_hashes=(candidate_hash,),
+            proposal_metadata={
+                "transfer_target_shape_ids": [target_shape_id],
+                "transfer_source_shape_ids": [source_shape_id],
+            },
         )
-        for summary in source_summaries:
-            if summary.candidate_hash in seen_hashes:
-                continue
-            hashes.append(summary.candidate_hash)
-            seen_hashes.add(summary.candidate_hash)
-    transfer = []
-    for candidate in db.get_candidates(hashes):
-        transfer.append(
-            Candidate(params=candidate.canonical_params(), source="transfer", parent_hashes=(candidate.hash,))
-        )
-    return transfer
+        for candidate_hash, target_shape_id, source_shape_id in selected_causes
+    ]
 
 
-def _shape_aware_random_batch(num_random: int, *, seed: int, target_shapes: list[Shape] | None) -> list[Candidate]:
+def _scoped_random_batch(num_random: int, *, seed: int, target_shapes: list[Shape] | None) -> list[Candidate]:
     if not target_shapes:
         return initial_random_batch(num_random, seed=seed)
     rng = random.Random(seed)
     out: dict[str, Candidate] = {}
-    attempts = 0
-    max_attempts = max(1000, num_random * 1000)
-    while len(out) < num_random and attempts < max_attempts:
-        attempts += 1
+    while len(out) < num_random:
         candidate = random_candidate(rng, target_shapes=target_shapes)
-        params = candidate.canonical_params()
-        if all(cheap_constraints(params, shape=shape) for shape in target_shapes):
-            out[candidate.hash] = candidate
-    if len(out) < num_random:
-        raise RuntimeError(f"failed to generate {num_random} shape-valid random candidates after {attempts} attempts")
+        out[candidate.hash] = candidate
     return list(out.values())
+
+
+def _proposal_scope(target_shapes: Sequence[Shape] | None, scope_kind: str | None) -> ProposalScope:
+    shape_ids = tuple(shape.id for shape in target_shapes or ())
+    inferred = "global" if not shape_ids else ("shape" if len(shape_ids) == 1 else "shape-set")
+    kind = scope_kind or inferred
+    if kind not in {"global", "shape", "cluster", "shape-set"}:
+        raise ValueError(f"unknown proposal scope kind: {kind}")
+    if kind == "global" and shape_ids:
+        raise ValueError("global proposal scope cannot contain shapes")
+    if kind != "global" and not shape_ids:
+        raise ValueError(f"{kind} proposal scope requires at least one shape")
+    if kind == "shape" and len(shape_ids) != 1:
+        raise ValueError("shape proposal scope requires exactly one shape")
+    return ProposalScope(kind=kind, shape_ids=shape_ids)
 
 
 def _family_archive_leaders(
@@ -602,16 +753,33 @@ def _family_archive_leaders(
     archive_shapes = target_shapes
     if shape_id is not None and target_shapes:
         archive_shapes = [shape for shape in target_shapes if shape.id == shape_id]
-    entries = load_family_archive(
-        db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-        shapes=archive_shapes,
-        min_samples=1,
-        limit=elite_count,
-        elites_per_family=min(DEFAULT_FAMILY_ELITES_PER_CELL, elite_count),
+    objectives = (
+        (GridObjective.SPECIALIST, GridObjective.GENERALIST, GridObjective.COVERAGE, GridObjective.UNCERTAINTY)
+        if archive_shapes and len(archive_shapes) > 1
+        else (GridObjective.SPECIALIST,)
     )
-    return _dedupe_candidates([entry.leader for entry in entries])
+    objective_entries = [
+        load_family_archive(
+            db,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            shapes=archive_shapes,
+            min_samples=1,
+            objective=objective,
+            limit=elite_count,
+            elites_per_family=min(DEFAULT_FAMILY_ELITES_PER_CELL, elite_count),
+        )
+        for objective in objectives
+    ]
+    leaders: list[Candidate] = []
+    rank = 0
+    while len(leaders) < elite_count and any(rank < len(entries) for entries in objective_entries):
+        for entries in objective_entries:
+            if rank < len(entries):
+                leaders.append(entries[rank].leader)
+        leaders = _dedupe_candidates(leaders)
+        rank += 1
+    return leaders[:elite_count]
 
 
 def propose_candidates(
@@ -624,6 +792,7 @@ def propose_candidates(
     benchmark_protocol_hash: str | None = None,
     shape_id: str | None = None,
     target_shapes: list[Shape] | None = None,
+    scope_kind: str | None = None,
     transfer_shape_count: int = DEFAULT_TRANSFER_SHAPES,
     transfer_per_shape: int = DEFAULT_TRANSFER_PER_SHAPE,
     elite_count: int = DEFAULT_ELITE_COUNT,
@@ -652,6 +821,7 @@ def propose_candidates(
     """Build and classify preserved, generated, and selected candidates."""
     if proposal not in PROPOSAL_MODES:
         raise ValueError(f"unknown proposal mode: {proposal}")
+    scope = _proposal_scope(target_shapes, scope_kind)
     pool_multiplier = max(1, surrogate_pool_multiplier)
     pool_num_random = num_random * pool_multiplier
     pool_local_count = local_count * pool_multiplier
@@ -687,6 +857,7 @@ def propose_candidates(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
             shape_id=shape_id,
+            target_shapes=target_shapes,
             elite_count=elite_count,
         )
         if needs_elites
@@ -771,7 +942,7 @@ def propose_candidates(
                 benchmark_protocol_hash=benchmark_protocol_hash,
             )
             if proposal == "family-qd"
-            else _shape_aware_random_batch(pool_num_random, seed=seed, target_shapes=target_shapes)
+            else _scoped_random_batch(pool_num_random, seed=seed, target_shapes=target_shapes)
         )
         candidates.extend(random_batch)
 
@@ -790,7 +961,13 @@ def propose_candidates(
             )
         else:
             candidates.extend(
-                mutate_elites(elites, count=mutation_budget, seed=seed + 1009, mutation_rate=mutation_rate)
+                mutate_elites(
+                    elites,
+                    count=mutation_budget,
+                    seed=seed + 1009,
+                    mutation_rate=mutation_rate,
+                    target_shapes=target_shapes,
+                )
             )
 
     de_budget = operator_allocation["de"] if operator_allocation is not None else pool_de_count
@@ -804,6 +981,7 @@ def propose_candidates(
                 crossover_rate=crossover_rate,
                 random_gene_rate=random_gene_rate,
                 exclude={candidate.hash for candidate in candidates},
+                target_shapes=target_shapes,
             )
         )
 
@@ -874,8 +1052,22 @@ def propose_candidates(
     preserved_hashes = intentional_preserved_hashes | known_hashes
     preserved = [candidate for candidate in deduped if candidate.hash in preserved_hashes]
     generated = [candidate for candidate in deduped if candidate.hash not in preserved_hashes]
+    scoped_generated = {
+        candidate.hash: Candidate(
+            params=candidate.canonical_params(),
+            source=candidate.source,
+            parent_hashes=candidate.parent_hashes,
+            proposal_metadata={
+                **candidate.proposal_metadata,
+                "proposal_scope_kind": scope.kind,
+                "proposal_scope_shape_ids": list(scope.shape_ids),
+            },
+        )
+        for candidate in generated
+    }
+    generated = list(scoped_generated.values())
     if pool_multiplier <= 1:
-        selected = deduped
+        selected = [scoped_generated.get(candidate.hash, candidate) for candidate in deduped]
     else:
         variation_budget = local_count + de_count + gomea_count if elites else 0
         selection_count = num_random + variation_budget
@@ -891,8 +1083,19 @@ def propose_candidates(
             covering_cold_start=covering_cold_start,
             cold_start_precovered_tokens=cold_start_precovered_tokens,
         )
-        selected = _dedupe_candidates([*preserved, *selected_generated])
+        selected = _dedupe_candidates(
+            [*preserved, *(scoped_generated[candidate.hash] for candidate in selected_generated)]
+        )
+    db.record_proposal_occurrences(
+        candidates,
+        problem_type_hash=problem_type_hash or "",
+        benchmark_protocol_hash=benchmark_protocol_hash or "",
+        scope_kind=scope.kind,
+        scope_shape_ids=scope.shape_ids,
+        selected_candidates=selected,
+    )
     return ProposalResult(
+        scope=scope,
         preserved=tuple(preserved),
         generated=tuple(generated),
         selected=tuple(selected),

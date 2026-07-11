@@ -51,7 +51,7 @@ These groups describe mechanical roles. They do not prioritize a specific value 
 - Choose one semantic or singleton group, optionally weighted by queried group-level UCB credit.
 - Change one or two mutable genes to random alternative domain values.
 - Run linked repair.
-- Apply shape-dependent cheap constraints for all target shapes.
+- Require at least one eligible pair in the declared proposal scope.
 - Reject invalid, duplicate, excluded, or unchanged-parent candidates.
 
 Linked repair can change additional dependent fields, so final Hamming distance may exceed two. The operator is still substantially more local than independently mutating every gene with the default `0.25` probability.
@@ -66,29 +66,29 @@ Separating the identities allows the scheduler to learn whether local refinement
 
 ## Credit Evidence
 
-`load_operator_credits()` reads ranked timing evidence for the active problem, benchmark protocol, and target shapes.
+`load_operator_credits()` reads selected append-only proposal occurrences and ranked timing evidence for the active problem, benchmark protocol, and target shapes. Candidate registration remains first-writer-owned, but credit never reads source, parents, or metadata from the candidate row. A later operator appearance of an existing parameter hash is therefore independently attributable.
 
-A child contributes credit only when:
-- its source is one of the adaptive arms.
-- it has positive timing evidence.
-- at least one recorded parent has compatible positive timing evidence for the same shape.
+A proposal occurrence contributes one event-level trial only when:
+- its occurrence source is one of the adaptive arms.
+- compatible child timing was queried after the occurrence.
+- at least one occurrence parent has compatible positive timing for the same shape.
 
-The reference is the fastest measured parent. For parent time `t_p` and child time `t_c`:
+For every comparable shape, the reference is the fastest measured occurrence parent. For parent time `t_p` and child time `t_c`:
 
 ```text
 log_speedup = log(t_p / t_c)
 success = t_c <= t_p * (1 - minimum_improvement_fraction)
 ```
 
-The default minimum improvement is `0.5%`. Each arm records successes, failures, trials, cumulative log speedup, and attributed cumulative evaluation cost.
+The event reward is the workload-weighted mean `log_speedup` across comparable shapes. Equal shape weights are the default fixed-grid objective. Callers may provide workload weights. The default event success threshold is `0.5%`. Each arm records successes, failures, event trials, shape comparisons, cumulative event log speedup, and cumulative evaluation cost. Evaluation cost is charged once per event, not once per shape.
 
-Only queried DB evidence affects credit. Proposed but unmeasured children, validation failures, and hidden oracle rows do not contribute positive or negative performance credit.
+Only queried DB evidence after the occurrence affects credit. The latest compatible selected occurrence owns the candidate's current post-occurrence timing reward, so repeated occurrences cannot multiply one measurement into several trials. Unselected occurrences, cache-only reproposals, proposed but unmeasured children, validation failures, and hidden oracle rows do not contribute positive or negative performance credit.
 
 The same queried child outcomes also update proposal-metadata credits:
 - semantic-group credit for semantic mutation and GOMEA neighborhoods.
 - donor-mode credit for quality, diverse, and random GOMEA mixing donors.
 
-Candidate hashes remain parameter-only. Proposal metadata is persisted in candidate JSON and does not change cache identity.
+Candidate hashes remain parameter-only. Occurrence source, parents, metadata, scope, selection state, and protocol identity are append-only event data and do not change cache identity.
 
 ## UCB Allocation
 
@@ -142,7 +142,7 @@ Current limitations:
 - credit uses current DB medians without temporal decay.
 - success is binary for allocation even though cumulative log speedup is recorded.
 - cost attribution divides shared run duration between candidates and is not exact per-candidate profiling.
-- credit is pooled across selected target shapes rather than conditioned by family or search phase.
+- credit aggregates selected target-shape outcomes at event level but is not yet conditioned by family or search phase.
 - screening evidence remains noisy even when the blind campaign stabilizes provisional global leaders.
 
 Campaign-level leader stabilization is documented in `docs/search_screening_stabilization.md`. It improves high-impact ranking evidence but does not make every parent/child comparison a controlled retime.

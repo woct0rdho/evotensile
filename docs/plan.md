@@ -103,54 +103,42 @@ Runtime validation should point `HIPBLASLT_TENSILE_LIBPATH` at the installed gfx
 
 ## Next Production Search Plan
 
-The completed blind one-shape follow-up is recorded in `docs/blind_one_shape_experiment.md`. This section focuses on ideas whose main benefit appears only when searching many shapes, allocating a production workload budget, or building a compact final solution library. The ideas adapt useful signals from Ductile and GEKO while keeping EvoTensile layered directly over TensileLite.
-
-### Grid-Aware Acquisition
-
-Multi-shape surrogate acquisition should compare every candidate with the incumbent for each shape rather than averaging predicted log time across all target shapes. The shortlist should greedily maximize marginal predicted improvement over unresolved shapes and preserve separate lanes for:
-- per-shape and per-cluster specialists.
-- workload-weighted generalists.
-- uncertainty and poorly modeled shapes.
-- family, mechanical, and random diversity.
-
-Equal weights should remain the default for an authoritative fixed grid. Optional production weights may come from shape frequency, baseline latency, or measured end-to-end contribution. A candidate that is exceptional for a small subset of shapes must not be hidden by poor grid-wide average performance.
-
-Candidate-shape interaction features should include tile fill, total tiles, tiles per effective CU, CU-round and wave granularity, K-tail behavior, LDS and VGPR pressure, GSU workspace fraction, and arithmetic intensity. Architecture-specific MI filters and hand-selected parameter lists may inform soft priors, but must not become permanent validity constraints.
+Implemented proposal scopes, shape-normalized parent and transfer selection, grid-aware surrogate acquisition, candidate-shape mechanical features, explicit family-archive objectives, event-level operator credit, and preparation-cost ordering are documented in their focused design documents. This section contains only remaining production-grid work.
 
 ### Staged Shape Evaluation
 
-Production shapes should be clustered by mechanical behavior rather than only raw dimension distance. Clustering inputs should include aspect, batch and K regimes, arithmetic intensity, tile efficiency across macro-tile families, CU-round behavior, and compatible coarse kernel families.
+Add a production controller that clusters shapes by mechanical behavior rather than only raw dimension distance. Clustering inputs should include aspect, batch and K regimes, arithmetic intensity, tile efficiency across macro-tile families, CU-round behavior, and compatible coarse kernel families.
 
-The staged search should:
+The controller should:
 - choose representative or medoid shapes for each cluster.
 - search representatives first using the normal family-QD, operator portfolio, and surrogate flow.
 - promote promising specialists and generalists to the remaining cluster members.
 - migrate candidates between mechanically adjacent clusters.
 - finish with full-grid outlier detection and `repair-outliers` so every authoritative shape is covered.
 
-Compilation artifacts should remain candidate-centric and reusable across promoted shapes. Representative-shape screening reduces candidate-shape measurements. It must not infer an unmeasured production winner.
+Compilation artifacts should remain reusable across promoted shapes. Representative-shape screening may reduce candidate-shape measurements, but it must never infer an unmeasured production winner.
 
-### Workload And Cost Allocation
+### Workload-Aware Allocation And Timing
 
-For application-derived workloads, shape priority should reflect `call_count * baseline_latency`, predicted improvement headroom, uncertainty, and expected evaluation cost. Low-contribution shapes may be deferred or omitted only in an explicitly workload-weighted mode. A fixed GridBased coverage campaign must continue to evaluate every required shape.
+Add an explicit workload-weighted campaign mode in which shape priority reflects `call_count * baseline_latency`, predicted improvement headroom, uncertainty, and expected evaluation cost. Apply the resolved shape weights consistently to acquisition, archive/parent selection, operator feedback, timing admission, and reporting. Low-contribution shapes may be deferred or omitted only in this explicit mode. A fixed GridBased coverage campaign must continue to evaluate every required shape.
 
-Preparation cost should be predicted from observed build, validation, candidate-count, and resource-complexity history. Parallel preparation should use longest-processing-time-first ordering to reduce the compile/validation barrier. Serialized benchmark work should be ordered by expected improvement or information per second, and campaign admission should reserve enough measured time for finalist confirmation and outlier repair.
+Replace the current analytical preparation-weight heuristic with a measured predictor using build, validation, candidate-count, and resource-complexity history when sufficient evidence exists. Keep longest-predicted-work-first preparation, but separate preparation order from serialized benchmark order. Benchmark work should be prioritized by expected improvement or information per second, unresolved-shape coverage, and soft-deadline fit. Grid campaign admission must reserve measured time for finalist confirmation and outlier repair.
 
-### Specialist And Generalist Bank
+### Deployment Solution Bank
 
-The production archive should track both shape specialists and candidates that remain within a configurable tolerance of the winner across many shapes. After confidence-aware retiming, an optional greedy set-cover pass should choose the smallest solution bank that covers all required shapes within the requested tolerance.
+After confidence-aware retiming, add an optional greedy set-cover pass that chooses the smallest final solution bank covering all required shapes within a requested tolerance. This is separate from the implemented search-time family archive.
 
-A zero tolerance must preserve exact per-shape winners. Nonzero tolerance is a deployment trade-off and should report:
+A zero tolerance must preserve exact per-shape winners. Nonzero tolerance is a deployment trade-off and must report:
 - weighted and worst-shape performance loss.
 - number of retained solutions and code objects.
 - shapes covered by each generalist.
 - any shapes requiring dedicated specialists.
 
-The selected candidate-shape pairs must be rechecked through the normal validation and final measurement path before GridBased YAML generation.
+Recheck every selected candidate-shape pair through the normal validation and final measurement path before GridBased YAML generation.
 
 ### Production Evaluation
 
-Grid policies should be compared at equal wall time and report every required shape. Primary metrics should include:
+Compare grid policies at equal wall time and report every required shape. Primary metrics should include:
 - weighted and unweighted incumbent-normalized regret.
 - worst-shape regret and unresolved-shape count over time.
 - candidate-shape pairs prepared, validated, probed, screened, and confirmed.
@@ -158,7 +146,7 @@ Grid policies should be compared at equal wall time and report every required sh
 - representative-to-cluster promotion precision and missed specialists.
 - unique final solutions and solution-bank coverage at each tolerance.
 
-Controlled ablations should cover grid-aware acquisition, shape clustering, workload weighting, cost-aware scheduling, and solution-bank minimization before they become production defaults.
+Run controlled ablations for staged clustering, workload weighting, measured cost prediction, timing allocation, and solution-bank minimization before enabling them as production defaults.
 
 ## Broader Future Plan
 

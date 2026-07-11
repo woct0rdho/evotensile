@@ -10,7 +10,15 @@ from evotensile.search.mechanics import (
     mechanical_coverage_tokens,
     mechanical_prior_score,
 )
-from evotensile.search.surrogate import candidate_shape_features, select_surrogate_pool
+from evotensile.search.surrogate import (
+    GridCandidatePrediction,
+    ShapePrediction,
+    TrainingObservation,
+    _marginal_grid_gain_order,
+    candidate_shape_features,
+    select_surrogate_pool,
+    surrogate_model_shape_ids,
+)
 from evotensile.search_space import macro_tile, random_candidate
 
 
@@ -56,6 +64,56 @@ def test_candidate_shape_features_include_generic_mechanics():
     assert mechanics["tiles_per_cu"] > 0.0
     assert mechanics["cu_rounds"] >= mechanics["tiles_per_cu"]
     assert mechanics["arithmetic_intensity"] > 0.0
+
+
+def test_surrogate_activation_requires_unique_candidate_variation():
+    shapes = [Shape(512, 128, 1, 256), Shape(1024, 1024, 1, 1024)]
+    candidate = _shape_candidates(shapes[0], 1000, 1)[0]
+    observations = [
+        TrainingObservation(
+            candidate_hash=candidate.hash,
+            shape_id=shape.id,
+            features=candidate_shape_features(candidate, shape),
+            log_time=float(index + 1),
+        )
+        for index, shape in enumerate(shapes)
+        for _ in range(24)
+    ]
+
+    assert surrogate_model_shape_ids(observations, shapes=shapes, min_evidence=24) == ()
+
+
+def test_grid_acquisition_preserves_complementary_shape_specialists():
+    candidates = _shape_candidates(Shape(512, 128, 1, 256), 2000, 3)
+    first_shape = "m512_n128_b1_k256"
+    second_shape = "m1024_n1024_b1_k1024"
+    predictions = [
+        GridCandidatePrediction(
+            candidate=candidates[0],
+            by_shape=(
+                ShapePrediction(first_shape, 8.0, 0.0, 10.0),
+                ShapePrediction(second_shape, 11.0, 0.0, 10.0),
+            ),
+        ),
+        GridCandidatePrediction(
+            candidate=candidates[1],
+            by_shape=(
+                ShapePrediction(first_shape, 11.0, 0.0, 10.0),
+                ShapePrediction(second_shape, 8.0, 0.0, 10.0),
+            ),
+        ),
+        GridCandidatePrediction(
+            candidate=candidates[2],
+            by_shape=(
+                ShapePrediction(first_shape, 9.4, 0.0, 10.0),
+                ShapePrediction(second_shape, 9.4, 0.0, 10.0),
+            ),
+        ),
+    ]
+
+    ordered = _marginal_grid_gain_order(predictions)
+
+    assert {candidate.hash for candidate in ordered[:2]} == {candidates[0].hash, candidates[1].hash}
 
 
 def test_surrogate_pool_learns_synthetic_tlds_performance_from_queried_rows(tmp_path):

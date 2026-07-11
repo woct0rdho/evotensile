@@ -503,6 +503,8 @@ def _proposal_call(
         seed=seed,
         restart_index=restart_index,
         learned_linkage=learned_linkage,
+        scope_kind=proposal.scope.kind,
+        scope_shape_ids=proposal.scope.shape_ids,
         parent_hashes=parent_hashes,
         preserved_hashes=tuple(candidate.hash for candidate in proposal.preserved),
         generated_hashes=tuple(candidate.hash for candidate in proposal.generated),

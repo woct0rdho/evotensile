@@ -10,21 +10,52 @@ from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.search.encoding import PARAM_NAMES, candidate_to_genome, hamming_distance
 from evotensile.search.family import family_descriptor
-from evotensile.search.mechanics import candidate_shape_mechanics, select_covering_cold_pool
+from evotensile.search.mechanics import candidate_shape_mechanics, mechanical_prior_score, select_covering_cold_pool
 from evotensile.search_space import _valu_vgpr_lower_bound, macro_tile
 
 DEFAULT_SURROGATE_MIN_EVIDENCE = 24
 
 
 @dataclass(frozen=True)
-class CandidatePrediction:
-    candidate: Candidate
+class TrainingObservation:
+    candidate_hash: str
+    shape_id: str
+    features: Mapping[str, Any]
+    log_time: float
+
+
+@dataclass(frozen=True)
+class ShapePrediction:
+    shape_id: str
     mean_log_time: float
-    std_log_time: float
+    epistemic_std_log_time: float
+    incumbent_log_time: float
 
     @property
-    def acquisition(self) -> float:
-        return self.mean_log_time - 0.5 * self.std_log_time
+    def predicted_gain(self) -> float:
+        return max(0.0, self.incumbent_log_time - self.mean_log_time)
+
+    @property
+    def optimistic_gain(self) -> float:
+        return max(0.0, self.incumbent_log_time - self.mean_log_time + 0.5 * self.epistemic_std_log_time)
+
+
+@dataclass(frozen=True)
+class GridCandidatePrediction:
+    candidate: Candidate
+    by_shape: tuple[ShapePrediction, ...]
+
+    @property
+    def mean_regret(self) -> float:
+        return sum(item.mean_log_time - item.incumbent_log_time for item in self.by_shape) / len(self.by_shape)
+
+    @property
+    def mean_gain(self) -> float:
+        return sum(item.predicted_gain for item in self.by_shape) / len(self.by_shape)
+
+    @property
+    def maximum_uncertainty(self) -> float:
+        return max(item.epistemic_std_log_time for item in self.by_shape)
 
 
 class ExtraTreesSurrogate:
@@ -110,13 +141,13 @@ def candidate_shape_features(candidate: Candidate, shape: Shape) -> dict[str, fl
     return features
 
 
-def _training_rows(
+def _training_observations(
     db: EvoTensileDB,
     *,
     problem_type_hash: str | None,
     benchmark_protocol_hash: str | None,
     shapes: Sequence[Shape] | None,
-) -> tuple[list[dict[str, float | str]], list[float]]:
+) -> list[TrainingObservation]:
     allowed_shapes = {shape.id: shape for shape in shapes} if shapes is not None else {}
     summaries = db.rank_evaluations(
         problem_type_hash=problem_type_hash,
@@ -126,8 +157,7 @@ def _training_rows(
     )
     candidate_hashes = sorted({summary.candidate_hash for summary in summaries})
     candidates = {candidate.hash: candidate for candidate in db.get_candidates(candidate_hashes)}
-    rows = []
-    targets = []
+    observations = []
     for summary in summaries:
         candidate = candidates.get(summary.candidate_hash)
         if candidate is None or summary.median_time_us is None or summary.median_time_us <= 0.0:
@@ -144,9 +174,100 @@ def _training_rows(
             if row is None:
                 continue
             shape = Shape(int(row["m"]), int(row["n"]), int(row["batch"]), int(row["k"]))
-        rows.append(candidate_shape_features(candidate, shape))
-        targets.append(math.log(summary.median_time_us))
-    return rows, targets
+        observations.append(
+            TrainingObservation(
+                candidate_hash=candidate.hash,
+                shape_id=shape.id,
+                features=candidate_shape_features(candidate, shape),
+                log_time=math.log(summary.median_time_us),
+            )
+        )
+    return observations
+
+
+def _has_candidate_feature_diversity(observations: Sequence[TrainingObservation]) -> bool:
+    if not observations:
+        return False
+    varying_genes = 0
+    for name in PARAM_NAMES:
+        values = {observation.features[f"gene:{name}"] for observation in observations}
+        if len(values) > 1:
+            varying_genes += 1
+    return varying_genes >= min(4, len(PARAM_NAMES))
+
+
+def surrogate_model_shape_ids(
+    observations: Sequence[TrainingObservation],
+    *,
+    shapes: Sequence[Shape],
+    min_evidence: int,
+) -> tuple[str, ...]:
+    by_shape: dict[str, list[TrainingObservation]] = defaultdict(list)
+    for observation in observations:
+        by_shape[observation.shape_id].append(observation)
+    return tuple(
+        shape.id
+        for shape in shapes
+        if len({observation.candidate_hash for observation in by_shape.get(shape.id, [])}) >= min_evidence
+        and _has_candidate_feature_diversity(by_shape[shape.id])
+    )
+
+
+def _shape_models(
+    observations: Sequence[TrainingObservation],
+    *,
+    shapes: Sequence[Shape],
+    min_evidence: int,
+    seed: int,
+) -> tuple[dict[str, ExtraTreesSurrogate], dict[str, float]]:
+    by_shape: dict[str, list[TrainingObservation]] = defaultdict(list)
+    for observation in observations:
+        by_shape[observation.shape_id].append(observation)
+    modeled_shape_ids = set(surrogate_model_shape_ids(observations, shapes=shapes, min_evidence=min_evidence))
+    models: dict[str, ExtraTreesSurrogate] = {}
+    incumbents: dict[str, float] = {}
+    for shape_index, shape in enumerate(shapes):
+        if shape.id not in modeled_shape_ids:
+            continue
+        shape_observations = by_shape[shape.id]
+        model = ExtraTreesSurrogate(seed=seed + shape_index)
+        model.fit(
+            [observation.features for observation in shape_observations],
+            [observation.log_time for observation in shape_observations],
+        )
+        models[shape.id] = model
+        incumbents[shape.id] = min(observation.log_time for observation in shape_observations)
+    return models, incumbents
+
+
+def _grid_predictions(
+    candidates: Sequence[Candidate],
+    *,
+    shapes: Sequence[Shape],
+    models: Mapping[str, ExtraTreesSurrogate],
+    incumbents: Mapping[str, float],
+) -> list[GridCandidatePrediction]:
+    predictions_by_hash: dict[str, list[ShapePrediction]] = {candidate.hash: [] for candidate in candidates}
+    for shape in shapes:
+        model = models.get(shape.id)
+        if model is None:
+            continue
+        means, standard_deviations = model.predict(
+            [candidate_shape_features(candidate, shape) for candidate in candidates]
+        )
+        for candidate, mean, standard_deviation in zip(candidates, means, standard_deviations, strict=True):
+            predictions_by_hash[candidate.hash].append(
+                ShapePrediction(
+                    shape_id=shape.id,
+                    mean_log_time=mean,
+                    epistemic_std_log_time=standard_deviation,
+                    incumbent_log_time=incumbents[shape.id],
+                )
+            )
+    return [
+        GridCandidatePrediction(candidate=candidate, by_shape=tuple(predictions_by_hash[candidate.hash]))
+        for candidate in candidates
+    ]
 
 
 def _diverse_fallback(candidates: Sequence[Candidate], *, count: int, seed: int) -> list[Candidate]:
@@ -182,6 +303,51 @@ def _append_unique(selected: list[Candidate], candidates: Sequence[Candidate], c
             seen.add(candidate.hash)
 
 
+def _marginal_grid_gain_order(predictions: Sequence[GridCandidatePrediction]) -> list[Candidate]:
+    remaining = list(predictions)
+    covered_gain: dict[str, float] = defaultdict(float)
+    ordered: list[Candidate] = []
+    while remaining:
+        chosen = max(
+            remaining,
+            key=lambda prediction: (
+                sum(max(0.0, item.optimistic_gain - covered_gain[item.shape_id]) for item in prediction.by_shape),
+                prediction.mean_gain,
+                -prediction.mean_regret,
+                prediction.candidate.hash,
+            ),
+        )
+        ordered.append(chosen.candidate)
+        for item in chosen.by_shape:
+            covered_gain[item.shape_id] = max(covered_gain[item.shape_id], item.optimistic_gain)
+        remaining.remove(chosen)
+    return ordered
+
+
+def _unresolved_shape_order(candidates: Sequence[Candidate], shapes: Sequence[Shape]) -> list[Candidate]:
+    queues = [
+        sorted(candidates, key=lambda candidate: (-mechanical_prior_score(candidate, shape), candidate.hash))
+        for shape in shapes
+    ]
+    selected: list[Candidate] = []
+    seen: set[str] = set()
+    rank = 0
+    while len(seen) < len(candidates):
+        added = False
+        for queue in queues:
+            if rank >= len(queue):
+                continue
+            candidate = queue[rank]
+            if candidate.hash not in seen:
+                selected.append(candidate)
+                seen.add(candidate.hash)
+                added = True
+        if not added and all(rank >= len(queue) - 1 for queue in queues):
+            break
+        rank += 1
+    return selected
+
+
 def select_surrogate_pool(
     candidates: Sequence[Candidate],
     *,
@@ -202,13 +368,14 @@ def select_surrogate_pool(
         return deduped
     if not shapes:
         return _diverse_fallback(deduped, count=count, seed=seed)
-    training_rows, targets = _training_rows(
+    observations = _training_observations(
         db,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         shapes=shapes,
     )
-    if len(training_rows) < min_evidence:
+    models, incumbents = _shape_models(observations, shapes=shapes, min_evidence=min_evidence, seed=seed)
+    if not models:
         if covering_cold_start and len(shapes) == 1:
             return select_covering_cold_pool(
                 deduped,
@@ -217,53 +384,53 @@ def select_surrogate_pool(
                 seed=seed,
                 precovered_tokens=cold_start_precovered_tokens,
             )
+        if len(shapes) > 1:
+            selected: list[Candidate] = []
+            _append_unique(selected, _unresolved_shape_order(deduped, shapes), max(1, count // 2))
+            remaining = [candidate for candidate in deduped if candidate.hash not in {item.hash for item in selected}]
+            _append_unique(selected, _diverse_fallback(remaining, count=count, seed=seed), count)
+            return selected
         return _diverse_fallback(deduped, count=count, seed=seed)
 
-    model = ExtraTreesSurrogate(seed=seed)
-    model.fit(training_rows, targets)
-    candidate_rows = [candidate_shape_features(candidate, shape) for candidate in deduped for shape in shapes]
-    means, standard_deviations = model.predict(candidate_rows)
-    predictions = []
-    shape_count = len(shapes)
-    for index, candidate in enumerate(deduped):
-        start = index * shape_count
-        candidate_means = means[start : start + shape_count]
-        candidate_stds = standard_deviations[start : start + shape_count]
-        mean = sum(candidate_means) / shape_count
-        within_variance = sum(value * value for value in candidate_stds) / shape_count
-        between_variance = sum((value - mean) ** 2 for value in candidate_means) / shape_count
-        predictions.append(
-            CandidatePrediction(
-                candidate=candidate,
-                mean_log_time=mean,
-                std_log_time=math.sqrt(within_variance + between_variance),
-            )
-        )
-
-    exploit_count = max(1, int(count * 0.55))
-    uncertainty_count = max(1, int(count * 0.20))
-    diversity_count = max(1, int(count * 0.15))
+    predictions = _grid_predictions(deduped, shapes=shapes, models=models, incumbents=incumbents)
+    specialist_count = max(1, int(count * 0.35))
+    generalist_count = max(1, int(count * 0.25))
+    uncertainty_count = max(1, int(count * 0.15))
+    unresolved_count = max(1, int(count * 0.10))
     selected: list[Candidate] = []
+    _append_unique(selected, _marginal_grid_gain_order(predictions), specialist_count)
     _append_unique(
         selected,
-        [item.candidate for item in sorted(predictions, key=lambda item: (item.acquisition, item.candidate.hash))],
-        exploit_count,
+        [
+            item.candidate
+            for item in sorted(predictions, key=lambda item: (item.mean_regret, -item.mean_gain, item.candidate.hash))
+        ],
+        specialist_count + generalist_count,
     )
     _append_unique(
         selected,
         [
             item.candidate
             for item in sorted(
-                predictions, key=lambda item: (-item.std_log_time, item.mean_log_time, item.candidate.hash)
+                predictions,
+                key=lambda item: (-item.maximum_uncertainty, item.mean_regret, item.candidate.hash),
             )
         ],
-        exploit_count + uncertainty_count,
+        specialist_count + generalist_count + uncertainty_count,
     )
+    unresolved_shapes = [shape for shape in shapes if shape.id not in models]
+    if unresolved_shapes:
+        _append_unique(
+            selected,
+            _unresolved_shape_order(deduped, unresolved_shapes),
+            specialist_count + generalist_count + uncertainty_count + unresolved_count,
+        )
     remaining = [candidate for candidate in deduped if candidate.hash not in {item.hash for item in selected}]
+    diversity_target = max(len(selected), min(count, int(count * 0.90)))
     _append_unique(
         selected,
-        _diverse_fallback(remaining, count=min(diversity_count, len(remaining)), seed=seed + 1),
-        exploit_count + uncertainty_count + diversity_count,
+        _diverse_fallback(remaining, count=min(count - len(selected), len(remaining)), seed=seed + 1),
+        diversity_target,
     )
     remaining = [candidate for candidate in deduped if candidate.hash not in {item.hash for item in selected}]
     random.Random(seed + 2).shuffle(remaining)

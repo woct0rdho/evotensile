@@ -25,13 +25,7 @@ The basic measurement boundary is sound:
 - Positive ranking uses finite timing rows marked as backed by validation.
 - Shape-dependent static rejection is represented per `(shape, candidate)` pair.
 
-However, the workflow is not yet safe as an unattended production shape-grid pipeline. The highest-priority problems are:
-
-- Grid proposal generation applies shape validity to the intersection of all target shapes, preventing many specialists.
-- Multi-shape parent selection, transfer, surrogate activation, and uncertainty do not implement a coherent grid objective.
-- One-shape merged-round bookkeeping misclassifies archive parents as generated candidates, corrupting cost and population diagnostics.
-
-These should be resolved before treating the one-shape driver as the template for a production grid campaign.
+The production grid objective is now explicit: proposals use declared shape scopes, parent and transfer selection are shape-normalized, surrogate acquisition is incumbent-normalized, family archives expose separate objectives, and operator credit aggregates correlated shape outcomes by proposal occurrence. Remaining production-readiness work is primarily throughput, resource defaults, staged execution, and maintainability.
 
 ## Severity Definitions
 
@@ -40,127 +34,7 @@ These should be resolved before treating the one-shape driver as the template fo
 - Medium: important performance, scaling, default, or maintainability problem that is not normally correctness-destructive by itself.
 - Low: cleanup, duplicated boilerplate, missing tests, or misleading documentation.
 
-## Blockers
-
-### B1. Production Grid Proposals Enforce The Intersection Of All Shape Constraints
-
-Affected code:
-
-- `evotensile/search_space.py:random_candidate()`
-- `evotensile/scheduler.py:_shape_aware_random_batch()`
-- `evotensile/search/family.py:_candidate_for_family()`
-- `evotensile/search/local_search.py:semantic_mutation_candidates()`
-- `evotensile/search/gomea.py:_gomea_candidate_ok()`
-
-When a list of target shapes is supplied, these proposal paths require a generated candidate to satisfy shape-dependent constraints for every target shape.
-
-The scheduler itself is already pair-oriented and can reject a candidate on one shape while measuring it on another. Proposal generation therefore applies a stricter all-grid intersection than execution requires.
-
-This blocks important production specialists, including candidates with:
-
-- GSU workspace valid for small output shapes but too large for another grid member.
-- assertion multiples valid for a subset of shapes.
-- tile or reduction choices appropriate only for one mechanical cluster.
-
-The behavior is also inconsistent between operators:
-
-- random, semantic mutation, and GOMEA use all-target shape checks.
-- broad mutation and categorical DE primarily use global checks and can leave pair-specific rejection to the scheduler.
-
-`random_candidate()` additionally forces `GlobalSplitU=1` whenever any `target_shapes` value is present. `nt_hhs_family_cells()` does the same. The domain contains `[1, 2, 4]`, but even a one-element small-shape target list produces only GSU1 cold families.
-
-Recommended correction:
-
-- Separate candidate-global validity from candidate-shape eligibility.
-- Generate candidates for an explicit target scope: one shape, one cluster, or a declared required-shape subset.
-- Allow specialists to proceed when they have at least one eligible target pair.
-- Keep the scheduler's per-pair rejection authoritative.
-- Replace unconditional GSU1 forcing with viability-aware sampling for the target scope.
-- Record intended target scope in proposal events rather than in candidate identity.
-
-### B2. Multi-Shape Parent And Transfer Selection Is Biased Toward Arbitrary Small Shapes
-
-Affected code:
-
-- `evotensile/scheduler.py:_ranked_elites()`
-- `evotensile/scheduler.py:_nearest_shape_ids()`
-- `evotensile/scheduler.py:_transfer_elites()`
-
-When `shape_id` is not specified, `_ranked_elites()` asks `rank_evaluations()` for a global list of shape-candidate rows. Those rows are ordered by absolute time, so the selected parents tend to come from the fastest absolute shapes, usually the smallest grid members. They are not candidate aggregates and are not normalized against each shape's incumbent.
-
-Transfer selection has a separate multi-target issue. `_nearest_shape_ids()` assigns each source shape its minimum distance to any requested target. If the DB already contains the full requested grid, every exact source shape has distance zero. The default limit then selects the first shapes by lexical shape ID rather than representative or per-target neighbors.
-
-For a 100-shape request, `--transfer-shapes 4` therefore means approximately "four lexically first exact grid shapes," not "four useful neighbors for each unresolved target."
-
-Recommended correction:
-
-- Never use globally pooled absolute latency to select multi-shape parents.
-- Select specialists per shape or cluster, and generalists by incumbent-normalized regret or coverage.
-- Make transfer selection per target/cluster, followed by candidate deduplication and a global cap.
-- Report which target shapes caused each transfer candidate to be selected.
-
-### B3. Multi-Shape Surrogate Activation And Acquisition Are Not Grid-Safe
-
-Affected code:
-
-- `evotensile/search/surrogate.py:_training_rows()`
-- `evotensile/search/surrogate.py:select_surrogate_pool()`
-
-The activation threshold counts training rows, not unique candidates or adequately covered candidate-shape evidence. On a 100-shape grid, one candidate measured on all shapes produces 100 rows and exceeds the default threshold of 24 despite providing almost no candidate-gene variation.
-
-The multi-shape acquisition then:
-
-- averages predicted log time across target shapes.
-- adds between-shape predicted variance to tree disagreement.
-- uses that combined value as candidate uncertainty.
-
-Between-shape variance mostly reflects real shape latency scale and specialization, not epistemic model uncertainty. It can dominate the uncertainty lane on a heterogeneous grid.
-
-A single global shortlist also hides specialists whose gain on a few shapes is valuable but whose average prediction is mediocre. `docs/plan.md` already describes the correct future direction: incumbent-normalized marginal improvement with specialist, generalist, uncertainty, and unresolved-shape lanes.
-
-Recommended correction:
-
-- Activate by unique candidate count, shape coverage, and feature diversity rather than raw row count.
-- Separate per-shape epistemic uncertainty from between-shape performance variation.
-- Score marginal improvement against each shape incumbent.
-- Select a candidate set by expected grid regret reduction or coverage, not one averaged scalar.
-- Support shape/cluster-specific models when evidence is sparse or heterogeneous.
-
 ## Production-Grid Search Quality And Scaling Findings
-
-### G1. Family Archive Scoring Does Not Require Comparable Shape Coverage
-
-Affected code:
-
-- `evotensile/search/family.py:load_family_archive()`
-- `evotensile/search/learned_linkage.py:load_candidate_evidence()`
-
-Both systems average shape-local percentiles only over shapes where a candidate has selected evidence. Missing shapes are not penalized or represented as uncertainty.
-
-A candidate that is excellent on one measured shape can outrank a broadly measured candidate in the same family. This can be desirable for a specialist archive, but the current API returns one undifferentiated aggregate and then uses it as general breeding evidence.
-
-Recommended correction:
-
-- Separate specialist score, generalist score, coverage count, and unresolved-shape uncertainty.
-- Require an explicit archive objective from callers.
-- Do not compare sparse and broad candidates using the same unqualified mean percentile.
-
-### G2. Operator Credit Treats Correlated Shape Outcomes As Independent Trials
-
-Affected code:
-
-- `evotensile/search/operator_credit.py:_queried_child_outcomes()`
-
-One candidate evaluated on 100 shapes contributes up to 100 binary trials. Another candidate evaluated on one shape contributes one trial. These outcomes share one proposal event, one genome, and much shared preparation cost, but UCB treats them as independent Bernoulli evidence.
-
-The system also uses first-registration candidate lineage. If the same parameter hash is later proposed by another operator or group, only the first source receives credit.
-
-Recommended correction:
-
-- Persist proposal events separately from candidate identity.
-- Compute event-level and shape-level reward explicitly.
-- Normalize or hierarchically model correlated per-shape outcomes.
-- Support workload-weighted reward for production objectives.
 
 ### G3. Screening Stabilization Is One-Shape-Specific And Its Duration Default Does Not Scale
 
@@ -356,7 +230,6 @@ These are cleanup candidates after correctness fixes, not urgent standalone chan
 ### Duplicated Helpers
 
 - `_dedupe_candidates()` exists in CLI and scheduler code. Encoding also has a related helper.
-- `_rank_percentiles()` is duplicated in family and learned-linkage modules.
 - `_round_up()` is duplicated in adaptive timing and screening stabilization.
 
 Consolidation would reduce semantic drift, especially around validation and final claims.
@@ -383,8 +256,6 @@ Recommended extraction:
 ### Documentation That Overstates Current Behavior
 
 - `docs/database.md` says validation identity includes validator version. It contains a manually incremented protocol version, but not the structured-runner binary, hipBLASLt version, ROCm version, GPU identity, or generated-library identity.
-- `docs/search_algorithms.md` describes nearest-shape transfer without documenting multi-target zero-distance tie behavior.
-- `docs/search_surrogate.md` documents a 24-row threshold without warning that one candidate across 100 shapes activates the model.
 
 ### Stale Artifact References
 
@@ -392,40 +263,26 @@ Recommended extraction:
 
 ### Useful Existing Documentation
 
-`docs/plan.md` already identifies several production requirements correctly:
+`docs/plan.md` now contains only unresolved production work:
 
-- incumbent-normalized grid acquisition.
-- specialist and generalist lanes.
-- staged shape evaluation.
-- shape clustering.
-- cost/information-aware serialized timing.
+- staged shape evaluation and shape clustering.
+- workload-aware allocation.
+- measured-cost and information-aware serialized timing.
 - full-grid outlier repair and final solution-bank construction.
+- equal-time production evaluation and ablations.
 
-Those sections should be treated as required design work, not optional polish around the current multi-shape implementation.
+Implemented incumbent-normalized acquisition, specialist/generalist search lanes, proposal scopes, archive objectives, event-level credit, and preparation ordering live in their focused design documents rather than the forward plan.
 
 ## Test Gaps
 
 High-value missing tests include:
 
-- Multi-shape elite selection is incumbent-normalized rather than absolute-time biased.
-- Multi-target transfer covers intended targets/clusters rather than lexical ties.
-- Surrogate activation requires enough unique candidate variation.
-- Specialist candidates can be proposed and measured on eligible shape subsets.
 - Profile-specific defaults resolve from the selected profile.
 - Compile-cache stale-lock recovery.
 
-The current tests are strong around normal scheduler execution, one-shape mechanics, proposal accounting, restart state, resolved benchmark evidence, strict resume identity, soft-budget overrun semantics, hot confirmation, artifact verification, and guarded production export. Multi-shape acquisition still receives little or no direct coverage.
+The current tests are strong around normal scheduler execution, one-shape mechanics, scoped specialist eligibility, shape-normalized elites and transfer, grid surrogate activation/acquisition, explicit archive objectives, event-level operator credit, proposal accounting, restart state, resolved benchmark evidence, strict resume identity, soft-budget overrun semantics, hot confirmation, artifact verification, and guarded production export.
 
 ## Recommended Remediation Order
-
-### Phase 3: Define The Production Grid Objective
-
-- Generate candidates for explicit shape/cluster scopes rather than the all-grid intersection.
-- Replace global absolute-time elites with shape-normalized specialists/generalists.
-- Replace multi-target transfer ties with per-target or per-cluster transfer.
-- Implement incumbent-normalized grid acquisition.
-- Separate specialist, generalist, coverage, and uncertainty archive objectives.
-- Normalize operator reward across correlated shape outcomes.
 
 ### Phase 4: Improve Throughput And Maintainability
 
@@ -438,6 +295,6 @@ The current tests are strong around normal scheduler execution, one-shape mechan
 
 ## Final Recommendation
 
-Keep the current one-shape campaign as an experiment harness, not as the production grid controller. Its bookkeeping now uses explicit proposal events, active/archive diagnostics, strict configuration identity, resolved benchmark and validation state, and soft admission budgets with reported overruns. Reuse those validated components together with candidate representation, source-backed constraints, final-YAML mapping, structured validation, serial timing, probe separation, and DB ranking, but replace scalar one-shape acquisition with a grid-aware specialist/generalist objective.
+Keep the current one-shape campaign as an experiment harness, not as the production grid controller. Its bookkeeping now uses explicit proposal events, active/archive diagnostics, strict configuration identity, resolved benchmark and validation state, and soft admission budgets with reported overruns. Reuse those validated components together with scoped proposals, grid-aware acquisition, explicit archive objectives, event-level operator credit, candidate representation, source-backed constraints, final-YAML mapping, structured validation, serial timing, probe separation, and DB ranking. A production grid controller still needs the Phase 4 resource, wave-execution, evidence-snapshot, cache, and timing-allocation work.
 
 The GridBased updater defaults to a no-write preview and rejects empty or incomplete profile shape sets. The retained 100-shape timing corpus is consolidated under the current benchmark protocol, but still requires current validation evidence and registered complete artifacts before it is export-ready.

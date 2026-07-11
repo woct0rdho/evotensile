@@ -1,11 +1,12 @@
 import math
-from collections import Counter, defaultdict
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvaluationSummary, EvoTensileDB
 from evotensile.search.encoding import PARAM_NAMES, candidate_to_genome, hamming_distance
+from evotensile.search.grid_evidence import candidate_grid_scores
 
 DEFAULT_TRUNCATION_TAU = 0.5
 DEFAULT_MIN_LINKAGE_SAMPLES = 8
@@ -36,6 +37,8 @@ DEFAULT_ORDINAL_PARAM_NAMES = frozenset(
 class CandidateEvidence:
     candidate: Candidate
     aggregate_score: float
+    coverage_fraction: float
+    unresolved_shape_count: int
     samples: int
 
 
@@ -81,15 +84,6 @@ def ordinal_gene_indices(param_names: Iterable[str] = DEFAULT_ORDINAL_PARAM_NAME
     return frozenset(index for index, name in enumerate(PARAM_NAMES) if name in names)
 
 
-def _rank_percentiles(summaries: Sequence[EvaluationSummary]) -> dict[str, float]:
-    ordered = [summary for summary in summaries if summary.median_gflops is not None and summary.median_gflops > 0.0]
-    if not ordered:
-        return {}
-    ordered.sort(key=lambda summary: (summary.median_gflops or 0.0, -(summary.median_time_us or 0.0)), reverse=True)
-    denominator = max(len(ordered) - 1, 1)
-    return {summary.candidate_hash: rank / denominator for rank, summary in enumerate(ordered)}
-
-
 def load_candidate_evidence(
     db: EvoTensileDB,
     *,
@@ -101,6 +95,7 @@ def load_candidate_evidence(
     limit: int | None = None,
 ) -> list[CandidateEvidence]:
     shape_ids = [shape.id for shape in shapes] if shapes is not None else [None]
+    target_shape_ids = [shape.id for shape in shapes] if shapes is not None else []
     summaries_by_shape: dict[str, list[EvaluationSummary]] = {}
     for shape_id in shape_ids:
         summaries = db.rank_evaluations(
@@ -113,28 +108,25 @@ def load_candidate_evidence(
         for summary in summaries:
             summaries_by_shape.setdefault(summary.shape_id, []).append(summary)
 
-    score_items: dict[str, list[tuple[str, float, int]]] = defaultdict(list)
-    for shape_id, summaries in summaries_by_shape.items():
-        rank_percentiles = _rank_percentiles(summaries)
-        for summary in summaries[:elite_per_shape]:
-            percentile = rank_percentiles.get(summary.candidate_hash)
-            if percentile is None:
-                continue
-            score_items[summary.candidate_hash].append((shape_id, percentile, summary.samples))
-
-    candidate_hashes = sorted(score_items)
+    scores = candidate_grid_scores(
+        summaries_by_shape,
+        target_shape_ids=target_shape_ids or sorted(summaries_by_shape),
+        elite_per_shape=elite_per_shape,
+    )
+    candidate_hashes = sorted(scores)
     candidates = {candidate.hash: candidate for candidate in db.get_candidates(candidate_hashes)}
     evidence: list[CandidateEvidence] = []
-    for candidate_hash, items in score_items.items():
+    for candidate_hash, score in scores.items():
         candidate = candidates.get(candidate_hash)
         if candidate is None:
             continue
-        aggregate_score = sum(item[1] for item in items) / len(items)
         evidence.append(
             CandidateEvidence(
                 candidate=candidate,
-                aggregate_score=aggregate_score,
-                samples=sum(samples for _, _, samples in items),
+                aggregate_score=score.generalist_score,
+                coverage_fraction=score.coverage_fraction,
+                unresolved_shape_count=score.unresolved_shape_count,
+                samples=score.samples,
             )
         )
     evidence.sort(key=lambda item: (item.aggregate_score, -item.samples, item.candidate.hash))

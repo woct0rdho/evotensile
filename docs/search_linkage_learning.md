@@ -31,10 +31,11 @@ Raw time and GFLOP/s are not pooled directly across shapes. Instead, linkage lea
 - For each shape, rank candidates by median GFLOP/s, descending.
 - Convert rank to percentile, where lower is better.
 - Keep the top `elite_per_shape` candidates for each shape.
-- Aggregate each candidate's percentiles across shapes by arithmetic mean.
-- Break ties with larger sample counts and then candidate hash.
+- Compute the generalist score across the complete requested shape set.
+- Impute every unresolved target shape at worst percentile rather than ignoring it.
+- Break equal generalist scores by larger sample count and then candidate hash. Coverage is reported explicitly.
 
-This makes linkage evidence shape-aware without letting large shapes dominate because their absolute times are larger.
+This makes linkage evidence shape-aware without letting large shapes dominate because their absolute times are larger or letting a sparse specialist masquerade as broad breeding evidence. One-shape linkage is the same calculation over one shape.
 
 ## Truncation Pool
 

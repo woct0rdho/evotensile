@@ -135,6 +135,14 @@ def test_operator_credit_and_ucb_allocation_use_only_queried_parent_comparisons(
         params["NumElementsPerBatchStore"] = DOMAINS["NumElementsPerBatchStore"][index + 1]
         children.append(make_candidate(params, source=arm, parents=[parent.hash]))
     db.register_candidates([*parents, *children])
+    db.record_proposal_occurrences(
+        children,
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        scope_kind="shape",
+        scope_shape_ids=(shape.id,),
+        selected_candidates=children,
+    )
     db.register_shapes([shape])
     problem_hash = DEFAULT_PROFILE.problem_type_hash
     protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -170,6 +178,7 @@ def test_operator_credit_and_ucb_allocation_use_only_queried_parent_comparisons(
 
     assert credits["semantic-mutation"].successes == 1
     assert credits["semantic-mutation"].failures == 0
+    assert credits["semantic-mutation"].shape_comparisons == 1
     assert all(credits[arm].failures == 1 for arm in arms[1:])
     assert credits["semantic-mutation"].posterior_mean > max(credits[arm].posterior_mean for arm in arms[1:])
 
@@ -196,6 +205,14 @@ def test_group_and_donor_credits_use_persisted_proposal_metadata(tmp_path):
         proposal_metadata={"donor_mode": "diverse", "donor_distance": 4},
     )
     db.register_candidates([parent, semantic_child, donor_child])
+    db.record_proposal_occurrences(
+        [semantic_child, donor_child],
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        scope_kind="shape",
+        scope_shape_ids=(shape.id,),
+        selected_candidates=[semantic_child, donor_child],
+    )
     db.register_shapes([shape])
     problem_hash = DEFAULT_PROFILE.problem_type_hash
     protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -230,6 +247,71 @@ def test_group_and_donor_credits_use_persisted_proposal_metadata(tmp_path):
     assert restored[0].proposal_metadata["semantic_group"] == "StaggerU"
     assert restored[1].proposal_metadata["donor_mode"] == "diverse"
     assert credit_ucb_scores(semantic_credits)["StaggerU"] > 0.0
+
+
+def test_operator_credit_aggregates_correlated_shapes_per_occurrence_and_credits_reproposal(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "event-credits.sqlite")
+    db.init()
+    shapes = [Shape(512, 128, 1, 256), Shape(1024, 1024, 1, 1024)]
+    parent = REFERENCE_CANDIDATE
+    child_params = parent.canonical_params()
+    child_params["StaggerU"] = DOMAINS["StaggerU"][1]
+    first_registration = make_candidate(child_params, source="random")
+    reproposal = make_candidate(child_params, source="de", parents=[parent.hash])
+    db.register_candidates([parent, first_registration])
+    db.record_proposal_occurrences(
+        [reproposal],
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        scope_kind="shape-set",
+        scope_shape_ids=tuple(shape.id for shape in shapes),
+        selected_candidates=[reproposal],
+    )
+    db.record_proposal_occurrences(
+        [reproposal],
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        scope_kind="shape-set",
+        scope_shape_ids=tuple(shape.id for shape in shapes),
+        selected_candidates=[reproposal],
+    )
+    db.register_shapes(shapes)
+    problem_hash = DEFAULT_PROFILE.problem_type_hash
+    protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    for shape, child_time in zip(shapes, (80.0, 125.0), strict=True):
+        for candidate_hash, time_us in ((parent.hash, 100.0), (reproposal.hash, child_time)):
+            db.insert_evaluation(
+                shape_id=shape.id,
+                candidate_hash=candidate_hash,
+                run_id="queried",
+                status="ok",
+                problem_type_hash=problem_hash,
+                benchmark_protocol_hash=protocol_hash,
+                time_us=time_us,
+                validation="PASSED",
+            )
+
+    equal_credits = load_operator_credits(
+        db,
+        problem_type_hash=problem_hash,
+        benchmark_protocol_hash=protocol_hash,
+        shapes=shapes,
+    )
+    weighted_credits = load_operator_credits(
+        db,
+        problem_type_hash=problem_hash,
+        benchmark_protocol_hash=protocol_hash,
+        shapes=shapes,
+        shape_weights={shapes[0].id: 4.0, shapes[1].id: 1.0},
+    )
+    restored = db.get_candidates([reproposal.hash])[0]
+
+    assert equal_credits["de"].trials == 1
+    assert equal_credits["de"].failures == 1
+    assert equal_credits["de"].shape_comparisons == 2
+    assert weighted_credits["de"].trials == 1
+    assert weighted_credits["de"].successes == 1
+    assert restored.source == "random"
 
 
 def test_adaptive_donor_selection_records_quality_diversity_strategy():

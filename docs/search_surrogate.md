@@ -27,7 +27,7 @@ The relevant controls are:
 
 `--covering-cold-start` changes only the one-shape evidence-free fallback and is independent of model activation.
 
-The default multiplier is `1`, so existing proposal behavior is unchanged unless shortlisting is requested. The default evidence threshold is `24` rows.
+The default multiplier is `1`, so existing proposal behavior is unchanged unless shortlisting is requested. The default evidence threshold is `24` unique candidates per shape. A shape model also requires variation in at least four candidate genes, so repeated rows or one candidate measured across many shapes cannot activate the surrogate.
 
 For example, a multiplier of `8` generates eight times the configured random and variation counts, then returns the original requested measurement count plus preserved archive or transfer candidates.
 
@@ -85,37 +85,32 @@ max_features = 0.7
 
 A `DictVectorizer` converts mixed categorical and numeric feature dictionaries to a dense matrix.
 
-For each candidate, the implementation collects predictions from every tree:
-- mean predicted log time is the exploitation estimate.
-- tree-to-tree standard deviation is the uncertainty estimate.
+A separate model is fitted for every target shape with enough unique varied candidates. For each candidate-shape pair, predictions from every tree provide:
+- mean predicted log time.
+- tree-to-tree standard deviation as shape-local epistemic uncertainty.
 
-For multi-shape proposals, candidate means are averaged across target shapes. Uncertainty combines within-shape tree variance and between-shape predicted variance.
-
-The acquisition score is:
-
-```text
-mean_log_time - 0.5 * std_log_time
-```
-
-Lower is better. The uncertainty term allows promising but uncertain candidates to compete with candidates that have the lowest mean prediction.
+Between-shape latency or performance variation is never added to uncertainty. Each prediction is compared with that shape's incumbent log time. One-shape search uses the same path with one shape model.
 
 ## Shortlist Composition
 
-The fixed-size shortlist is assembled in stages:
-- `55%` lowest acquisition score.
-- `20%` highest uncertainty among candidates not already selected.
-- `15%` family-diverse fallback candidates.
-- the remaining budget from a seeded random order.
+The fixed-size shortlist is assembled in explicit grid lanes:
+- `35%` greedy marginal optimistic gain over shape incumbents, preserving complementary specialists.
+- `25%` lowest mean incumbent-normalized log regret among modeled shapes.
+- `15%` highest shape-local ensemble disagreement.
+- `10%` per-shape mechanical-priority coverage for unresolved shapes.
+- family-diverse and seeded-random fill, followed by maximum-Hamming-distance fill if needed.
 
-If deduplication leaves space, the selector fills it with candidates that maximize minimum Hamming distance from the current shortlist.
+Equal shape weights are used for the fixed authoritative grid. The greedy gain lane tracks gain already covered per shape, so a candidate with the same strengths as an existing shortlist member has less marginal value than a complementary specialist. This ensures that a candidate exceptional on a small subset of shapes is not hidden by grid-wide average latency.
+
+Workload-derived acquisition weights are not implemented. A future explicit workload mode may derive them from shape frequency, baseline latency, or measured end-to-end contribution, but a fixed authoritative GridBased campaign retains equal weights and complete shape coverage.
 
 This mixture prevents the model from converting early noisy evidence into a fully greedy search.
 
 ## Cold-Start Fallback
 
-Before `--surrogate-min-evidence` is satisfied, no model is fitted. The default `_diverse_fallback()` groups candidates by family descriptor and samples round-robin across shuffled family cells.
+A shape without enough unique varied candidates remains unresolved and gets no fitted model. If no shape is modeled, multi-shape selection uses per-shape mechanical-priority round-robin for half the budget and family diversity for the remainder. If only some shapes are modeled, the unresolved-shape lane remains separate from model exploitation and uncertainty.
 
-For an explicitly enabled one-shape covering cold start, the fallback instead uses the quality-weighted mechanical covering selector from `docs/search_mechanical_coverage.md`. Exact MatrixInstruction identities are not coverage tokens. This policy changes only which generated candidates are shortlisted and preserves the same measurement budget.
+For an explicitly enabled one-shape covering cold start, the fallback uses the quality-weighted mechanical covering selector from `docs/search_mechanical_coverage.md`. Exact MatrixInstruction identities are not coverage tokens. This policy changes only which generated candidates are shortlisted and preserves the same measurement budget.
 
 ## Scheduler Integration
 
