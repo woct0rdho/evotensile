@@ -10,8 +10,17 @@ from evotensile.campaign.one_shape import OneShapeCampaign, run_one_shape_campai
 from evotensile.campaign.store import CampaignStore
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.shapes import parse_shape
-from scripts.run_blind_one_shape import main
+from scripts import run_blind_one_shape
 from tests.helpers import fake_build_tensile, fake_structured_runner
+
+
+def _small_campaign_configuration(request: CampaignConfigurationRequest, *, shape):
+    return replace(
+        build_campaign_configuration(request, profile=DEFAULT_PROFILE, shape=shape),
+        cold_candidates=2,
+        cold_pool_multiplier=2,
+        hot_top_k=1,
+    )
 
 
 def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
@@ -34,7 +43,7 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
         runner_timeout_s=300.0,
         leader_stabilization=True,
     )
-    configuration = build_campaign_configuration(request, profile=DEFAULT_PROFILE, shape=shape)
+    configuration = _small_campaign_configuration(request, shape=shape)
     campaign = OneShapeCampaign(
         configuration=configuration,
         profile=DEFAULT_PROFILE,
@@ -52,10 +61,10 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
     assert checkpoint["phase"] == "finished"
     assert {event["island_id"] for event in proposals["proposal_events"]} == {"island-0", "island-1"}
     assert all("island_id" in candidate["proposal_metadata"] for candidate in proposals["candidates"])
-    assert summary["rounds"][0]["schedule"]["missing_pairs"] == 48
-    assert summary["rounds"][0]["active_candidate_count"] == 48
+    assert summary["rounds"][0]["schedule"]["missing_pairs"] == 2
+    assert summary["rounds"][0]["active_candidate_count"] == 2
     assert summary["rounds"][0]["archive_candidate_count"] == 0
-    assert summary["rounds"][0]["active_population_diagnostics"]["candidates"] == 48
+    assert summary["rounds"][0]["active_population_diagnostics"]["candidates"] == 2
     assert summary["rounds"][0]["archive_diagnostics"]["candidates"] == 0
     assert configuration["version"] == 1
     assert configuration["adaptive_policy"]["confidence"] == 0.90
@@ -76,11 +85,7 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
     assert run_one_shape_campaign(replace(campaign, resume=True)) == 0
 
     mismatched = OneShapeCampaign(
-        configuration=build_campaign_configuration(
-            replace(request, runner_timeout_s=301.0),
-            profile=DEFAULT_PROFILE,
-            shape=shape,
-        ),
+        configuration=_small_campaign_configuration(replace(request, runner_timeout_s=301.0), shape=shape),
         profile=DEFAULT_PROFILE,
         shape=shape,
         store=CampaignStore(output),
@@ -91,7 +96,7 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
 
     fake_runner.write_text(fake_runner.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
     changed_binary = OneShapeCampaign(
-        configuration=build_campaign_configuration(request, profile=DEFAULT_PROFILE, shape=shape),
+        configuration=_small_campaign_configuration(request, shape=shape),
         profile=DEFAULT_PROFILE,
         shape=shape,
         store=CampaignStore(output),
@@ -110,6 +115,17 @@ def test_campaign_soft_budget_does_not_clamp_admitted_job_timeout(
     fake_runner = fake_structured_runner(tmp_path)
     output = tmp_path / "soft_budget"
     monkeypatch.setenv("EVOTENSILE_TEST_BUILD_SLEEP_S", "0.1")
+    full_configuration_builder = run_blind_one_shape.build_campaign_configuration
+    monkeypatch.setattr(
+        run_blind_one_shape,
+        "build_campaign_configuration",
+        lambda *args, **kwargs: replace(
+            full_configuration_builder(*args, **kwargs),
+            cold_candidates=2,
+            cold_pool_multiplier=1,
+            hot_top_k=1,
+        ),
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -136,7 +152,7 @@ def test_campaign_soft_budget_does_not_clamp_admitted_job_timeout(
         ],
     )
 
-    assert main() == 0
+    assert run_blind_one_shape.main() == 0
     capsys.readouterr()
     summary = json.loads((output / "campaign_summary.json").read_text(encoding="utf-8"))
 

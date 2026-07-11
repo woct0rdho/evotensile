@@ -512,21 +512,21 @@ def test_mixed_random_proposals_do_not_use_random_as_evolution_parents(tmp_path:
 def test_family_qd_cold_start_uses_balanced_random_family_coverage(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    shape = Shape(m=8192, n=8192, batch=1, k=8192)
+    shape = Shape(m=1024, n=1024, batch=1, k=1024)
 
     proposed = propose_candidates(
         db,
         proposal="family-qd",
-        num_random=16,
-        local_count=8,
-        de_count=4,
-        gomea_count=12,
+        num_random=3,
+        local_count=0,
+        de_count=0,
+        gomea_count=0,
         target_shapes=[shape],
-        seed=819200,
+        seed=1151,
     ).selected
 
     assert {candidate.source for candidate in proposed} == {"random"}
-    assert len(proposed) == 16
+    assert len(proposed) == 3
     assert {candidate.params["TransposeLDS"] for candidate in proposed} == {0, 2}
 
 

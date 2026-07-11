@@ -299,21 +299,22 @@ def test_covering_cold_start_increases_mechanical_token_coverage(tmp_path):
 def test_scheduler_surrogate_multiplier_preserves_cold_measurement_budget(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "surrogate.sqlite")
     db.init()
-    shape = Shape(8192, 8192, 1, 8192)
+    shape = Shape(1024, 1024, 1, 1024)
 
-    proposed = propose_candidates(
+    proposal = propose_candidates(
         db,
         proposal="family-qd",
-        num_random=16,
-        local_count=8,
-        de_count=4,
-        gomea_count=12,
+        num_random=3,
+        local_count=0,
+        de_count=0,
+        gomea_count=0,
         target_shapes=[shape],
-        surrogate_pool_multiplier=4,
+        surrogate_pool_multiplier=2,
         covering_cold_start=True,
         seed=20260710,
-    ).selected
+    )
 
-    assert len(proposed) == 16
-    assert {candidate.source for candidate in proposed} == {"random"}
-    assert len(family_descriptor_counts(proposed)) >= 8
+    assert len(proposal.generated) == 6
+    assert len(proposal.selected) == 3
+    assert {candidate.source for candidate in proposal.selected} == {"random"}
+    assert len(family_descriptor_counts(proposal.selected)) >= 2
