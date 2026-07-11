@@ -2,6 +2,8 @@ from pathlib import Path
 from textwrap import dedent
 
 from evotensile.candidate import Candidate
+from evotensile.database import BenchmarkEventInsert, EvoTensileDB, ValidationInsert
+from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search_space import make_candidate, random_candidates, repair_linked_overrides
 
 
@@ -14,6 +16,58 @@ def sample_candidate(*, seed: int = 1151) -> Candidate:
 
 
 REFERENCE_CANDIDATE = make_candidate(repair_linked_overrides({}), source="reference")
+
+
+def insert_test_benchmark_event(
+    db: EvoTensileDB,
+    *,
+    shape_id: str,
+    candidate_hash: str,
+    run_id: str | None,
+    status: str,
+    problem_type_hash: str,
+    benchmark_protocol_hash: str,
+    source_kind: str = "replay",
+    time_us: float | None = None,
+    samples_us: tuple[float, ...] = (),
+    solution_index: int | None = None,
+) -> None:
+    validation_protocol_hash = None
+    if status == "ok":
+        validation_protocol_hash = DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
+        db.insert_validations(
+            [
+                ValidationInsert(
+                    shape_id=shape_id,
+                    candidate_hash=candidate_hash,
+                    run_id=f"{run_id}:validation",
+                    status="passed",
+                    problem_type_hash=problem_type_hash,
+                    validation_protocol_hash=validation_protocol_hash,
+                    source_kind=source_kind,
+                )
+            ]
+        )
+    if time_us is not None:
+        if samples_us:
+            raise ValueError("provide either time_us or samples_us, not both")
+        samples_us = (time_us,)
+    db.insert_benchmark_events(
+        [
+            BenchmarkEventInsert(
+                shape_id=shape_id,
+                candidate_hash=candidate_hash,
+                run_id=run_id,
+                status=status,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                source_kind=source_kind,
+                samples_us=samples_us,
+                validation_protocol_hash=validation_protocol_hash,
+                solution_index=solution_index,
+            )
+        ]
+    )
 
 
 def fake_structured_runner(path: Path) -> Path:

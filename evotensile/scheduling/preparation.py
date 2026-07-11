@@ -4,9 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from evotensile.artifacts import register_candidate_artifacts
+from evotensile.artifacts import register_artifact_bundle
 from evotensile.candidate import stable_hash
-from evotensile.database import EvaluationInsert, EvoTensileDB
+from evotensile.database import BenchmarkEventInsert, EvoTensileDB
 from evotensile.manifest import write_manifest
 from evotensile.profile import TargetProfile
 from evotensile.protocol import BenchmarkProtocol
@@ -140,7 +140,7 @@ def _prepare_current_batch(
             if build_result.ok:
                 (cache_dir / ".evotensile_compile_cache_ok").write_text("ok\n", encoding="utf-8")
 
-    preparation_inserts: list[EvaluationInsert] = []
+    preparation_inserts: list[BenchmarkEventInsert] = []
     errors: list[str] = []
     planned_pairs = {(shape.id, candidate.hash) for shape in current.shapes for candidate in current.candidates}
     solution_yamls = [str(path) for path in find_solution_yamls([build_dir])]
@@ -148,17 +148,21 @@ def _prepare_current_batch(
         manifest_path=manifest_path,
         solution_yaml_paths=solution_yamls,
         planned_pairs=planned_pairs,
+        build_run_id=build_result.run_id,
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
     )
     library_dir = library_dir_from_build(build_dir)
 
     if not build_result.ok and len(current.candidates) == 1 and not runnable:
         status = "build_timeout" if build_result.timed_out else "build_failed"
         preparation_inserts = [
-            EvaluationInsert(
+            BenchmarkEventInsert(
                 shape_id=shape.id,
                 candidate_hash=current.candidates[0].hash,
                 run_id=build_result.run_id,
                 status=status,
+                source_kind="native_run",
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
             )
@@ -167,11 +171,12 @@ def _prepare_current_batch(
         runnable = []
     elif build_result.ok:
         preparation_inserts.extend(
-            EvaluationInsert(
+            BenchmarkEventInsert(
                 shape_id=item.shape_id,
                 candidate_hash=item.candidate_hash,
                 run_id=build_result.run_id,
                 status=item.status,
+                source_kind="native_run",
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
             )
@@ -212,7 +217,7 @@ def _prepare_current_batch(
     elif runnable:
         assert library_dir is not None
         try:
-            register_candidate_artifacts(
+            register_artifact_bundle(
                 db,
                 problem_type_hash=problem_type_hash,
                 runnable_pairs=runnable,
@@ -280,7 +285,7 @@ def _prepare_current_batch(
                 errors.append("prepared artifact contains pairs without cached correctness verification")
 
     if preparation_inserts:
-        db.insert_evaluations(preparation_inserts)
+        db.insert_benchmark_events(preparation_inserts)
     return PreparedBatch(
         planned=current,
         yaml_path=yaml_path,

@@ -59,7 +59,7 @@ def _confirmation_reserve_s(
     protocol_hash: str,
     configuration: CampaignConfiguration,
 ) -> float:
-    finalists = db.rank_evaluations(
+    finalists = db.rank_benchmarks(
         shape_id=shape_id,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=protocol_hash,
@@ -83,7 +83,7 @@ def _leader(
     min_samples: int,
     island_id: str | None = None,
 ) -> dict[str, object] | None:
-    rows = db.rank_evaluations(
+    rows = db.rank_benchmarks(
         shape_id=shape_id,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=protocol_hash,
@@ -124,7 +124,10 @@ def run_one_shape_campaign(campaign: OneShapeCampaign) -> int:
         island_ids=island_ids(configuration),
     )
     db_path = store.db_path
-    db = EvoTensileDB.connect(db_path)
+    db = EvoTensileDB.connect(
+        db_path,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
+    )
     db.init()
     db.register_shapes([shape])
 
@@ -360,6 +363,7 @@ def run_one_shape_campaign(campaign: OneShapeCampaign) -> int:
     )
     hot_records = hot_confirm_topk(
         db_path=db_path,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
         output_dir=store.root / "hot_loop_top8",
         runner_bin=Path(configuration.runner_bin),
         shape_id=shape.id,

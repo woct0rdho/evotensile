@@ -6,7 +6,7 @@ from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search.acquisition import propose_candidates
 from evotensile.search_space import cheap_constraints
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import REFERENCE_CANDIDATE, sample_candidates
+from tests.helpers import REFERENCE_CANDIDATE, insert_test_benchmark_event, sample_candidates
 
 
 def test_local_proposal_mutates_cached_elites(tmp_path: Path):
@@ -18,7 +18,8 @@ def test_local_proposal_mutates_cached_elites(tmp_path: Path):
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     db.register_candidates(candidates)
     db.register_shapes(shapes)
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shapes[0].id,
         candidate_hash=candidates[0].hash,
         run_id="cached",
@@ -26,7 +27,6 @@ def test_local_proposal_mutates_cached_elites(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=10.0,
-        validation="PASSED prior_validation",
     )
 
     proposed = propose_candidates(
@@ -60,7 +60,8 @@ def test_multi_shape_elites_include_shape_normalized_specialists(tmp_path: Path)
         (large, ((candidates[2], 1000.0), (candidates[3], 1200.0))),
     ):
         for candidate, time_us in rows:
-            db.insert_evaluation(
+            insert_test_benchmark_event(
+                db,
                 shape_id=shape.id,
                 candidate_hash=candidate.hash,
                 run_id="cached",
@@ -68,7 +69,6 @@ def test_multi_shape_elites_include_shape_normalized_specialists(tmp_path: Path)
                 problem_type_hash=p_hash,
                 benchmark_protocol_hash=b_hash,
                 time_us=time_us,
-                validation="PASSED",
             )
 
     proposed = propose_candidates(
@@ -96,7 +96,8 @@ def test_exact_shape_transfer_seeds_cached_winner(tmp_path: Path):
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     db.register_candidates(candidates)
     db.register_shapes([shape])
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidates[1].hash,
         run_id="cached",
@@ -104,7 +105,6 @@ def test_exact_shape_transfer_seeds_cached_winner(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
-        validation="PASSED",
     )
 
     proposed = propose_candidates(
@@ -134,7 +134,8 @@ def test_multi_target_transfer_round_robins_target_neighborhoods(tmp_path: Path)
     db.register_candidates(candidates)
     db.register_shapes([first, second])
     for shape, candidate, time_us in ((first, candidates[0], 1.0), (second, candidates[1], 1000.0)):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -142,7 +143,6 @@ def test_multi_target_transfer_round_robins_target_neighborhoods(tmp_path: Path)
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=time_us,
-            validation="PASSED",
         )
 
     proposed = propose_candidates(
@@ -178,7 +178,8 @@ def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
     db.register_candidates(candidates)
     db.register_shapes([target, near_shape, far_shape])
     for shape, candidate, time_us in ((near_shape, candidates[1], 5.0), (far_shape, candidates[2], 3.0)):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -186,7 +187,6 @@ def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=time_us,
-            validation="PASSED prior_validation",
         )
 
     proposed = propose_candidates(
@@ -217,7 +217,8 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     db.register_candidates(candidates)
     db.register_shapes([target, exact_shape, transfer_shape])
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=exact_shape.id,
         candidate_hash=candidates[0].hash,
         run_id="cached",
@@ -225,9 +226,9 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
-        validation="PASSED prior_validation",
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=transfer_shape.id,
         candidate_hash=candidates[1].hash,
         run_id="cached",
@@ -235,7 +236,6 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=0.5,
-        validation="PASSED prior_validation",
     )
 
     proposed = propose_candidates(
@@ -265,7 +265,8 @@ def test_family_qd_builds_one_evidence_snapshot_per_proposal(tmp_path: Path, mon
     db.register_candidates(candidates)
     db.register_shapes([shape])
     for index, candidate in enumerate(candidates):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -273,18 +274,17 @@ def test_family_qd_builds_one_evidence_snapshot_per_proposal(tmp_path: Path, mon
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=1.0 + index,
-            validation="PASSED",
         )
 
     rank_calls = 0
-    original_rank = db.rank_evaluations
+    original_rank = db.rank_benchmarks
 
     def counted_rank(*args, **kwargs):
         nonlocal rank_calls
         rank_calls += 1
         return original_rank(*args, **kwargs)
 
-    monkeypatch.setattr(db, "rank_evaluations", counted_rank)
+    monkeypatch.setattr(db, "rank_benchmarks", counted_rank)
     proposed = propose_candidates(
         db,
         proposal="family-qd",
@@ -318,7 +318,8 @@ def test_gomea_proposal_uses_learned_linkage_by_default_when_evidence_exists(tmp
     db.register_candidates(candidates)
     db.register_shapes([shape])
     for idx, candidate in enumerate(candidates):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -326,7 +327,6 @@ def test_gomea_proposal_uses_learned_linkage_by_default_when_evidence_exists(tmp
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=1.0 + idx,
-            validation="PASSED",
         )
 
     proposed = propose_candidates(
@@ -355,7 +355,8 @@ def test_gomea_proposal_accepts_learned_linkage_from_db_evidence(tmp_path: Path)
     db.register_candidates(candidates)
     db.register_shapes([shape])
     for idx, candidate in enumerate(candidates):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -363,7 +364,6 @@ def test_gomea_proposal_accepts_learned_linkage_from_db_evidence(tmp_path: Path)
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=1.0 + idx,
-            validation="PASSED",
         )
 
     proposed = propose_candidates(
@@ -393,7 +393,8 @@ def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
     db.register_candidates(candidates)
     db.register_shapes([shape])
     for idx, candidate in enumerate(candidates):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -401,7 +402,6 @@ def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=1.0 + idx,
-            validation="PASSED prior_validation",
         )
 
     proposed = propose_candidates(
@@ -540,7 +540,8 @@ def test_family_qd_proposal_preserves_family_archive_leaders(tmp_path: Path):
     db.register_candidates(candidates)
     db.register_shapes([shape])
     for idx, candidate in enumerate(candidates):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -548,7 +549,6 @@ def test_family_qd_proposal_preserves_family_archive_leaders(tmp_path: Path):
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=1.0 + idx,
-            validation="PASSED",
         )
 
     proposed = propose_candidates(
@@ -581,7 +581,8 @@ def test_family_qd_adaptive_operators_use_separate_semantic_arms(tmp_path: Path)
     db.register_candidates(candidates)
     db.register_shapes([shape])
     for index, candidate in enumerate(candidates):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -589,7 +590,6 @@ def test_family_qd_adaptive_operators_use_separate_semantic_arms(tmp_path: Path)
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=100.0 + index,
-            validation="PASSED",
         )
 
     proposed = propose_candidates(

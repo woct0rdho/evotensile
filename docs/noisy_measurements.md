@@ -171,7 +171,7 @@ This keeps adaptive retiming fast without recompiling or revalidating contenders
 
 Probe and main timing have different benchmark-protocol hashes. Production ranking, family archives, transfer, and learned linkage request the main protocol hash, so probe rows cannot become winners or training evidence accidentally.
 
-`rank_evaluations()` ranks only `status='ok'` rows for the requested protocol and summarizes per `(shape_id, candidate_hash)`:
+`rank_benchmarks()` ranks only `status='ok'` rows for the requested protocol and summarizes per `(shape_id, candidate_hash)`:
 - `samples`: positive timing sample count.
 - `median_time_us` and `best_time_us`.
 - `median_gflops` and `best_gflops`, computed from shape FLOPs.

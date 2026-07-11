@@ -11,7 +11,12 @@ from evotensile.profile import DEFAULT_PROFILE
 from evotensile.scheduling.compile_cache import compile_cache_lock
 from evotensile.scheduling.planning import plan_batches, production_candidate_batch_size
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import sample_candidates
+from tests.helpers import insert_test_benchmark_event, sample_candidates
+
+
+def _register_pairs(db: EvoTensileDB, candidates, shapes) -> None:
+    db.register_candidates(list(candidates))
+    db.register_shapes(list(shapes))
 
 
 def _record_validation(
@@ -35,6 +40,7 @@ def _record_validation(
                     validation_protocol_hash or DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
                 ),
                 detail=detail,
+                source_kind="replay",
             )
         ]
     )
@@ -108,7 +114,9 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
     shapes = pilot_100_shapes()[:2]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
-    db.insert_evaluation(
+    _register_pairs(db, candidates, shapes)
+    insert_test_benchmark_event(
+        db,
         shape_id=shapes[0].id,
         candidate_hash=candidates[0].hash,
         run_id="cached",
@@ -116,7 +124,6 @@ def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
-        validation="PASSED prior_validation",
     )
 
     batches = plan_batches(
@@ -147,7 +154,9 @@ def test_plan_batches_requests_only_missing_sample_count(tmp_path: Path):
     shapes = pilot_100_shapes()[:1]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
-    db.insert_evaluation(
+    _register_pairs(db, candidates, shapes)
+    insert_test_benchmark_event(
+        db,
         shape_id=shapes[0].id,
         candidate_hash=candidates[0].hash,
         run_id="cached",
@@ -155,7 +164,6 @@ def test_plan_batches_requests_only_missing_sample_count(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
-        validation="PASSED prior_validation",
     )
     _record_validation(db, shapes[0], candidates[0].hash)
 
@@ -185,7 +193,9 @@ def test_plan_batches_reuses_detailed_hipblaslt_validation_evidence(tmp_path: Pa
     shapes = pilot_100_shapes()[:1]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
-    db.insert_evaluation(
+    _register_pairs(db, candidates, shapes)
+    insert_test_benchmark_event(
+        db,
         shape_id=shapes[0].id,
         candidate_hash=candidates[0].hash,
         run_id="cached",
@@ -193,7 +203,6 @@ def test_plan_batches_reuses_detailed_hipblaslt_validation_evidence(tmp_path: Pa
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
-        validation="PASSED prior_validation",
     )
     _record_validation(
         db,
@@ -225,17 +234,7 @@ def test_plan_batches_requires_validation_without_prior_validation_evidence(tmp_
     shapes = pilot_100_shapes()[:1]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
-    db.insert_evaluation(
-        shape_id=shapes[0].id,
-        candidate_hash=candidates[0].hash,
-        run_id="cached",
-        status="ok",
-        problem_type_hash=p_hash,
-        benchmark_protocol_hash=b_hash,
-        time_us=1.0,
-        validation="NO_CHECK",
-    )
-
+    _register_pairs(db, candidates, shapes)
     batches = plan_batches(
         db,
         shapes=shapes,
@@ -261,6 +260,7 @@ def test_validation_failure_is_scoped_to_validation_protocol(tmp_path: Path):
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     gpu_vhash = DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
     cpu_vhash = DEFAULT_PROFILE.default_protocol.with_overrides(validation_backend="cpu").validation_protocol_hash()
+    _register_pairs(db, [candidate], [shape])
     _record_validation(
         db,
         shape,
@@ -269,7 +269,8 @@ def test_validation_failure_is_scoped_to_validation_protocol(tmp_path: Path):
         status="failed",
         validation_protocol_hash=gpu_vhash,
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidate.hash,
         run_id="legacy_failure",
@@ -313,7 +314,9 @@ def test_positive_timing_allows_topup_despite_older_or_newer_negative(tmp_path: 
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     v_hash = DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
-    db.insert_evaluation(
+    _register_pairs(db, [candidate], [shape])
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidate.hash,
         run_id="old_rejection",
@@ -321,7 +324,8 @@ def test_positive_timing_allows_topup_despite_older_or_newer_negative(tmp_path: 
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidate.hash,
         run_id="timing",
@@ -329,9 +333,9 @@ def test_positive_timing_allows_topup_despite_older_or_newer_negative(tmp_path: 
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
-        validation="PASSED prior_validation",
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidate.hash,
         run_id="new_build_failure",
@@ -366,7 +370,9 @@ def test_latest_validation_result_resolves_pass_fail_conflicts(tmp_path: Path):
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     v_hash = DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
-    db.insert_evaluation(
+    _register_pairs(db, [candidate], [shape])
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidate.hash,
         run_id="timing",
@@ -374,7 +380,6 @@ def test_latest_validation_result_resolves_pass_fail_conflicts(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
-        validation="PASSED prior_validation",
     )
     _record_validation(db, shape, candidate.hash, "FAILED first", status="failed")
     _record_validation(db, shape, candidate.hash, "PASSED second")
@@ -417,7 +422,9 @@ def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):
     shapes = pilot_100_shapes()[:1]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
-    db.insert_evaluation(
+    _register_pairs(db, candidates, shapes)
+    insert_test_benchmark_event(
+        db,
         shape_id=shapes[0].id,
         candidate_hash=candidates[0].hash,
         run_id="cached",
@@ -425,7 +432,8 @@ def test_plan_batches_skips_reusable_negative_cache_entries(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shapes[0].id,
         candidate_hash=candidates[1].hash,
         run_id="cached",

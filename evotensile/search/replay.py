@@ -11,7 +11,7 @@ from pathlib import Path
 
 from evotensile.adaptive_retime import load_timing_stats
 from evotensile.candidate import Candidate, Shape
-from evotensile.database import EvoTensileDB
+from evotensile.database import BenchmarkEventInsert, EvoTensileDB, ValidationInsert
 from evotensile.metrics import gflops_from_us
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import BenchmarkProtocol
@@ -96,17 +96,21 @@ def load_db_oracle(
 ) -> list[OracleRecord]:
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
-    protocol_clause = "AND e.benchmark_protocol_hash = ?" if benchmark_protocol_hash is not None else ""
+    protocol_clause = "AND bp.benchmark_protocol_hash = ?" if benchmark_protocol_hash is not None else ""
     params: list[str] = [shape.id]
     if benchmark_protocol_hash is not None:
         params.append(benchmark_protocol_hash)
     rows = con.execute(
         f"""
-        SELECT c.candidate_json, c.created_at, e.candidate_hash, e.status, e.time_us
-        FROM candidates c
-        JOIN evaluations e ON e.candidate_hash = c.candidate_hash
-        WHERE e.shape_id = ? {protocol_clause}
-        ORDER BY c.created_at, e.eval_id
+        SELECT c.params_json, c.created_at, c.candidate_hash, be.status, bs.time_us
+        FROM benchmark_events AS be
+        LEFT JOIN benchmark_samples AS bs USING (event_id)
+        JOIN candidates AS c USING (candidate_id)
+        JOIN shapes AS s USING (shape_key)
+        JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
+        JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
+        WHERE s.shape_id = ? {protocol_clause}
+        ORDER BY c.created_at, be.event_id, bs.sample_index
         """,
         params,
     ).fetchall()
@@ -116,7 +120,7 @@ def load_db_oracle(
     for row in rows:
         candidate_hash = str(row["candidate_hash"])
         grouped[candidate_hash].append(row)
-        payloads[candidate_hash] = str(row["candidate_json"])
+        payloads[candidate_hash] = str(row["params_json"])
         order[candidate_hash] = float(row["created_at"])
     records = []
     for candidate_hash, candidate_rows in grouped.items():
@@ -130,7 +134,7 @@ def load_db_oracle(
             status = statuses[-1]
         records.append(
             OracleRecord(
-                candidate=Candidate.from_mapping(json.loads(payloads[candidate_hash])),
+                candidate=Candidate(params=dict(json.loads(payloads[candidate_hash])), source="historical_replay"),
                 status=status,
                 screening_gflops=screening_gflops,
                 order=order[candidate_hash],
@@ -229,22 +233,41 @@ def _insert_screening_evidence(
     record: OracleRecord,
     problem_type_hash: str,
     benchmark_protocol_hash: str,
+    source_ref: str,
     samples: int = 2,
 ) -> None:
     if record.screening_gflops is None or record.screening_gflops <= 0.0:
         return
     time_us = 2.0 * shape.m * shape.n * shape.batch * shape.k / (record.screening_gflops * 1e3)
-    for _ in range(samples):
-        db.insert_evaluation(
-            shape_id=shape.id,
-            candidate_hash=record.candidate.hash,
-            run_id="replay",
-            status="ok",
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            time_us=time_us,
-            validation="PASSED",
-        )
+    validation_protocol_hash = DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
+    db.insert_validations(
+        [
+            ValidationInsert(
+                shape_id=shape.id,
+                candidate_hash=record.candidate.hash,
+                run_id=source_ref,
+                status="passed",
+                problem_type_hash=problem_type_hash,
+                validation_protocol_hash=validation_protocol_hash,
+                source_kind="replay",
+            )
+        ]
+    )
+    db.insert_benchmark_events(
+        [
+            BenchmarkEventInsert(
+                shape_id=shape.id,
+                candidate_hash=record.candidate.hash,
+                run_id=source_ref,
+                status="ok",
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                source_kind="replay",
+                samples_us=(time_us,) * samples,
+                validation_protocol_hash=validation_protocol_hash,
+            )
+        ]
+    )
 
 
 def _candidate_island(candidate: Candidate, island_count: int) -> int:
@@ -330,9 +353,13 @@ def simulate_candidate_stream(
 ) -> ReplayResult:
     result = ReplayResult(seed=seed)
     with tempfile.TemporaryDirectory(prefix="evotensile-replay-") as directory:
-        db = EvoTensileDB.connect(Path(directory) / "replay.sqlite")
+        db = EvoTensileDB.connect(
+            Path(directory) / "replay.sqlite",
+            environment_compatibility_tag=DEFAULT_PROFILE.environment_compatibility_tag,
+        )
         db.init()
         db.register_shapes([shape])
+        replay_source_ref = f"simulated_stream_seed_{seed}"
         pending: dict[str, Candidate] = {}
         stream_index = 0
         queried: set[str] = set()
@@ -374,7 +401,7 @@ def simulate_candidate_stream(
                 pending.pop(candidate.hash, None)
                 queried.add(candidate.hash)
                 result.queried.append(candidate.hash)
-                db.upsert_candidate(candidate)
+                db.register_candidates([candidate])
                 record = oracle.get(candidate.hash)
                 if record is None:
                     result.unknown.append(candidate.hash)
@@ -437,6 +464,7 @@ def simulate_candidate_stream(
                         record=record,
                         problem_type_hash=problem_type_hash,
                         benchmark_protocol_hash=benchmark_protocol_hash,
+                        source_ref=replay_source_ref,
                     )
                     if incumbent_gflops is None or record.screening_gflops > incumbent_gflops:
                         incumbent_gflops = record.screening_gflops
@@ -473,6 +501,7 @@ def simulate_candidate_stream(
                         record=record,
                         problem_type_hash=problem_type_hash,
                         benchmark_protocol_hash=benchmark_protocol_hash,
+                        source_ref=replay_source_ref,
                         samples=request.remaining_samples,
                     )
                     stabilized_candidates += 1
@@ -511,7 +540,7 @@ def simulate_candidate_stream(
 
         ranked_hashes = [
             summary.candidate_hash
-            for summary in db.rank_evaluations(
+            for summary in db.rank_benchmarks(
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
                 shape_id=shape.id,

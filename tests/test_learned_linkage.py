@@ -18,7 +18,7 @@ from evotensile.search.learned_linkage import (
     upgma_fos,
 )
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import sample_candidates
+from tests.helpers import insert_test_benchmark_event, sample_candidates
 
 
 def _scored(genome: tuple[int, ...], score: float, name: str | None = None) -> ScoredGenome:
@@ -30,11 +30,12 @@ def test_load_candidate_evidence_uses_shape_local_ranks_and_positive_rows(tmp_pa
     db.init()
     candidates = sample_candidates(3)
     shapes = pilot_100_shapes()[:2]
-    db.register_candidates(candidates[:2])
+    db.register_candidates(candidates)
     db.register_shapes(shapes)
     problem_hash = DEFAULT_PROFILE.problem_type_hash
     protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shapes[0].id,
         candidate_hash=candidates[0].hash,
         run_id="run",
@@ -42,9 +43,9 @@ def test_load_candidate_evidence_uses_shape_local_ranks_and_positive_rows(tmp_pa
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
         time_us=1.0,
-        validation="PASSED",
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shapes[0].id,
         candidate_hash=candidates[1].hash,
         run_id="run",
@@ -52,9 +53,9 @@ def test_load_candidate_evidence_uses_shape_local_ranks_and_positive_rows(tmp_pa
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
         time_us=2.0,
-        validation="PASSED",
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shapes[1].id,
         candidate_hash=candidates[1].hash,
         run_id="run",
@@ -62,17 +63,15 @@ def test_load_candidate_evidence_uses_shape_local_ranks_and_positive_rows(tmp_pa
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
         time_us=1.0,
-        validation="PASSED",
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shapes[1].id,
         candidate_hash=candidates[2].hash,
         run_id="run",
         status="build_failed",
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
-        time_us=0.5,
-        validation="FAILED",
     )
 
     snapshot = load_proposal_evidence_snapshot(
@@ -115,7 +114,8 @@ def test_linkage_db_loader_expands_evidence_for_truncation(tmp_path):
     db.register_candidates(candidates)
     db.register_shapes([shape])
     for index, candidate in enumerate(candidates):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="run",
@@ -123,7 +123,6 @@ def test_linkage_db_loader_expands_evidence_for_truncation(tmp_path):
             problem_type_hash=problem_hash,
             benchmark_protocol_hash=protocol_hash,
             time_us=1.0 + index,
-            validation="PASSED",
         )
 
     snapshot = load_proposal_evidence_snapshot(

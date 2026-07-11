@@ -26,6 +26,7 @@ class TargetProfile:
     library_logic: dict[str, Any]
     default_protocol: BenchmarkProtocol
     shapes_fn: Callable[[], list[Shape]]
+    environment_compatibility_tag: str
     compute_unit_count: int
     workgroup_processor_count: int
     compute_units_per_workgroup_processor: int
@@ -51,6 +52,8 @@ class TargetProfile:
     default_runner_timeout_s: float | None = 600.0
 
     def __post_init__(self) -> None:
+        if not self.environment_compatibility_tag.strip():
+            raise ValueError("environment compatibility tag must not be empty")
         if self.compute_unit_count <= 0 or self.workgroup_processor_count <= 0:
             raise ValueError("hardware execution-unit counts must be positive")
         if self.compute_units_per_workgroup_processor <= 0:
@@ -81,6 +84,7 @@ GFX1151_NT_HHS = TargetProfile(
     library_logic=LIBRARY_LOGIC_GRIDBASED_GFX1151,
     default_protocol=DEFAULT_BENCHMARK_PROTOCOL,
     shapes_fn=pilot_100_shapes,
+    environment_compatibility_tag="gfx1151-nt-hhs-v1",
     compute_unit_count=40,
     workgroup_processor_count=20,
     compute_units_per_workgroup_processor=2,

@@ -1,4 +1,3 @@
-import json
 import math
 import statistics
 import time
@@ -8,7 +7,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from evotensile.adaptive_retime import MEDIAN_SE_FACTOR, CandidateTimingStats, load_timing_stats
-from evotensile.artifacts import CandidateArtifact, load_candidate_artifacts
+from evotensile.artifacts import CandidateArtifact, load_artifact_mappings
 from evotensile.candidate import Shape
 from evotensile.database import EvoTensileDB
 from evotensile.protocol import BenchmarkProtocol
@@ -370,7 +369,7 @@ def stabilize_screening_leaders(
         shape_ids=shape_ids,
         candidate_hashes=candidate_hashes,
     )
-    artifacts = load_candidate_artifacts(
+    artifacts = load_artifact_mappings(
         db,
         problem_type_hash=problem_type_hash,
         shape_ids=shape_ids,
@@ -432,28 +431,11 @@ def stabilize_screening_leaders(
         runner_duration_s += output.duration_s
         db.insert_run(
             output.run_id,
-            yaml_path=None,
-            output_dir=str(run_dir),
+            phase="screening",
             status="timeout" if output.timed_out else "ok" if output.ok else "failed",
+            duration_s=output.duration_s,
             returncode=output.returncode,
             candidate_hashes=[pair.candidate_hash for pair in pairs],
-            cost_phase="screening",
-            duration_s=output.duration_s,
-            metadata_json=json.dumps(
-                {
-                    "cluster_ids": sorted({request.cluster_id for request, _ in items}),
-                    "command": output.command,
-                    "duration_s": output.duration_s,
-                    "mode": output.mode,
-                    "pair_count": len(pairs),
-                    "phase": "screening_stabilization",
-                    "results_path": str(output.results_path),
-                    "stderr_path": str(output.stderr_path),
-                    "stdout_path": str(output.stdout_path),
-                    "timed_out": output.timed_out,
-                },
-                sort_keys=True,
-            ),
         )
         try:
             inserts = validate_benchmark_samples(
@@ -463,6 +445,7 @@ def stabilize_screening_leaders(
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=protocol_hash,
                 run_id=output.run_id,
+                validation_protocol_hash=validation_protocol_hash,
                 runner_returncode=output.returncode,
             )
         except Exception as exc:
@@ -472,8 +455,8 @@ def stabilize_screening_leaders(
                 for request, _ in items
             )
             continue
-        db.insert_evaluations(inserts)
-        added_samples += sum(1 for insert in inserts if insert.status == "ok")
+        db.insert_benchmark_events(inserts)
+        added_samples += sum(len(insert.samples_us) for insert in inserts if insert.status == "ok")
         completed.extend(request.pair for request, _ in items)
 
     runner_budget_exhausted = runner_budget_exhausted or (runner_duration_s >= active_policy.max_runner_duration_s)

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .candidate import Shape
-from .database import EvaluationInsert, ValidationInsert, validation_token
+from .database import BenchmarkEventInsert, ValidationInsert
 from .manifest import manifest_by_shape_candidate, read_manifest
 from .protocol import BenchmarkProtocol
 from .runner import _merged_env
@@ -16,6 +16,10 @@ from .solution_mapping import build_solution_candidate_mapper
 from .subprocess_utils import run_logged_process
 
 RunMode = Literal["validate", "benchmark"]
+
+
+def _validation_token(value: str | None) -> str:
+    return (value or "").strip().split(maxsplit=1)[0].upper()
 
 
 @dataclass(frozen=True)
@@ -155,7 +159,10 @@ def build_runnable_pairs(
     manifest_path: str | Path,
     solution_yaml_paths: Sequence[str | Path],
     planned_pairs: set[tuple[str, str]],
-) -> tuple[list[RunnablePair], list[EvaluationInsert]]:
+    build_run_id: str,
+    problem_type_hash: str,
+    benchmark_protocol_hash: str,
+) -> tuple[list[RunnablePair], list[BenchmarkEventInsert]]:
     entries = read_manifest(manifest_path)
     by_shape_candidate = manifest_by_shape_candidate(entries)
     mapper = build_solution_candidate_mapper(entries, solution_yaml_paths)
@@ -180,11 +187,14 @@ def build_runnable_pairs(
             accepted_pairs.add(key)
 
     negative = [
-        EvaluationInsert(
+        BenchmarkEventInsert(
             shape_id=shape_id,
             candidate_hash=candidate_hash,
-            run_id=None,
+            run_id=build_run_id,
             status="rejected" if (shape_id, candidate_hash) in by_shape_candidate else "unmapped",
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            source_kind="native_run",
         )
         for shape_id, candidate_hash in sorted(planned_pairs - accepted_pairs)
     ]
@@ -231,7 +241,7 @@ def validate_validation_samples(
         sample = pair_samples[0]
         if sample.time_us is not None:
             raise ValueError(f"validation runner emitted timing for {key}")
-        token = validation_token(sample.validation)
+        token = _validation_token(sample.validation)
         passed = sample.status == "ok" and token in {"PASSED", "OK", "VALID"}
         validations.append(
             ValidationInsert(
@@ -240,6 +250,7 @@ def validate_validation_samples(
                 run_id=run_id,
                 status="passed" if passed else "failed",
                 problem_type_hash=problem_type_hash,
+                source_kind="native_run",
                 validation_protocol_hash=validation_protocol_hash,
                 detail=sample.validation,
                 solution_index=sample.solution_index,
@@ -262,11 +273,12 @@ def validate_benchmark_samples(
     problem_type_hash: str,
     benchmark_protocol_hash: str,
     run_id: str,
+    validation_protocol_hash: str | None = None,
     runner_returncode: int = 0,
-) -> list[EvaluationInsert]:
+) -> list[BenchmarkEventInsert]:
     _, grouped = _group_samples(samples, runnable_pairs)
     expected_indices = set(range(protocol.num_benchmarks))
-    inserts: list[EvaluationInsert] = []
+    inserts: list[BenchmarkEventInsert] = []
     positive_seen = False
 
     for key, pair_samples in grouped.items():
@@ -276,14 +288,14 @@ def validate_benchmark_samples(
                 raise ValueError(f"benchmark runner emitted mixed positive and negative rows for {key}")
             sample = negative[0]
             inserts.append(
-                EvaluationInsert(
+                BenchmarkEventInsert(
                     shape_id=sample.shape_id,
                     candidate_hash=sample.candidate_hash,
                     run_id=run_id,
                     status=sample.status,
+                    source_kind="native_run",
                     problem_type_hash=problem_type_hash,
                     benchmark_protocol_hash=benchmark_protocol_hash,
-                    validation=sample.validation,
                     solution_index=sample.solution_index,
                 )
             )
@@ -299,25 +311,28 @@ def validate_benchmark_samples(
                 f"benchmark runner emitted incomplete sample set for {key}: "
                 f"expected {sorted(expected_indices)}, got {sorted(indices)}"
             )
-        for sample in sorted(pair_samples, key=lambda item: item.sample_index or 0):
-            if validation_token(sample.validation) != "NO_CHECK":
+        ordered_samples = sorted(pair_samples, key=lambda item: item.sample_index or 0)
+        for sample in ordered_samples:
+            if _validation_token(sample.validation) != "NO_CHECK":
                 raise ValueError(f"benchmark runner performed validation for {key}")
             if not _finite_positive(sample.time_us):
                 raise ValueError(f"benchmark runner emitted invalid time for {key}: {sample.time_us}")
-            positive_seen = True
-            inserts.append(
-                EvaluationInsert(
-                    shape_id=sample.shape_id,
-                    candidate_hash=sample.candidate_hash,
-                    run_id=run_id,
-                    status="ok",
-                    problem_type_hash=problem_type_hash,
-                    benchmark_protocol_hash=benchmark_protocol_hash,
-                    time_us=sample.time_us,
-                    validation="PASSED prior_validation",
-                    solution_index=sample.solution_index,
-                )
+        positive_seen = True
+        first = ordered_samples[0]
+        inserts.append(
+            BenchmarkEventInsert(
+                shape_id=first.shape_id,
+                candidate_hash=first.candidate_hash,
+                run_id=run_id,
+                status="ok",
+                source_kind="native_run",
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                samples_us=tuple(float(sample.time_us) for sample in ordered_samples if sample.time_us is not None),
+                validation_protocol_hash=validation_protocol_hash or protocol.validation_protocol_hash(),
+                solution_index=first.solution_index,
             )
+        )
 
     if runner_returncode != 0 and positive_seen:
         raise ValueError(f"benchmark runner returned {runner_returncode} with positive result rows")

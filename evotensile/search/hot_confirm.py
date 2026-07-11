@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import TypedDict
 
-from evotensile.artifacts import load_candidate_artifacts
+from evotensile.artifacts import load_artifact_mappings
 from evotensile.database import EvoTensileDB
 from evotensile.metrics import gflops_from_us
 from evotensile.protocol import BenchmarkProtocol
@@ -45,6 +45,7 @@ def _median(values: list[float]) -> float:
 def hot_confirm_topk(
     *,
     db_path: str | Path,
+    environment_compatibility_tag: str | None = None,
     output_dir: str | Path,
     runner_bin: str | Path,
     shape_id: str,
@@ -58,8 +59,11 @@ def hot_confirm_topk(
 ) -> list[HotConfirmationRecord]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    db = EvoTensileDB.connect(db_path)
-    summaries = db.rank_evaluations(
+    db = EvoTensileDB.connect(
+        db_path,
+        environment_compatibility_tag=environment_compatibility_tag,
+    )
+    summaries = db.rank_benchmarks(
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=screening_protocol_hash,
         shape_id=shape_id,
@@ -74,7 +78,7 @@ def hot_confirm_topk(
         candidate_hashes=hashes,
     )
     hashes = [candidate_hash for candidate_hash in hashes if (shape_id, candidate_hash) in validated]
-    artifacts = load_candidate_artifacts(
+    artifacts = load_artifact_mappings(
         db,
         problem_type_hash=problem_type_hash,
         shape_ids=[shape_id],
@@ -130,9 +134,11 @@ def hot_confirm_topk(
                 run_id=run_output.run_id,
                 runner_returncode=run_output.returncode,
             )
-            if len(inserts) != hot_protocol.num_benchmarks or any(insert.status != "ok" for insert in inserts):
+            if len(inserts) != 1 or inserts[0].status != "ok":
+                raise ValueError("hot confirmation did not return one complete positive event")
+            times = list(inserts[0].samples_us)
+            if len(times) != hot_protocol.num_benchmarks:
                 raise ValueError("hot confirmation did not return a complete positive sample set")
-            times = [float(insert.time_us) for insert in inserts if insert.time_us is not None]
         except (TypeError, ValueError) as exc:
             failures.append(
                 {

@@ -92,7 +92,7 @@ A cache-specific kernel advisory file lock prevents duplicate population by prep
 
 Validation, probe, main benchmark, and adaptive top-up modes always use the same prepared library directory. None of the timing stages invoke TensileLite again.
 
-After final-YAML mapping, the scheduler registers every runnable pair in `candidate_artifacts` with its exact mapped indices, build root, generated solution YAML, library path, and a SHA-256-derived identity over the library contents. Registration failure blocks validation and timing for that prepared batch. Later stabilization, confirmation, and production export use only content-verified registry entries. They do not rediscover artifacts by scanning run directories.
+After final-YAML mapping, the scheduler registers one shared artifact bundle for the generated library and one mapping per runnable pair. The bundle owns build roots, normalized generated solution-YAML paths, library path, optional manifest, and a SHA-256-derived library content identity. Mappings own exact solution indices. Registration failure blocks validation and timing for that prepared batch. Later stabilization, confirmation, and production export use only content-verified bundles. They do not rediscover artifacts by scanning run directories.
 
 ## Accepted-Solution Mapping
 
@@ -204,4 +204,4 @@ Attributed failures become reusable `build_failed` rows. Unattributed failures b
 
 ## Run Records
 
-Build, diagnostic, validation, and benchmark invocations insert separate `runs` rows with command, mode, paths, return code, duration, and timeout status. CLI metadata records the probe policy/hash, survivor and screened pair counts, and whether an executed batch belongs to initial probe, probe top-up, initial main timing, screening stabilization, or an adaptive top-up.
+Build, diagnostic, validation, and benchmark invocations create `evidence_sources` plus typed `native_runs` rows containing phase, status, duration, and return code. Commands and logs remain filesystem artifacts. Reusable generated paths belong to artifact bundles. CLI metadata records the probe policy/hash, survivor and screened pair counts, and executed timing phase.

@@ -3,7 +3,7 @@ from typing import TypeVar
 
 from evotensile.adaptive_retime import ProbePolicy, decide_shape_probe, load_timing_stats
 from evotensile.candidate import Candidate, Shape
-from evotensile.database import EvaluationInsert, EvoTensileDB
+from evotensile.database import BenchmarkEventInsert, EvoTensileDB
 from evotensile.scheduling.models import PlannedBatch
 from evotensile.search_space import explain_invalid_nt_hhs
 
@@ -48,7 +48,7 @@ def record_shape_rule_rejections(
         shape_ids=[shape.id for shape in shapes],
         candidate_hashes=[candidate.hash for candidate in candidates],
     )
-    evaluations: list[EvaluationInsert] = []
+    events: list[BenchmarkEventInsert] = []
     for shape in shapes:
         for candidate in candidates:
             if (shape.id, candidate.hash) in states:
@@ -56,18 +56,19 @@ def record_shape_rule_rejections(
             if any(
                 reason.shape_dependent for reason in explain_invalid_nt_hhs(candidate.canonical_params(), shape=shape)
             ):
-                evaluations.append(
-                    EvaluationInsert(
+                events.append(
+                    BenchmarkEventInsert(
                         shape_id=shape.id,
                         candidate_hash=candidate.hash,
                         run_id=None,
                         status="rejected",
+                        source_kind="static_rule",
                         problem_type_hash=problem_type_hash,
                         benchmark_protocol_hash=benchmark_protocol_hash,
                     )
                 )
-    db.insert_evaluations(evaluations)
-    return len(evaluations)
+    db.insert_benchmark_events(events)
+    return len(events)
 
 
 def _missing_candidate_indices_by_shape(

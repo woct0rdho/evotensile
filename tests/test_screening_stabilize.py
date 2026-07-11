@@ -121,15 +121,18 @@ def test_screening_stabilization_runner_budget_skips_later_fair_pair(tmp_path: P
     db = EvoTensileDB.connect(tmp_path / "campaign.sqlite")
     db.init()
     shapes = pilot_100_shapes()[:2]
+    candidates = sample_candidates(2)
+    db.register_candidates(candidates)
+    db.register_shapes(shapes)
     stats = {
-        shape.id: [timing_stats_from_times(shape.id, f"candidate-{index}", [25.0, 25.0])]
+        shape.id: [timing_stats_from_times(shape.id, candidates[index].hash, [25.0, 25.0])]
         for index, shape in enumerate(shapes)
     }
     artifacts = {
-        (shape.id, f"candidate-{index}"): CandidateArtifact(
+        (shape.id, candidates[index].hash): CandidateArtifact(
             runnable_pair=RunnablePair(
                 shape_id=shape.id,
-                candidate_hash=f"candidate-{index}",
+                candidate_hash=candidates[index].hash,
                 problem_index=index,
                 requested_solution_index=index,
                 library_solution_index=index,
@@ -150,7 +153,7 @@ def test_screening_stabilization_runner_budget_skips_later_fair_pair(tmp_path: P
         "validated_cache_entries",
         lambda **kwargs: set(artifacts),
     )
-    monkeypatch.setattr(screening_stabilize, "load_candidate_artifacts", lambda *args, **kwargs: artifacts)
+    monkeypatch.setattr(screening_stabilize, "load_artifact_mappings", lambda *args, **kwargs: artifacts)
 
     calls = []
 
@@ -236,7 +239,7 @@ def test_screening_stabilization_reuses_prior_artifacts(tmp_path: Path, monkeypa
         ),
     )
 
-    ranked = db.rank_evaluations(
+    ranked = db.rank_benchmarks(
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=protocol.protocol_hash(),
         shape_id=shape.id,

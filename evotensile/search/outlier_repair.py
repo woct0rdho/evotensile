@@ -2,7 +2,7 @@ import math
 from dataclasses import dataclass
 
 from evotensile.candidate import Candidate, Shape
-from evotensile.database import EvaluationSummary, EvoTensileDB
+from evotensile.database import BenchmarkSummary, EvoTensileDB
 from evotensile.search.shape_neighborhoods import shape_distance, shape_feature_delta
 from evotensile.shapes import shape_from_id
 
@@ -62,7 +62,7 @@ def _solve_linear_system(matrix: list[list[float]], rhs: list[float]) -> list[fl
 
 def _weighted_local_linear_prediction(
     target: Shape,
-    nearest: list[tuple[float, Shape, EvaluationSummary]],
+    nearest: list[tuple[float, Shape, BenchmarkSummary]],
 ) -> float | None:
     if len(nearest) < 3:
         return None
@@ -100,9 +100,9 @@ def _winner_summaries_by_shape(
     problem_type_hash: str,
     benchmark_protocol_hash: str,
     min_samples: int,
-) -> dict[str, EvaluationSummary]:
-    winners: dict[str, EvaluationSummary] = {}
-    for summary in db.rank_evaluations(
+) -> dict[str, BenchmarkSummary]:
+    winners: dict[str, BenchmarkSummary] = {}
+    for summary in db.rank_benchmarks(
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         min_samples=min_samples,
@@ -151,7 +151,7 @@ def detect_underperforming_shapes(
         median_gflops = summary.median_gflops
         if median_gflops is None or median_gflops <= 0:
             continue
-        neighbor_items: list[tuple[float, Shape, EvaluationSummary]] = []
+        neighbor_items: list[tuple[float, Shape, BenchmarkSummary]] = []
         for other_id, other_summary in winners.items():
             if other_id == shape.id or other_summary.median_gflops is None or other_summary.median_gflops <= 0:
                 continue
@@ -216,7 +216,7 @@ def repair_seed_candidates(
                 hashes.append(candidate_hash)
                 seen.add(candidate_hash)
         for shape_id in outlier.neighbor_shape_ids:
-            for summary in db.rank_evaluations(
+            for summary in db.rank_benchmarks(
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
                 shape_id=shape_id,

@@ -16,7 +16,7 @@ from evotensile.search.operator_credit import (
 from evotensile.search.semantics import semantic_group_key, semantic_group_names
 from evotensile.search_space import DOMAINS, make_candidate, random_candidate
 from evotensile.shapes import Shape
-from tests.helpers import REFERENCE_CANDIDATE
+from tests.helpers import REFERENCE_CANDIDATE, insert_test_benchmark_event
 
 
 def _family_variants(base, count: int):
@@ -134,19 +134,21 @@ def test_operator_credit_and_ucb_allocation_use_only_queried_parent_comparisons(
         params["NumElementsPerBatchStore"] = DOMAINS["NumElementsPerBatchStore"][index + 1]
         children.append(make_candidate(params, source=arm, parents=[parent.hash]))
     db.register_candidates([*parents, *children])
-    db.record_proposal_occurrences(
+    db.record_proposal_event(
         children,
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
         scope_kind="shape",
         scope_shape_ids=(shape.id,),
+        generated_hashes={child.hash for child in children},
         selected_candidates=children,
     )
     db.register_shapes([shape])
     problem_hash = DEFAULT_PROFILE.problem_type_hash
     protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     for parent in parents:
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=parent.hash,
             run_id="parent",
@@ -154,10 +156,10 @@ def test_operator_credit_and_ucb_allocation_use_only_queried_parent_comparisons(
             problem_type_hash=problem_hash,
             benchmark_protocol_hash=protocol_hash,
             time_us=100.0,
-            validation="PASSED",
         )
     for index, child in enumerate(children):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=child.hash,
             run_id="child",
@@ -165,7 +167,6 @@ def test_operator_credit_and_ucb_allocation_use_only_queried_parent_comparisons(
             problem_type_hash=problem_hash,
             benchmark_protocol_hash=protocol_hash,
             time_us=90.0 if index == 0 else 110.0,
-            validation="PASSED",
         )
 
     snapshot = load_proposal_evidence_snapshot(
@@ -205,19 +206,21 @@ def test_group_and_donor_credits_use_persisted_proposal_metadata(tmp_path):
         proposal_metadata={"donor_mode": "diverse", "donor_distance": 4},
     )
     db.register_candidates([parent, semantic_child, donor_child])
-    db.record_proposal_occurrences(
+    db.record_proposal_event(
         [semantic_child, donor_child],
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
         scope_kind="shape",
         scope_shape_ids=(shape.id,),
+        generated_hashes={semantic_child.hash, donor_child.hash},
         selected_candidates=[semantic_child, donor_child],
     )
     db.register_shapes([shape])
     problem_hash = DEFAULT_PROFILE.problem_type_hash
     protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     for candidate, time_us in ((parent, 100.0), (semantic_child, 90.0), (donor_child, 110.0)):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="queried",
@@ -225,7 +228,6 @@ def test_group_and_donor_credits_use_persisted_proposal_metadata(tmp_path):
             problem_type_hash=problem_hash,
             benchmark_protocol_hash=protocol_hash,
             time_us=time_us,
-            validation="PASSED",
         )
 
     snapshot = load_proposal_evidence_snapshot(
@@ -237,12 +239,15 @@ def test_group_and_donor_credits_use_persisted_proposal_metadata(tmp_path):
     credit_views = load_operator_credit_views(snapshot, shapes=[shape])
     semantic_credits = dict(credit_views.semantic_group)
     donor_credits = credit_views.donor_mode
-    restored = db.get_candidates([semantic_child.hash, donor_child.hash])
+    occurrences = db.proposal_candidate_occurrences(
+        problem_type_hash=problem_hash,
+        benchmark_protocol_hash=protocol_hash,
+    )
 
     assert semantic_credits["StaggerU"].successes == 1
     assert donor_credits["diverse"].failures == 1
-    assert restored[0].proposal_metadata["semantic_group"] == "StaggerU"
-    assert restored[1].proposal_metadata["donor_mode"] == "diverse"
+    assert occurrences[0].proposal_metadata["semantic_group"] == "StaggerU"
+    assert occurrences[1].proposal_metadata["donor_mode"] == "diverse"
     assert credit_ucb_scores(semantic_credits)["StaggerU"] > 0.0
 
 
@@ -256,20 +261,22 @@ def test_operator_credit_aggregates_correlated_shapes_per_occurrence_and_credits
     first_registration = make_candidate(child_params, source="random")
     reproposal = make_candidate(child_params, source="de", parents=[parent.hash])
     db.register_candidates([parent, first_registration])
-    db.record_proposal_occurrences(
+    db.record_proposal_event(
         [reproposal],
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
         scope_kind="shape-set",
         scope_shape_ids=tuple(shape.id for shape in shapes),
+        generated_hashes={reproposal.hash},
         selected_candidates=[reproposal],
     )
-    db.record_proposal_occurrences(
+    db.record_proposal_event(
         [reproposal],
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
         scope_kind="shape-set",
         scope_shape_ids=tuple(shape.id for shape in shapes),
+        generated_hashes={reproposal.hash},
         selected_candidates=[reproposal],
     )
     db.register_shapes(shapes)
@@ -277,7 +284,8 @@ def test_operator_credit_aggregates_correlated_shapes_per_occurrence_and_credits
     protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     for shape, child_time in zip(shapes, (80.0, 125.0), strict=True):
         for candidate_hash, time_us in ((parent.hash, 100.0), (reproposal.hash, child_time)):
-            db.insert_evaluation(
+            insert_test_benchmark_event(
+                db,
                 shape_id=shape.id,
                 candidate_hash=candidate_hash,
                 run_id="queried",
@@ -285,7 +293,6 @@ def test_operator_credit_aggregates_correlated_shapes_per_occurrence_and_credits
                 problem_type_hash=problem_hash,
                 benchmark_protocol_hash=protocol_hash,
                 time_us=time_us,
-                validation="PASSED",
             )
 
     snapshot = load_proposal_evidence_snapshot(
@@ -307,7 +314,8 @@ def test_operator_credit_aggregates_correlated_shapes_per_occurrence_and_credits
     assert equal_credits["de"].shape_comparisons == 2
     assert weighted_credits["de"].trials == 1
     assert weighted_credits["de"].successes == 1
-    assert restored.source == "random"
+    assert restored.source == "unknown"
+    assert restored.parent_hashes == ()
 
 
 def test_adaptive_donor_selection_records_quality_diversity_strategy():

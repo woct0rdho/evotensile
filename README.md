@@ -1,22 +1,21 @@
 # EvoTensile
 
-Work in progress. README is AI-generated.
+Work in progress. README and docs are AI-generated and intended for AI to read.
 
-EvoTensile is a smart-search autotuner for TensileLite. It proposes complete TensileLite candidate bundles, emits them as TensileLite `Groups`, uses TensileLite for solution/code-object generation, and records structured timing/cache metadata for iterative search. It is inspired by [Helion](https://github.com/pytorch/helion), [rocm\_wmma\_gemm](https://github.com/adelj88/rocm_wmma_gemm), [Ductile](https://github.com/ROCm/rocm-libraries/pull/8831), and [GEKO](https://github.com/ROCm/rocm-libraries/pull/8832).
+EvoTensile is a framework for TensileLite kernel tuning using smart search algorithms. It's inspired by [Helion](https://github.com/pytorch/helion), [rocm\_wmma\_gemm](https://github.com/adelj88/rocm_wmma_gemm), [Ductile](https://github.com/ROCm/rocm-libraries/pull/8831), and [GEKO](https://github.com/ROCm/rocm-libraries/pull/8832).
 
-The repository currently includes one concrete target configuration, but the core code is intended to stay reusable: candidate hashing, shape handling, search-space encoding, YAML emission, runner orchestration, benchmark-protocol hashing, validation-aware ingestion, ranking, adaptive finalist top-ups, hipBLASLt baseline import, and logic-file update helpers.
+It's equipped with family stratified seeding, GOMEA, learned linkage, learned tree surrogate, and joint search on neighboring shapes. It's suitable to search on whether a single shape or a large grid of shapes.
 
-Target-specific notes, exact artifacts, measured results, and remaining kernel-specific work are under `docs/`.
+It separates search strategies from underlying measurements. When evaluating the efficiency of a search strategy, it supports simulated timing based on previous measurement results and running times, rather than actually rerun the measurements.
 
 ## Workflow
 
 1. Define problem type, input shapes, and config search space.
-2. Search configs with imported hipBLASLt baseline and evolutionary algorithms.
+2. Discover installed hipBLASLt selections, then search them through the normal scheduler alongside evolutionary candidates.
 3. Repair local outliers by rerunning search with neighbor-seeded configs.
-4. Inspect and rank results.
-5. Update hipBLASLt configs.
-6. Rebuild and reinstall hipBLASLt.
-7. Verify correctness and performance of reinstalled hipBLASLt.
+4. Update hipBLASLt configs.
+5. Rebuild and reinstall hipBLASLt.
+6. Verify correctness and performance of reinstalled hipBLASLt.
 
 ### 1. Define Problem, Shapes, And Search Space
 
@@ -65,10 +64,10 @@ scripts/build_structured_runner.sh
 
 The runner build script validates that the expected TensileLite client static libraries exist under `~/rocm-libraries/build/tensilelite-client` before compiling `./build/evotensile-structured-runner`.
 
-Import the current hipBLASLt-selected configs once per DB/problem/grid so they participate in search and adaptive sampling:
+Discover the current hipBLASLt-selected configs once per DB/problem/grid. Discovery records planning pairs only. Unless `--query-only` is used, the command then schedules those exact pairs through normal compilation, validation, timing, cost, and artifact paths:
 
 ```bash
-python3 scripts/import_hipblaslt_baselines.py \
+python3 scripts/discover_hipblaslt_baselines.py \
   --db out/evotensile.sqlite \
   --output-dir out/hipblaslt_baselines \
   --profile <profile-name> \
@@ -88,7 +87,7 @@ The external runner consumes TensileLite build artifacts from either full-client
 
 Production CLI defaults favor throughput: `--prepare-workers` defaults to available CPU cores, `--compile-threads` defaults to `1`, compile-cache reuse is enabled under `OUTPUT_DIR/compile_cache`, and `--candidate-batch-size` is chosen as the largest profile-bounded value that still leaves enough candidate/shape batches to saturate preparation. Preparation performs build/map/diagnostic/validation in parallel. Timing starts only after that pool drains and always runs serially.
 
-Useful proposal modes include `random`, `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, `evolutionary`, and `family-qd`. Exact-shape and nearest-shape validation-passed winners, including imported hipBLASLt baselines when they remain best, can initialize non-random proposal operators through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
+Useful proposal modes include `random`, `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, `evolutionary`, and `family-qd`. Exact-shape and nearest-shape validation-passed winners, including measured discovered hipBLASLt candidates when they remain best, can initialize non-random proposal operators through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
 
 Supported protocol overrides include `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, `--num-elements-to-validate`, and `--validation-backend`. The default performs full hipBLASLt GPU-oracle validation with `NumElementsToValidate=-1`. `--validation-backend cpu` selects CPU audit validation. There is no no-validation backend: benchmark-only execution is admitted only after compatible correctness evidence exists.
 
@@ -113,7 +112,7 @@ python3 -m evotensile.cli repair-outliers \
 
 This is a search-budget heuristic, not a correctness rule: real performance cliffs from divisibility, edge handling, LDS pressure, or occupancy can legitimately sit below nearby shapes. The command writes `repair_metadata.json` with detected residuals, neighbors, candidate hashes, and planned/executed batch summaries.
 
-### 4. Inspect And Rank Cached Results
+After searching, we can inspect the results.
 
 Summarize cache status:
 
@@ -126,13 +125,13 @@ python3 -m evotensile.cli summarize-cache \
 Rank validation-passed observations:
 
 ```bash
-python3 -m evotensile.cli rank-evals \
+python3 -m evotensile.cli rank-benchmarks \
   --db out/evotensile.sqlite \
   --profile <profile-name> \
   --min-samples 2
 ```
 
-### 5. Stage hipBLASLt GridBased Logic
+### 4. Update hipBLASLt configs
 
 The updater requires the complete profile shape set, latest compatible passed validation for every winner, and a content-verified registered artifact for every winner. It renders every selected variant before writing anything. With no destination option it is a no-write preview:
 
@@ -162,7 +161,7 @@ cd ~/rocm-libraries
 git diff --stat -- projects/hipblaslt/library/src/amd_detail/rocblaslt/src/Tensile/Logic/asm_full/<gfx-target>/GridBased
 ```
 
-### 6. Rebuild And Validate Performance
+### 5. Rebuild hipBLASLt
 
 Rebuild hipBLASLt from the modified `~/rocm-libraries` tree and install into the intended ROCm SDK prefix. By convention, keep the normal hipBLASLt build tree at `~/rocm-libraries/build/hipblaslt/`. Only override `BUILD_DIR` when comparing multiple versions.
 
@@ -179,11 +178,9 @@ TARGET=hipblaslt-bench GPU_TARGETS=<gfx-target> ./build_hipblaslt_bench.sh
 TARGET=hipblaslt-test GPU_TARGETS=<gfx-target> ./build_hipblaslt_bench.sh
 ```
 
-Then run an application-level benchmark with the intended runtime environment. If the Python runtime uses a separate TensileLite asset package, point `HIPBLASLT_TENSILE_LIBPATH` at the newly installed assets so the rebuilt logic is actually used.
+### 6. Verify Correctness and Performance
 
-### 7. Verify Installed Correctness
-
-After performance validation, run repeatable installed-library correctness checks. The lightweight target-specific gate uses `hipblaslt-bench --verify` through the EvoTensile verifier and writes `summary.json`, `results.csv`, and per-case logs:
+The lightweight target-specific gate uses `hipblaslt-bench --verify` through the EvoTensile verifier and writes `summary.json`, `results.csv`, and per-case logs:
 
 ```bash
 cd ~/evotensile
@@ -200,6 +197,8 @@ HIPBLASLT_TENSILE_LIBPATH="$ROCM_PATH/lib/hipblaslt/library/<gfx-target>" \
 LD_LIBRARY_PATH="$ROCM_PATH/llvm/lib:$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}" \
 ./hipblaslt-test --gtest_filter='<test-filter>' --gtest_output=xml:/tmp/hipblaslt_test.xml
 ```
+
+Then run an application-level benchmark with the intended runtime environment. If the Python runtime uses a separate TensileLite asset package, point `HIPBLASLT_TENSILE_LIBPATH` at the newly installed assets so the rebuilt logic is actually used.
 
 ## Benchmark Protocol
 

@@ -11,7 +11,7 @@ from evotensile.search.family import (
 from evotensile.search.grid_evidence import GRID_OBJECTIVES, GridObjective
 from evotensile.search_space import DOMAINS, make_candidate
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import REFERENCE_CANDIDATE, sample_candidates
+from tests.helpers import REFERENCE_CANDIDATE, insert_test_benchmark_event, sample_candidates
 
 
 def _evidence(db: EvoTensileDB, shapes):
@@ -97,6 +97,7 @@ def test_family_stratified_random_candidates_retry_failed_family(tmp_path):
                 problem_type_hash=p_hash,
                 validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
                 detail="FAILED",
+                source_kind="replay",
             )
         ]
     )
@@ -123,7 +124,8 @@ def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
     db.register_shapes(shapes)
     for shape in shapes:
         for idx, candidate in enumerate(candidates):
-            db.insert_evaluation(
+            insert_test_benchmark_event(
+                db,
                 shape_id=shape.id,
                 candidate_hash=candidate.hash,
                 run_id="cached",
@@ -131,7 +133,6 @@ def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
                 problem_type_hash=p_hash,
                 benchmark_protocol_hash=b_hash,
                 time_us=1.0 + idx,
-                validation="PASSED",
             )
     db.insert_validations(
         [
@@ -143,6 +144,7 @@ def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
                 problem_type_hash=p_hash,
                 validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
                 detail="FAILED",
+                source_kind="replay",
             )
         ]
     )
@@ -154,12 +156,11 @@ def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
     )
 
     assert archive
-    assert archive[0].leader_candidate_hash == candidates[0].hash
-    assert archive[0].aggregate_score == 0.0
+    assert archive[0].leader_candidate_hash == candidates[1].hash
+    assert archive[0].aggregate_score == 0.25
     assert archive[0].samples == 2
     assert archive[0].shape_count == 2
     assert archive[0].status_counts["ok"] >= 2
-    assert archive[0].status_counts["validation_failed"] == 1
 
 
 def test_family_archive_objectives_distinguish_sparse_specialists_and_broad_generalists(tmp_path):
@@ -181,7 +182,8 @@ def test_family_archive_objectives_distinguish_sparse_specialists_and_broad_gene
         (shapes[0], generalist, 2.0),
         (shapes[1], generalist, 1.0),
     ):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -189,7 +191,6 @@ def test_family_archive_objectives_distinguish_sparse_specialists_and_broad_gene
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=time_us,
-            validation="PASSED",
         )
 
     leaders = {
@@ -224,7 +225,8 @@ def test_load_family_archive_keeps_diverse_quality_bounded_elites_per_family(tmp
     db.register_candidates(candidates)
     db.register_shapes([shape])
     for index, candidate in enumerate(candidates):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -232,7 +234,6 @@ def test_load_family_archive_keeps_diverse_quality_bounded_elites_per_family(tmp
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=1.0 + index,
-            validation="PASSED",
         )
 
     archive = load_family_archive(
@@ -262,7 +263,8 @@ def test_load_family_archive_filters_protocol_and_min_samples(tmp_path):
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     db.register_candidates(candidates)
     db.register_shapes([shape])
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidates[0].hash,
         run_id="cached",
@@ -270,9 +272,9 @@ def test_load_family_archive_filters_protocol_and_min_samples(tmp_path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=1.0,
-        validation="PASSED",
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidates[1].hash,
         run_id="cached",
@@ -280,7 +282,6 @@ def test_load_family_archive_filters_protocol_and_min_samples(tmp_path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash="other",
         time_us=0.5,
-        validation="PASSED",
     )
 
     archive = load_family_archive(

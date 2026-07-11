@@ -1,7 +1,7 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from evotensile.database import EvaluationSummary
+from evotensile.database import BenchmarkSummary
 
 
 class GridObjective:
@@ -41,7 +41,7 @@ class CandidateGridScore:
         raise ValueError(f"unsupported grid objective: {objective}")
 
 
-def rank_percentiles(summaries: Sequence[EvaluationSummary]) -> dict[str, float]:
+def rank_percentiles(summaries: Sequence[BenchmarkSummary]) -> dict[str, float]:
     ordered = [summary for summary in summaries if summary.median_gflops is not None and summary.median_gflops > 0.0]
     ordered.sort(key=lambda summary: (summary.median_gflops or 0.0, -(summary.median_time_us or 0.0)), reverse=True)
     denominator = max(len(ordered) - 1, 1)
@@ -49,7 +49,7 @@ def rank_percentiles(summaries: Sequence[EvaluationSummary]) -> dict[str, float]
 
 
 def candidate_grid_scores(
-    summaries_by_shape: Mapping[str, Sequence[EvaluationSummary]],
+    summaries_by_shape: Mapping[str, Sequence[BenchmarkSummary]],
     *,
     target_shape_ids: Sequence[str],
     elite_per_shape: int | None = None,

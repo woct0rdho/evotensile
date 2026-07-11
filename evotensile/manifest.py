@@ -65,13 +65,5 @@ def read_manifest(path: str | Path) -> list[ManifestEntry]:
     return out
 
 
-def manifest_by_problem_solution(entries: list[ManifestEntry]) -> dict[tuple[int, int], ManifestEntry]:
-    return {(entry.problem_index, entry.solution_index): entry for entry in entries if entry.solution_index is not None}
-
-
-def manifest_by_shape_solution(entries: list[ManifestEntry]) -> dict[tuple[str, int], ManifestEntry]:
-    return {(entry.shape_id, entry.solution_index): entry for entry in entries if entry.solution_index is not None}
-
-
 def manifest_by_shape_candidate(entries: list[ManifestEntry]) -> dict[tuple[str, str], ManifestEntry]:
     return {(entry.shape_id, entry.candidate_hash): entry for entry in entries}

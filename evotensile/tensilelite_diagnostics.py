@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 from .activity import apu_activity_lock
-from .database import EvaluationInsert, EvoTensileDB
+from .database import BenchmarkEventInsert, EvoTensileDB
 from .profile import TargetProfile
 from .protocol import BenchmarkProtocol
 from .runner import DEFAULT_TENSILELITE_BIN, _merged_env
@@ -148,25 +148,11 @@ def run_tensilelite_diagnostics(
     if db is not None:
         db.insert_run(
             run_id,
-            yaml_path=str(yaml_path),
-            output_dir=str(output_dir),
+            phase="prepare",
             status="timeout" if timed_out else "ok" if returncode == 0 else "failed",
+            duration_s=duration_s,
             returncode=returncode,
             candidate_hashes=candidate_hashes,
-            cost_phase="prepare",
-            duration_s=duration_s,
-            metadata_json=json.dumps(
-                {
-                    "command": command,
-                    "duration_s": duration_s,
-                    "results_path": str(results_path),
-                    "stdout_path": str(stdout_path),
-                    "stderr_path": str(stderr_path),
-                    "timed_out": timed_out,
-                    "records": len(records),
-                },
-                sort_keys=True,
-            ),
         )
     return result
 
@@ -180,25 +166,26 @@ def attribution_inserts_from_diagnostics(
     problem_type_hash: str,
     benchmark_protocol_hash: str,
     unattributed_status: str = "build_failed_unattributed",
-) -> list[EvaluationInsert]:
+) -> list[BenchmarkEventInsert]:
     records_by_hash: dict[str, DiagnosticRecord] = {}
     for record in records:
         if record.candidate_hash not in failed_candidate_hashes:
             continue
         if record.status in {"solutionstructs_rejected", "kernelwriter_failed", "codegen_failed", "build_failed"}:
             records_by_hash[record.candidate_hash] = record
-    inserts: list[EvaluationInsert] = []
+    inserts: list[BenchmarkEventInsert] = []
     for candidate_hash in sorted(failed_candidate_hashes):
         record = records_by_hash.get(candidate_hash)
         status = "build_failed" if record is not None else unattributed_status
         shape_ids = record.shape_ids if record is not None and record.shape_ids else tuple(planned_shape_ids)
         for shape_id in shape_ids:
             inserts.append(
-                EvaluationInsert(
+                BenchmarkEventInsert(
                     shape_id=shape_id,
                     candidate_hash=candidate_hash,
                     run_id=run_id,
                     status=status,
+                    source_kind="native_run",
                     problem_type_hash=problem_type_hash,
                     benchmark_protocol_hash=benchmark_protocol_hash,
                 )

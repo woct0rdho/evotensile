@@ -17,13 +17,13 @@ Learned linkage is proposal-only:
 `learn_linkage_models_from_snapshot()` builds models through `load_candidate_evidence()` from the immutable evidence snapshot created once for the proposal call.
 
 Evidence filtering uses:
-- `status='ok'` timing rows from `evaluations`.
+- samples owned by `status='ok'` benchmark events.
 - The active `problem_type_hash` and `benchmark_protocol_hash` when supplied.
 - Optional target shapes, so linkage can be learned for the shapes currently being scheduled.
 - `min_samples`, which defaults to `1` for early campaigns and can be raised for mature campaigns.
-- Validation-passed DB ranking semantics from `EvoTensileDB.rank_evaluations()`.
+- Validation-passed DB ranking semantics from `EvoTensileDB.rank_benchmarks()`.
 
-The loader retrieves candidate JSON from the `candidates` table and returns `CandidateEvidence` records containing the candidate, aggregate score, and total samples.
+The loader restores compact canonical candidate parameters from `candidates` and returns `CandidateEvidence` records containing the candidate, aggregate score, and total samples.
 
 ## Shape-Local Scoring
 

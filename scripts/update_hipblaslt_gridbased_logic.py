@@ -9,8 +9,8 @@ from typing import Any
 
 import yaml
 
-from evotensile.artifacts import load_candidate_artifacts
-from evotensile.database import EvaluationSummary, EvoTensileDB
+from evotensile.artifacts import load_artifact_mappings
+from evotensile.database import BenchmarkSummary, EvoTensileDB
 from evotensile.profile import PROFILES, TargetProfile, get_profile
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.solution_mapping import find_solution_yamls, solution_matches_candidate
@@ -101,13 +101,13 @@ def _winner_summaries(
     profile: TargetProfile,
     protocol: BenchmarkProtocol,
     min_samples: int,
-) -> list[EvaluationSummary]:
-    summaries = db.rank_evaluations(
+) -> list[BenchmarkSummary]:
+    summaries = db.rank_benchmarks(
         problem_type_hash=profile.problem_type_hash,
         benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
         min_samples=min_samples,
     )
-    winners_by_shape: dict[str, EvaluationSummary] = {}
+    winners_by_shape: dict[str, BenchmarkSummary] = {}
     for summary in summaries:
         winners_by_shape.setdefault(summary.shape_id, summary)
     return [winners_by_shape[shape_id] for shape_id in sorted(winners_by_shape)]
@@ -357,7 +357,10 @@ def update_logic_files(
     destination_dir: Path | None = None,
     allow_partial: bool = False,
 ) -> dict[str, Any]:
-    db = EvoTensileDB.connect(db_path)
+    db = EvoTensileDB.connect(
+        db_path,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
+    )
     logic_dir = logic_dir.resolve()
     destination_dir = destination_dir.resolve() if destination_dir is not None else None
     unknown = sorted(set(variant_names) - set(VARIANTS))
@@ -368,7 +371,7 @@ def update_logic_files(
     shape_set = _validate_winner_shape_set(winners, profile=profile, allow_partial=allow_partial)
     candidate_params = _candidate_params_by_hash(db, winners)
     candidate_hashes = list(candidate_params)
-    artifacts = load_candidate_artifacts(
+    artifacts = load_artifact_mappings(
         db,
         problem_type_hash=profile.problem_type_hash,
         shape_ids=[winner.shape_id for winner in winners],

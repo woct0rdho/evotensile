@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from evotensile.candidate import Candidate, Shape
-from evotensile.database import EvaluationInsert
+from evotensile.database import BenchmarkEventInsert
 from evotensile.runner import RunResult
 from evotensile.structured_runner import RunnablePair, StructuredRunOutput
 
@@ -53,7 +53,7 @@ class PreparedBatch:
     build_result: RunResult
     library_dir: Path | None
     validated_pairs: list[RunnablePair]
-    preparation_inserts: list[EvaluationInsert]
+    preparation_inserts: list[BenchmarkEventInsert]
     validation_result: StructuredRunOutput | None = None
     errors: list[str] = field(default_factory=list)
 

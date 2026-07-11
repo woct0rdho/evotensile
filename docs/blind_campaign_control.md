@@ -43,13 +43,11 @@ The current defaults remain `48` cold candidates, `24` requested feedback candid
 
 Resume reconstructs the complete configuration from the current invocation and rejects any field, binary, implementation, or environment mismatch before reading campaign state. There is no partial identity or compatibility override.
 
-## Proposal Events And Candidate Metadata
+## Proposal Events And Occurrences
 
-The scheduler returns explicit preserved, novel-generated, and selected candidate sets. `tag_generated_proposals()` adds `island_id`, `restart_index`, and per-generated-hash proposal cost only to selected novel candidates. Preserved archive parents and previously registered duplicate hashes are returned unchanged.
+The scheduler returns explicit preserved, novel-generated, and selected candidate sets. Each proposal call persists shared namespace, scope, arguments, island/restart identity, duration, and timestamp in `proposal_events`. Child `proposal_candidates` rows own source, parent keys, operator metadata, generated/preserved state, and selected state. Proposal cost is derived from event duration across distinct generated candidates, while preserved candidates receive none.
 
-Each proposal call also creates an immutable event containing breeding-parent hashes, preserved hashes, all generated hashes before shortlisting, selected hashes, duration, proposal arguments, island, and restart identity. The event is persisted in `round_NN/proposals.json` independently from candidate identity.
-
-Parent hashes, semantic-group metadata, and GOMEA donor metadata remain candidate-origin metadata. `load_island_elites()` ranks compatible validation-passed timing evidence, restores candidates from SQLite, and returns only candidates originally generated for the requested island.
+Campaign checkpoints additionally persist the exact call sets in `round_NN/proposals.json`. `load_island_elites()` ranks compatible validation-passed timing evidence, restores parameter-only candidates, then reconstructs selected occurrence lineage and island metadata from SQLite.
 
 The general scheduler's `parent_candidates` override prevents DB-global elites or transfer candidates from leaking into an isolated island proposal call.
 

@@ -1,10 +1,11 @@
 import math
 import random
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from evotensile.candidate import Candidate, Shape
-from evotensile.database import EvaluationSummary, EvoTensileDB
+from evotensile.database import BenchmarkSummary, EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE, TargetProfile
 from evotensile.search.differential_evolution import differential_evolution_candidates
 from evotensile.search.evidence import ProposalEvidenceSnapshot, load_proposal_evidence_snapshot
@@ -95,7 +96,7 @@ DEFAULT_LINKAGE_MAX_CLUSTERS = DEFAULT_MAX_CLUSTERS
 DEFAULT_LINKAGE_ORDINAL_BINS = DEFAULT_ORDINAL_BINS
 
 
-def _grid_candidate_evidence(summaries: Sequence[EvaluationSummary]) -> list[GridCandidateEvidence]:
+def _grid_candidate_evidence(summaries: Sequence[BenchmarkSummary]) -> list[GridCandidateEvidence]:
     incumbent_time_by_shape: dict[str, float] = {}
     for summary in summaries:
         if summary.median_time_us is None or summary.median_time_us <= 0.0:
@@ -144,7 +145,7 @@ def _ranked_elites(
         summaries = [summary for summary in summaries if summary.shape_id in target_shape_ids]
     grid_evidence = _grid_candidate_evidence(summaries)
     specialist_count = min(len(grid_evidence), (elite_count + 1) // 2)
-    summaries_by_shape: dict[str, list[EvaluationSummary]] = {}
+    summaries_by_shape: dict[str, list[BenchmarkSummary]] = {}
     for summary in summaries:
         summaries_by_shape.setdefault(summary.shape_id, []).append(summary)
     for shape_summaries in summaries_by_shape.values():
@@ -375,8 +376,11 @@ def propose_candidates(
     workgroup_processor_count: int | None = None,
     parent_candidates: Sequence[Candidate] | None = None,
     cold_start_precovered_tokens: set[str] | None = None,
+    proposal_island_id: str | None = None,
+    proposal_restart_index: int = 0,
 ) -> ProposalResult:
     """Build and classify preserved, generated, and selected candidates."""
+    proposal_started = time.perf_counter()
     proposal = target_profile.default_proposal if proposal is None else proposal
     num_random = target_profile.default_num_random if num_random is None else num_random
     transfer_shape_count = (
@@ -396,6 +400,8 @@ def propose_candidates(
     )
     if proposal not in PROPOSAL_MODES:
         raise ValueError(f"unknown proposal mode: {proposal}")
+    problem_type_hash = problem_type_hash or target_profile.problem_type_hash
+    benchmark_protocol_hash = benchmark_protocol_hash or target_profile.benchmark_protocol_hash()
     evidence = load_proposal_evidence_snapshot(
         db,
         problem_type_hash=problem_type_hash,
@@ -643,13 +649,29 @@ def propose_candidates(
         selected = dedupe_candidates(
             [*preserved, *(scoped_generated[candidate.hash] for candidate in selected_generated)]
         )
-    db.record_proposal_occurrences(
-        candidates,
-        problem_type_hash=problem_type_hash or "",
-        benchmark_protocol_hash=benchmark_protocol_hash or "",
+    db.record_proposal_event(
+        [*preserved, *generated],
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
         scope_kind=scope.kind,
         scope_shape_ids=scope.shape_ids,
+        generated_hashes={candidate.hash for candidate in generated},
         selected_candidates=selected,
+        proposal_args={
+            "proposal": proposal,
+            "seed": seed,
+            "num_random": num_random,
+            "elite_count": elite_count,
+            "local_count": local_count,
+            "de_count": de_count,
+            "gomea_count": gomea_count,
+            "surrogate_pool_multiplier": pool_multiplier,
+            "adaptive_operators": adaptive_operators,
+            "learned_linkage": learned_linkage,
+        },
+        island_id=proposal_island_id,
+        restart_index=proposal_restart_index,
+        duration_s=time.perf_counter() - proposal_started,
     )
     return ProposalResult(
         scope=scope,

@@ -279,7 +279,10 @@ def _validate_schedule_args(args: argparse.Namespace) -> TargetProfile:
 def _schedule_context(args: argparse.Namespace) -> ScheduleCliContext:
     profile = _validate_schedule_args(args)
     protocol = _protocol(args, profile)
-    db = EvoTensileDB.connect(args.db)
+    db = EvoTensileDB.connect(
+        args.db,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
+    )
     db.init()
     adaptive_policy, probe_policy = _timing_policies(args)
     return ScheduleCliContext(
@@ -735,7 +738,10 @@ def _add_schedule_args(parser: argparse.ArgumentParser, *, repair: bool = False)
 
 def cmd_proposal_coverage(args: argparse.Namespace) -> int:
     profile = _resolved_profile(args)
-    db = EvoTensileDB.connect(args.db)
+    db = EvoTensileDB.connect(
+        args.db,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
+    )
     db.init()
     shapes = _parse_shapes(args, profile)
     protocol = _protocol(args, profile)
@@ -775,7 +781,10 @@ def cmd_proposal_coverage(args: argparse.Namespace) -> int:
 def cmd_summarize_families(args: argparse.Namespace) -> int:
     profile = _profile(args)
     protocol = _protocol(args, profile)
-    db = EvoTensileDB.connect(args.db)
+    db = EvoTensileDB.connect(
+        args.db,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
+    )
     db.init()
     shapes = (
         _parse_shapes(args, profile) if getattr(args, "shapes", None) or getattr(args, "limit_shapes", None) else None
@@ -829,9 +838,12 @@ def cmd_summarize_space(args: argparse.Namespace) -> int:
 def cmd_summarize_cache(args: argparse.Namespace) -> int:
     profile = _profile(args)
     protocol = _protocol(args, profile)
-    db = EvoTensileDB.connect(args.db)
+    db = EvoTensileDB.connect(
+        args.db,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
+    )
     db.init()
-    summary = db.cache_summary(
+    summary = db.benchmark_status_summary(
         problem_type_hash=profile.problem_type_hash,
         benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
     )
@@ -848,11 +860,14 @@ def cmd_summarize_cache(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_rank_evals(args: argparse.Namespace) -> int:
+def cmd_rank_benchmarks(args: argparse.Namespace) -> int:
     profile = _profile(args)
     protocol = _protocol(args, profile)
-    db = EvoTensileDB.connect(args.db)
-    summaries = db.rank_evaluations(
+    db = EvoTensileDB.connect(
+        args.db,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
+    )
+    summaries = db.rank_benchmarks(
         problem_type_hash=profile.problem_type_hash,
         benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
         shape_id=args.shape_id,
@@ -1145,13 +1160,13 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument("--max-candidates", type=int, default=None)
     cmd.set_defaults(func=cmd_repair_outliers)
 
-    cmd = sub.add_parser("summarize-cache", help="Summarize cached evaluation statuses")
+    cmd = sub.add_parser("summarize-cache", help="Summarize benchmark evidence statuses")
     cmd.add_argument("--db", required=True)
     _add_cache_identity_args(cmd)
     _add_protocol_args(cmd)
     cmd.set_defaults(func=cmd_summarize_cache)
 
-    cmd = sub.add_parser("summarize-families", help="Summarize family archive cells from cached evaluations")
+    cmd = sub.add_parser("summarize-families", help="Summarize family archive cells from benchmark evidence")
     cmd.add_argument("--db", required=True)
     _add_candidate_shape_args(cmd)
     _add_cache_identity_args(cmd)
@@ -1161,14 +1176,14 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument("--archive-objective", choices=GRID_OBJECTIVES, default=GridObjective.SPECIALIST)
     cmd.set_defaults(func=cmd_summarize_families)
 
-    cmd = sub.add_parser("rank-evals", help="Rank only validation-passed cached evaluations")
+    cmd = sub.add_parser("rank-benchmarks", help="Rank validation-passed benchmark evidence")
     cmd.add_argument("--db", required=True)
     _add_cache_identity_args(cmd)
     _add_protocol_args(cmd)
     cmd.add_argument("--shape-id", default=None)
     cmd.add_argument("--min-samples", type=int, default=1)
     cmd.add_argument("--limit", type=int, default=20)
-    cmd.set_defaults(func=cmd_rank_evals)
+    cmd.set_defaults(func=cmd_rank_benchmarks)
 
     return parser
 

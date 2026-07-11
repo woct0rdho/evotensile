@@ -3,7 +3,7 @@ from pathlib import Path
 from evotensile.database import EvoTensileDB
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.scheduler import execute_schedule
-from evotensile.search.evaluation_cost import load_candidate_evaluation_costs
+from evotensile.search.measured_cost import load_candidate_measured_costs
 from evotensile.shapes import pilot_100_shapes
 from tests.helpers import fake_build_tensile, fake_structured_runner, sample_candidates
 
@@ -28,7 +28,7 @@ def test_recorded_run_costs_cover_prepare_validation_and_screening(tmp_path: Pat
         runner_bin=fake_runner,
         cost_aware_scheduling=True,
     )
-    costs = load_candidate_evaluation_costs(db)
+    costs = load_candidate_measured_costs(db)
 
     assert costs[candidate.hash].prepare_s > 0.0
     assert costs[candidate.hash].validation_s > 0.0
@@ -44,27 +44,23 @@ def test_indexed_run_cost_divides_shared_duration_once(tmp_path: Path):
 
     db.insert_run(
         "shared",
-        yaml_path=None,
-        output_dir=None,
+        phase="prepare",
         status="ok",
-        candidate_hashes=[candidates[0].hash, candidates[1].hash, candidates[0].hash],
-        cost_phase="prepare",
         duration_s=6.0,
+        candidate_hashes=[candidates[0].hash, candidates[1].hash, candidates[0].hash],
     )
-    costs = load_candidate_evaluation_costs(db)
+    costs = load_candidate_measured_costs(db)
 
     assert costs[candidates[0].hash].prepare_s == 3.0
     assert costs[candidates[1].hash].prepare_s == 3.0
 
     db.insert_run(
         "shared",
-        yaml_path=None,
-        output_dir=None,
+        phase="prepare",
         status="ok",
-        candidate_hashes=[candidates[1].hash],
-        cost_phase="prepare",
         duration_s=2.0,
+        candidate_hashes=[candidates[1].hash],
     )
-    replaced_costs = load_candidate_evaluation_costs(db)
+    replaced_costs = load_candidate_measured_costs(db)
     assert replaced_costs[candidates[0].hash].prepare_s == 0.0
     assert replaced_costs[candidates[1].hash].prepare_s == 2.0

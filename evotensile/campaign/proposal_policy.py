@@ -99,6 +99,8 @@ def propose_campaign_candidates(
         cold_start_precovered_tokens=cold_start_precovered_tokens,
         surrogate_jobs=configuration.surrogate_jobs,
         workgroup_processor_count=configuration.workgroup_processor_count,
+        proposal_island_id=island_id,
+        proposal_restart_index=restart_index,
         **proposal_args,
     )
     duration = time.perf_counter() - started

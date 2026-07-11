@@ -9,7 +9,7 @@ from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search.acquisition import propose_candidates
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import sample_candidates
+from tests.helpers import insert_test_benchmark_event, sample_candidates
 
 
 def test_merged_proposal_separates_archive_and_novel_candidates(tmp_path: Path):
@@ -20,7 +20,8 @@ def test_merged_proposal_separates_archive_and_novel_candidates(tmp_path: Path):
     db.register_candidates(archive_candidates)
     db.register_shapes([shape])
     for index, candidate in enumerate(archive_candidates):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="queried",
@@ -28,7 +29,6 @@ def test_merged_proposal_separates_archive_and_novel_candidates(tmp_path: Path):
             problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
             benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
             time_us=100.0 + index,
-            validation="PASSED",
         )
 
     tool = tmp_path / "tool"
@@ -102,7 +102,8 @@ def test_parent_override_prevents_cross_island_parent_selection(tmp_path: Path):
     db.register_candidates(all_candidates)
     db.register_shapes([shape])
     for index, candidate in enumerate(all_candidates):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="queried",
@@ -110,7 +111,6 @@ def test_parent_override_prevents_cross_island_parent_selection(tmp_path: Path):
             problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
             benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
             time_us=100.0 + index,
-            validation="PASSED",
         )
 
     proposed = propose_candidates(

@@ -13,7 +13,7 @@ Implemented and working:
 - Structured scheduler path only: YAML + manifest generation, parallel build/map/diagnostic/validation preparation, a hard barrier, serial benchmark-only execution, and direct SQLite ingestion.
 - Separate correctness and timing identities: validation evidence is stored independently from benchmark samples.
 - Cache-aware exact-pair planning keyed by problem type, benchmark protocol, validation protocol, shape, and candidate, with latest-compatible correctness-state resolution.
-- Random, local and semantic mutation, categorical DE, GOMEA, learned-linkage GOMEA, family-QD proposals, adaptive operator allocation, transfer seeding, and imported hipBLASLt baseline participation.
+- Random, local and semantic mutation, categorical DE, GOMEA, learned-linkage GOMEA, family-QD proposals, adaptive operator allocation, transfer seeding, and installed hipBLASLt discovery followed by normal scheduled evidence.
 - Optional ExtraTrees shortlisting and mechanical covering from oversized proposal pools using validation-passed DB evidence or evidence-free soft mechanics.
 - Adaptive finalist top-ups, screening stabilization, and strict hot confirmation that reuse content-verified registered build artifacts without recompilation or revalidation.
 - Optional cost-aware operator credit and longest-predicted-work-first preparation ordering.
@@ -23,7 +23,7 @@ Implemented and working:
 - Installed-library verification helper using `hipblaslt-bench --verify`.
 
 Current default workflow:
-- Import current hipBLASLt-selected baselines into the campaign DB.
+- Discover current hipBLASLt-selected pairs and schedule them through the normal evidence path.
 - Run `schedule-batches` with the target profile and structured runner.
 - Let adaptive sampling top up plausible finalists.
 - Run `repair-outliers` before final GridBased update when expanding or retuning a grid.
@@ -52,9 +52,9 @@ A fixed top-4 full-validation retime was run before adaptive sampling existed:
 
 This result motivated integrated adaptive sampling, which is now the default scheduler behavior.
 
-### Current hipBLASLt Baseline Import
+### Historical hipBLASLt Baseline Run
 
-Imported current hipBLASLt-selected configs into `out/grid100_full_20260618_repaired.sqlite`:
+Historically queried and scheduled current hipBLASLt-selected configs into `out/grid100_full_20260618_repaired.sqlite`:
 - `100` queried shapes.
 - `22` unique installed candidates.
 - `1,000 ok` structured samples, now retained under current benchmark protocol hash `bproto_9f4055f5f13232a3` with the complete 100-shape corpus.
@@ -160,7 +160,7 @@ Medium-term:
 - Extend structured runner/profile coverage beyond the current gfx1151 FP16 NT HHS epilogue path.
 - Add target profiles for additional layouts, data types, and epilogue variants only after backend validation exists.
 - Improve failure attribution and negative-cache reporting for new TensileLite rejection families.
-- Add explicit migration/version handling if the SQLite schema grows beyond additive changes.
+- Keep checked-out code and authoritative databases synchronized when the SQLite schema changes.
 
 Longer-term:
 - Evaluate LFBO or persistent transfer surrogates beyond the current per-campaign ExtraTrees model.

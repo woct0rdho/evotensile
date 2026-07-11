@@ -223,6 +223,7 @@ def execute_schedule(
                 protocol=protocol,
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
+                validation_protocol_hash=validation_protocol_hash,
                 runner_bin=runner_bin,
                 runner_timeout_s=runner_timeout_s,
                 keep_going=keep_going,
