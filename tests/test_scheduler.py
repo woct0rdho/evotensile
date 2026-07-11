@@ -1584,7 +1584,9 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
     assert default_metadata["prepare_workers"] == DEFAULT_PROFILE.default_prepare_workers == 32
     assert default_metadata["validation_workers"] == DEFAULT_PROFILE.default_validation_workers == 1
     assert default_metadata["surrogate_jobs"] == DEFAULT_PROFILE.default_surrogate_jobs
-    assert default_metadata["effective_cu_count"] == DEFAULT_PROFILE.effective_cu_count
+    assert default_metadata["compute_unit_count"] == DEFAULT_PROFILE.compute_unit_count == 40
+    assert default_metadata["workgroup_processor_count"] == DEFAULT_PROFILE.workgroup_processor_count == 20
+    assert default_metadata["compute_units_per_workgroup_processor"] == 2
     assert default_metadata["adaptive_sampling"] is True
     assert default_metadata["stop_on_error"] is False
     assert default_metadata["learned_linkage_requested"] is True
@@ -1672,7 +1674,8 @@ def test_schedule_cli_resolves_selected_profile_defaults(tmp_path: Path):
         default_prepare_workers=6,
         default_validation_workers=1,
         default_surrogate_jobs=2,
-        effective_cu_count=12,
+        compute_unit_count=24,
+        workgroup_processor_count=12,
     )
     PROFILES[profile.name] = profile
     try:
@@ -1705,7 +1708,9 @@ def test_schedule_cli_resolves_selected_profile_defaults(tmp_path: Path):
     assert metadata["prepare_workers"] == profile.default_prepare_workers
     assert metadata["validation_workers"] == profile.default_validation_workers
     assert metadata["surrogate_jobs"] == profile.default_surrogate_jobs
-    assert metadata["effective_cu_count"] == profile.effective_cu_count
+    assert metadata["compute_unit_count"] == profile.compute_unit_count
+    assert metadata["workgroup_processor_count"] == profile.workgroup_processor_count
+    assert metadata["compute_units_per_workgroup_processor"] == profile.compute_units_per_workgroup_processor
 
 
 def test_search_policy_rejects_incompatible_profile(tmp_path: Path):

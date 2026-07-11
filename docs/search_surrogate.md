@@ -62,7 +62,7 @@ Categorical features include the canonical value of every parameter in `PARAM_NA
 Derived features include:
 - `log2(M)`, `log2(N)`, `log2(K)`, batch, aspect ratio, and arithmetic intensity.
 - macro-tile dimensions, area, aspect, and M/N tile fill.
-- output tiles, GSU-expanded workgroups, tiles per effective CU, CU rounds, and CU granularity.
+- output tiles, GSU-expanded workgroups, workgroups per WGP, WGP rounds, and WGP granularity.
 - reduction iterations and K fill from `K`, `DepthU`, and `GlobalSplitU`.
 - workgroup threads, waves, WMMA wave-tile area, and wave-group size.
 - proposal-side VALU VGPR lower bound and fraction.

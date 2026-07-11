@@ -22,10 +22,10 @@ def candidate_shape_mechanics(
     candidate: Candidate,
     shape: Shape,
     *,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> dict[str, float]:
-    if effective_cu_count <= 0:
-        raise ValueError("effective CU count must be positive")
+    if workgroup_processor_count <= 0:
+        raise ValueError("work-group processor count must be positive")
     params = candidate.canonical_params()
     instruction = params["MatrixInstruction"]
     macro_tile0, macro_tile1 = macro_tile(instruction)
@@ -33,9 +33,9 @@ def candidate_shape_mechanics(
     tiles_n = math.ceil(shape.n / macro_tile1)
     output_tiles = tiles_m * tiles_n * shape.batch
     workgroups = output_tiles * params["GlobalSplitU"]
-    tiles_per_cu = workgroups / effective_cu_count
-    cu_rounds = max(1, math.ceil(tiles_per_cu))
-    cu_granularity = tiles_per_cu / cu_rounds
+    workgroups_per_wgp = workgroups / workgroup_processor_count
+    wgp_rounds = max(1, math.ceil(workgroups_per_wgp))
+    wgp_granularity = workgroups_per_wgp / wgp_rounds
     depth_per_split = max(1, params["DepthU"] * params["GlobalSplitU"])
     reduction_iterations = math.ceil(shape.k / depth_per_split)
     covered_k = reduction_iterations * depth_per_split
@@ -59,9 +59,9 @@ def candidate_shape_mechanics(
         "tile_fill_n": shape.n / (tiles_n * macro_tile1),
         "output_tiles": float(output_tiles),
         "workgroups": float(workgroups),
-        "tiles_per_cu": tiles_per_cu,
-        "cu_rounds": float(cu_rounds),
-        "cu_granularity": cu_granularity,
+        "workgroups_per_wgp": workgroups_per_wgp,
+        "wgp_rounds": float(wgp_rounds),
+        "wgp_granularity": wgp_granularity,
         "waves_per_workgroup": waves_per_workgroup,
         "macro_tile_area": float(macro_tile_area),
         "instruction_tile_area": float(instruction_tile_area),
@@ -85,14 +85,14 @@ def mechanical_prior_score(
     candidate: Candidate,
     shape: Shape,
     *,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> float:
-    mechanics = candidate_shape_mechanics(candidate, shape, effective_cu_count=effective_cu_count)
+    mechanics = candidate_shape_mechanics(candidate, shape, workgroup_processor_count=workgroup_processor_count)
     utilization = (
         mechanics["tile_fill_m"]
         * mechanics["tile_fill_n"]
-        * mechanics["cu_granularity"]
-        * min(1.0, mechanics["tiles_per_cu"] / 2.0)
+        * mechanics["wgp_granularity"]
+        * min(1.0, mechanics["workgroups_per_wgp"] / 2.0)
         * mechanics["k_fill"]
         * mechanics["dispatch_efficiency"]
     )
@@ -109,20 +109,20 @@ def mechanical_coverage_tokens(
     candidate: Candidate,
     shape: Shape,
     *,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> frozenset[str]:
     params = candidate.canonical_params()
     instruction = params["MatrixInstruction"]
     macro_tile0, macro_tile1 = macro_tile(instruction)
-    mechanics = candidate_shape_mechanics(candidate, shape, effective_cu_count=effective_cu_count)
+    mechanics = candidate_shape_mechanics(candidate, shape, workgroup_processor_count=workgroup_processor_count)
     tokens = {
         f"family:{family_descriptor(candidate).key}",
         f"mi-wave-tile:{instruction[5]}x{instruction[6]}",
         f"mi-wave-group:{instruction[7]}x{instruction[8]}",
         f"macro-area-log2:{int(math.floor(math.log2(macro_tile0 * macro_tile1)))}",
         f"macro-aspect-log2:{int(round(math.log2(macro_tile0 / macro_tile1)))}",
-        f"cu-round-log2:{int(math.floor(math.log2(max(mechanics['cu_rounds'], 1.0))))}",
-        f"cu-granularity:{_fraction_bucket(mechanics['cu_granularity'])}",
+        f"wgp-round-log2:{int(math.floor(math.log2(max(mechanics['wgp_rounds'], 1.0))))}",
+        f"wgp-granularity:{_fraction_bucket(mechanics['wgp_granularity'])}",
         f"wave-count:{mechanics['waves_per_workgroup']:g}",
         f"k-fill:{_fraction_bucket(mechanics['k_fill'])}",
         f"lds-fraction:{_fraction_bucket(mechanics['lds_fraction'], buckets=8)}",
@@ -140,7 +140,7 @@ def select_covering_cold_pool(
     shape: Shape,
     count: int,
     seed: int,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
     coverage_fraction: float = 0.80,
     prior_fraction: float = 0.10,
     precovered_tokens: set[str] | None = None,
@@ -158,7 +158,7 @@ def select_covering_cold_pool(
         candidate.hash: mechanical_coverage_tokens(
             candidate,
             shape,
-            effective_cu_count=effective_cu_count,
+            workgroup_processor_count=workgroup_processor_count,
         )
         for candidate in deduped
     }
@@ -176,7 +176,7 @@ def select_covering_cold_pool(
         candidate.hash: mechanical_prior_score(
             candidate,
             shape,
-            effective_cu_count=effective_cu_count,
+            workgroup_processor_count=workgroup_processor_count,
         )
         for candidate in deduped
     }

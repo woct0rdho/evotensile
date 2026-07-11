@@ -22,7 +22,7 @@ from evotensile.search.surrogate import (
 )
 from evotensile.search_space import macro_tile, random_candidate
 
-EFFECTIVE_CU_COUNT = DEFAULT_PROFILE.effective_cu_count
+WORKGROUP_PROCESSOR_COUNT = DEFAULT_PROFILE.workgroup_processor_count
 SURROGATE_JOBS = DEFAULT_PROFILE.default_surrogate_jobs
 
 
@@ -49,7 +49,7 @@ def test_candidate_shape_features_include_generic_mechanics():
     shape = Shape(8192, 4096, 1, 2048)
     candidate = random_candidate(random.Random(1151), target_shapes=[shape])
 
-    features = candidate_shape_features(candidate, shape, effective_cu_count=EFFECTIVE_CU_COUNT)
+    features = candidate_shape_features(candidate, shape, workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT)
     macro_tile0, macro_tile1 = macro_tile(candidate.canonical_params()["MatrixInstruction"])
 
     assert features["shape:log2_m"] == 13.0
@@ -60,23 +60,47 @@ def test_candidate_shape_features_include_generic_mechanics():
     assert features["tile:n_remainder_fraction"] == (shape.n % macro_tile1) / macro_tile1
     assert "gene:MatrixInstruction" in features
     assert "resource:valu_vgpr_lower_bound" in features
-    cu_granularity = features["grid:cu_granularity"]
+    wgp_granularity = features["grid:wgp_granularity"]
     tile_fill_m = features["tile:fill_m"]
     tile_fill_n = features["tile:fill_n"]
     lds_bytes = features["resource:lds_bytes"]
-    assert isinstance(cu_granularity, (int, float))
+    assert isinstance(wgp_granularity, (int, float))
     assert isinstance(tile_fill_m, (int, float))
     assert isinstance(tile_fill_n, (int, float))
     assert isinstance(lds_bytes, (int, float))
-    assert 0.0 < cu_granularity <= 1.0
+    assert 0.0 < wgp_granularity <= 1.0
     assert 0.0 < tile_fill_m <= 1.0
     assert 0.0 < tile_fill_n <= 1.0
     assert lds_bytes > 0.0
 
-    mechanics = candidate_shape_mechanics(candidate, shape, effective_cu_count=EFFECTIVE_CU_COUNT)
-    assert mechanics["tiles_per_cu"] > 0.0
-    assert mechanics["cu_rounds"] >= mechanics["tiles_per_cu"]
+    mechanics = candidate_shape_mechanics(candidate, shape, workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT)
+    assert mechanics["workgroups_per_wgp"] > 0.0
+    assert mechanics["wgp_rounds"] >= mechanics["workgroups_per_wgp"]
     assert mechanics["arithmetic_intensity"] > 0.0
+
+
+def test_gfx1151_dispatch_mechanics_use_wgps_not_physical_cus():
+    assert DEFAULT_PROFILE.compute_unit_count == 40
+    assert DEFAULT_PROFILE.workgroup_processor_count == 20
+    assert DEFAULT_PROFILE.compute_units_per_workgroup_processor == 2
+
+    base = random_candidate(random.Random(1151))
+    params = base.canonical_params()
+    params["GlobalSplitU"] = 1
+    candidate = Candidate(params=params)
+    macro_tile0, macro_tile1 = macro_tile(params["MatrixInstruction"])
+    shape = Shape(macro_tile0 * 40, macro_tile1, 1, params["DepthU"])
+
+    mechanics = candidate_shape_mechanics(
+        candidate,
+        shape,
+        workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
+    )
+
+    assert mechanics["workgroups"] == 40.0
+    assert mechanics["workgroups_per_wgp"] == 2.0
+    assert mechanics["wgp_rounds"] == 2.0
+    assert mechanics["wgp_granularity"] == 1.0
 
 
 def test_surrogate_activation_requires_unique_candidate_variation():
@@ -86,7 +110,7 @@ def test_surrogate_activation_requires_unique_candidate_variation():
         TrainingObservation(
             candidate_hash=candidate.hash,
             shape_id=shape.id,
-            features=candidate_shape_features(candidate, shape, effective_cu_count=EFFECTIVE_CU_COUNT),
+            features=candidate_shape_features(candidate, shape, workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT),
             log_time=float(index + 1),
         )
         for index, shape in enumerate(shapes)
@@ -161,7 +185,7 @@ def test_surrogate_pool_learns_synthetic_tlds_performance_from_queried_rows(tmp_
         seed=20260710,
         min_evidence=24,
         surrogate_jobs=SURROGATE_JOBS,
-        effective_cu_count=EFFECTIVE_CU_COUNT,
+        workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT,
     )
 
     selected_tlds0 = sum(candidate.canonical_params()["TransposeLDS"] == 0 for candidate in selected)
@@ -185,7 +209,7 @@ def test_surrogate_pool_falls_back_to_family_diversity_without_evidence(tmp_path
         seed=20260710,
         min_evidence=24,
         surrogate_jobs=SURROGATE_JOBS,
-        effective_cu_count=EFFECTIVE_CU_COUNT,
+        workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT,
     )
 
     assert len(selected) == 24
@@ -202,16 +226,26 @@ def test_mechanical_prior_penalizes_single_instruction_workgroups():
     tiny = Candidate(params=tiny_params)
     broad = Candidate(params=broad_params)
 
-    assert candidate_shape_mechanics(tiny, shape, effective_cu_count=EFFECTIVE_CU_COUNT)["dispatch_efficiency"] == 0.0
-    assert candidate_shape_mechanics(broad, shape, effective_cu_count=EFFECTIVE_CU_COUNT)["dispatch_efficiency"] > 0.8
+    assert (
+        candidate_shape_mechanics(tiny, shape, workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT)[
+            "dispatch_efficiency"
+        ]
+        == 0.0
+    )
+    assert (
+        candidate_shape_mechanics(broad, shape, workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT)[
+            "dispatch_efficiency"
+        ]
+        > 0.8
+    )
     assert mechanical_prior_score(
         broad,
         shape,
-        effective_cu_count=EFFECTIVE_CU_COUNT,
+        workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT,
     ) > mechanical_prior_score(
         tiny,
         shape,
-        effective_cu_count=EFFECTIVE_CU_COUNT,
+        workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT,
     )
 
 
@@ -229,7 +263,7 @@ def test_covering_cold_start_increases_mechanical_token_coverage(tmp_path):
         seed=20260710,
         min_evidence=24,
         surrogate_jobs=SURROGATE_JOBS,
-        effective_cu_count=EFFECTIVE_CU_COUNT,
+        workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT,
     )
     covering = select_surrogate_pool(
         pool,
@@ -240,14 +274,20 @@ def test_covering_cold_start_increases_mechanical_token_coverage(tmp_path):
         min_evidence=24,
         covering_cold_start=True,
         surrogate_jobs=SURROGATE_JOBS,
-        effective_cu_count=EFFECTIVE_CU_COUNT,
+        workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT,
     )
 
     baseline_tokens = set().union(
-        *(mechanical_coverage_tokens(candidate, shape, effective_cu_count=EFFECTIVE_CU_COUNT) for candidate in baseline)
+        *(
+            mechanical_coverage_tokens(candidate, shape, workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT)
+            for candidate in baseline
+        )
     )
     covering_tokens = set().union(
-        *(mechanical_coverage_tokens(candidate, shape, effective_cu_count=EFFECTIVE_CU_COUNT) for candidate in covering)
+        *(
+            mechanical_coverage_tokens(candidate, shape, workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT)
+            for candidate in covering
+        )
     )
     baseline_instructions = {tuple(candidate.canonical_params()["MatrixInstruction"]) for candidate in baseline}
     covering_instructions = {tuple(candidate.canonical_params()["MatrixInstruction"]) for candidate in covering}

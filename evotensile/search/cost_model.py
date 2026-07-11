@@ -9,9 +9,9 @@ def predicted_candidate_prepare_weight(
     candidate: Candidate,
     shape: Shape,
     *,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> float:
-    mechanics = candidate_shape_mechanics(candidate, shape, effective_cu_count=effective_cu_count)
+    mechanics = candidate_shape_mechanics(candidate, shape, workgroup_processor_count=workgroup_processor_count)
     return (
         1.0
         + 0.40 * mechanics["valu_vgpr_fraction"]
@@ -25,7 +25,7 @@ def predicted_batch_prepare_weight(
     candidates: Sequence[Candidate],
     shapes: Sequence[Shape],
     *,
-    effective_cu_count: int,
+    workgroup_processor_count: int,
 ) -> float:
     if not candidates or not shapes:
         return 0.0
@@ -34,7 +34,7 @@ def predicted_batch_prepare_weight(
             predicted_candidate_prepare_weight(
                 candidate,
                 shape,
-                effective_cu_count=effective_cu_count,
+                workgroup_processor_count=workgroup_processor_count,
             )
             for shape in shapes
         )

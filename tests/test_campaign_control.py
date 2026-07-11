@@ -243,7 +243,7 @@ def test_population_plateau_cost_guard_and_convergence_are_deterministic():
     diagnostics = population_diagnostics(
         sample_candidates(8),
         shape,
-        effective_cu_count=DEFAULT_PROFILE.effective_cu_count,
+        workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
     )
     rounds = [
         {"duration_s": 24.0, "schedule": {"missing_pairs": 24}},
@@ -347,6 +347,9 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
     assert configuration["candidate_batch_size"] == 1
     assert configuration["prepare_workers"] == 32
     assert configuration["validation_workers"] == 1
+    assert configuration["compute_unit_count"] == 40
+    assert configuration["workgroup_processor_count"] == 20
+    assert configuration["compute_units_per_workgroup_processor"] == 2
     assert Path(configuration["runner_bin"]).is_absolute()
     assert len(configuration["runner_fingerprint"]) == 64
     assert len(configuration["tensilelite_fingerprint"]) == 64

@@ -283,7 +283,7 @@ def _select_replay_batch(
             min_evidence=min_evidence,
             covering_cold_start=covering_cold_start,
             surrogate_jobs=1,
-            effective_cu_count=DEFAULT_PROFILE.effective_cu_count,
+            workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
         )
     selected: list[Candidate] = []
     budgets = split_budget(count, island_count)
@@ -301,7 +301,7 @@ def _select_replay_batch(
                 min_evidence=min_evidence,
                 covering_cold_start=covering_cold_start,
                 surrogate_jobs=1,
-                effective_cu_count=DEFAULT_PROFILE.effective_cu_count,
+                workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
             )
         )
     if len(selected) < min(count, len(pending)):
@@ -486,7 +486,7 @@ def simulate_candidate_stream(
             diagnostics = population_diagnostics(
                 selected,
                 shape,
-                effective_cu_count=DEFAULT_PROFILE.effective_cu_count,
+                workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
             )
             result.trace.append(
                 {

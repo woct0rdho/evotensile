@@ -107,7 +107,9 @@ class CampaignConfiguration:
     prepare_wave_batches: int = 32
     validation_workers: int = 1
     surrogate_jobs: int = 1
-    effective_cu_count: int = 20
+    compute_unit_count: int = 40
+    workgroup_processor_count: int = 20
+    compute_units_per_workgroup_processor: int = 2
     compile_threads: int = 1
     keep_going: bool = True
     compile_cache: bool = True
@@ -166,8 +168,12 @@ class CampaignConfiguration:
             or self.surrogate_jobs <= 0
         ):
             raise ValueError("campaign worker counts must be positive")
-        if self.effective_cu_count <= 0:
-            raise ValueError("effective CU count must be positive")
+        if self.compute_unit_count <= 0 or self.workgroup_processor_count <= 0:
+            raise ValueError("campaign hardware execution-unit counts must be positive")
+        if self.compute_units_per_workgroup_processor <= 0:
+            raise ValueError("campaign compute units per work-group processor must be positive")
+        if self.compute_unit_count != (self.workgroup_processor_count * self.compute_units_per_workgroup_processor):
+            raise ValueError("campaign compute-unit and work-group-processor topology is inconsistent")
         if self.compile_threads <= 0:
             raise ValueError("campaign compile threads must be positive")
         if self.build_timeout_s <= 0.0 or self.runner_timeout_s <= 0.0:
@@ -299,7 +305,9 @@ def _campaign_configuration(
         prepare_wave_batches=profile.default_prepare_wave_batches,
         validation_workers=profile.default_validation_workers,
         surrogate_jobs=profile.default_surrogate_jobs,
-        effective_cu_count=profile.effective_cu_count,
+        compute_unit_count=profile.compute_unit_count,
+        workgroup_processor_count=profile.workgroup_processor_count,
+        compute_units_per_workgroup_processor=profile.compute_units_per_workgroup_processor,
         mutation_rate=profile.default_mutation_rate,
         crossover_rate=profile.default_crossover_rate,
         random_gene_rate=profile.default_random_gene_rate,
@@ -498,7 +506,7 @@ def _proposal_call(
         parent_candidates=parents,
         cold_start_precovered_tokens=cold_start_precovered_tokens,
         surrogate_jobs=configuration.surrogate_jobs,
-        effective_cu_count=configuration.effective_cu_count,
+        workgroup_processor_count=configuration.workgroup_processor_count,
         **proposal_args,
     )
     duration = time.perf_counter() - started
@@ -644,7 +652,7 @@ def _propose_round(
                 for token in mechanical_coverage_tokens(
                     candidate,
                     shape,
-                    effective_cu_count=configuration.effective_cu_count,
+                    workgroup_processor_count=configuration.workgroup_processor_count,
                 )
             )
         return _merge_proposals(proposals)
@@ -1026,12 +1034,12 @@ def main() -> int:
         active_diagnostics = population_diagnostics(
             round_proposal.active,
             shape,
-            effective_cu_count=configuration.effective_cu_count,
+            workgroup_processor_count=configuration.workgroup_processor_count,
         )
         archive_diagnostics = population_diagnostics(
             round_proposal.archive,
             shape,
-            effective_cu_count=configuration.effective_cu_count,
+            workgroup_processor_count=configuration.workgroup_processor_count,
         )
         measured_new = {
             candidate.hash: candidate for batch in schedule.planned_batches for candidate in batch.candidates
@@ -1039,7 +1047,7 @@ def main() -> int:
         measured_new_diagnostics = population_diagnostics(
             tuple(measured_new.values()),
             shape,
-            effective_cu_count=configuration.effective_cu_count,
+            workgroup_processor_count=configuration.workgroup_processor_count,
         )
         island_leaders = {
             island_id: _leader(
