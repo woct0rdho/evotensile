@@ -10,7 +10,7 @@ from evotensile.adaptive_retime import (
     load_timing_stats,
 )
 from evotensile.candidate import Candidate, Shape
-from evotensile.database import EvaluationInsert, EvoTensileDB
+from evotensile.database import BenchmarkEventInsert, EvoTensileDB
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.scheduling.models import BatchIngestResult, ExecutedBatch, PlannedBatch, PreparedBatch, ScheduleResult
 from evotensile.scheduling.structured import record_structured_run
@@ -26,6 +26,7 @@ class TimingContext:
     protocol: BenchmarkProtocol
     problem_type_hash: str
     benchmark_protocol_hash: str
+    validation_protocol_hash: str
     runner_bin: str | Path
     runner_timeout_s: float | None
     keep_going: bool
@@ -41,14 +42,15 @@ class TimingContext:
 
 
 def _ingest_result_from_inserts(
-    inserts: list[EvaluationInsert], *, errors: list[str] | None = None
+    inserts: list[BenchmarkEventInsert], *, errors: list[str] | None = None
 ) -> BatchIngestResult:
     status_counts: dict[str, int] = {}
     rejected = 0
     unmapped = 0
     inserted = 0
     for item in inserts:
-        status_counts[item.status] = status_counts.get(item.status, 0) + 1
+        count = len(item.samples_us) if item.status == "ok" else 1
+        status_counts[item.status] = status_counts.get(item.status, 0) + count
         if item.status == "rejected":
             rejected += 1
         elif item.status == "unmapped":
@@ -172,6 +174,7 @@ def _benchmark_prepared_pairs(
     protocol: BenchmarkProtocol,
     problem_type_hash: str,
     benchmark_protocol_hash: str,
+    validation_protocol_hash: str,
     runner_bin: str | Path,
     runner_timeout_s: float | None,
     phase: str,
@@ -216,11 +219,12 @@ def _benchmark_prepared_pairs(
     errors = list(prepared.errors)
     if output.timed_out:
         timing_inserts = [
-            EvaluationInsert(
+            BenchmarkEventInsert(
                 shape_id=pair.shape_id,
                 candidate_hash=pair.candidate_hash,
                 run_id=output.run_id,
                 status="runner_timeout",
+                source_kind="native_run",
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
                 solution_index=pair.library_solution_index,
@@ -236,6 +240,7 @@ def _benchmark_prepared_pairs(
                 protocol=benchmark_protocol,
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
+                validation_protocol_hash=validation_protocol_hash,
                 run_id=output.run_id,
                 runner_returncode=output.returncode,
             )
@@ -243,7 +248,7 @@ def _benchmark_prepared_pairs(
             timing_inserts = []
             errors.append(str(exc))
     if timing_inserts:
-        db.insert_evaluations(timing_inserts)
+        db.insert_benchmark_events(timing_inserts)
     combined = [*preparation_inserts, *timing_inserts]
     return ExecutedBatch(
         planned=prepared.planned,
@@ -269,6 +274,7 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
     protocol = context.protocol
     problem_type_hash = context.problem_type_hash
     benchmark_protocol_hash = context.benchmark_protocol_hash
+    validation_protocol_hash = context.validation_protocol_hash
     runner_bin = context.runner_bin
     runner_timeout_s = context.runner_timeout_s
     keep_going = context.keep_going
@@ -302,6 +308,7 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
                 protocol=protocol.with_overrides(num_benchmarks=item.planned.samples_per_pair),
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
+                validation_protocol_hash=validation_protocol_hash,
                 runner_bin=runner_bin,
                 runner_timeout_s=runner_timeout_s,
                 phase="initial",
@@ -341,6 +348,7 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
                 protocol=probe_protocol.with_overrides(num_benchmarks=remaining),
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=probe_protocol_hash,
+                validation_protocol_hash=validation_protocol_hash,
                 runner_bin=runner_bin,
                 runner_timeout_s=runner_timeout_s,
                 phase="probe-initial",
@@ -396,6 +404,7 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
                 protocol=probe_protocol.with_overrides(num_benchmarks=remaining),
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=probe_protocol_hash,
+                validation_protocol_hash=validation_protocol_hash,
                 runner_bin=runner_bin,
                 runner_timeout_s=runner_timeout_s,
                 phase="probe-topup",
@@ -436,6 +445,7 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
             protocol=protocol.with_overrides(num_benchmarks=item.planned.samples_per_pair),
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
+            validation_protocol_hash=validation_protocol_hash,
             runner_bin=runner_bin,
             runner_timeout_s=runner_timeout_s,
             phase="initial",
@@ -499,6 +509,7 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
                 protocol=protocol.with_overrides(num_benchmarks=remaining),
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
+                validation_protocol_hash=validation_protocol_hash,
                 runner_bin=runner_bin,
                 runner_timeout_s=runner_timeout_s,
                 phase="adaptive",

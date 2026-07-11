@@ -1,4 +1,6 @@
 import json
+import math
+import os
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -6,13 +8,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cache import NEGATIVE_CACHE_STATUSES, POSITIVE_CACHE_STATUSES, CacheKey
-from .candidate import Candidate, Shape
+from .cache import NEGATIVE_CACHE_STATUSES
+from .candidate import Candidate, Shape, canonical_json
 from .metrics import gflops_from_us
-
-
-def validation_token(value: str | None) -> str:
-    return (value or "").strip().split(maxsplit=1)[0].upper()
 
 
 def _median(values: list[float]) -> float | None:
@@ -26,15 +24,16 @@ def _median(values: list[float]) -> float | None:
 
 
 @dataclass(frozen=True)
-class EvaluationInsert:
+class BenchmarkEventInsert:
     shape_id: str
     candidate_hash: str
     run_id: str | None
     status: str
-    problem_type_hash: str = ""
-    benchmark_protocol_hash: str = ""
-    time_us: float | None = None
-    validation: str | None = None
+    problem_type_hash: str
+    benchmark_protocol_hash: str
+    source_kind: str
+    samples_us: tuple[float, ...] = ()
+    validation_protocol_hash: str | None = None
     solution_index: int | None = None
 
 
@@ -46,30 +45,49 @@ class ValidationInsert:
     status: str
     problem_type_hash: str
     validation_protocol_hash: str
+    source_kind: str
     detail: str | None = None
     solution_index: int | None = None
 
 
 @dataclass(frozen=True)
-class CandidateArtifactInsert:
-    problem_type_hash: str
-    shape_id: str
-    candidate_hash: str
-    problem_index: int
-    requested_solution_index: int
-    library_solution_index: int
-    manifest_solution_index: int | None
+class BaselineSelectionInsert:
+    shape: Shape
+    candidate: Candidate
+    hipblaslt_solution_index: int
+    hipblaslt_solution_name: str | None = None
+    hipblaslt_kernel_name: str | None = None
+    logic_solution_index: int | None = None
+    logic_solution_name: str | None = None
+    query_gflops: float | None = None
+    query_time_us: float | None = None
+
+
+@dataclass(frozen=True)
+class ArtifactBundleInsert:
     build_run_id: str
     build_output_dir: str
     library_dir: str
-    solution_yaml_paths_json: str
+    solution_yaml_paths: tuple[str, ...]
     manifest_path: str | None
     code_object_identity: str
 
 
 @dataclass(frozen=True)
+class ArtifactMappingInsert:
+    problem_type_hash: str
+    shape_id: str
+    candidate_hash: str
+    problem_index: int
+    requested_solution_index: int
+    library_solution_index: int
+    manifest_solution_index: int | None
+
+
+@dataclass(frozen=True)
 class CandidateArtifactRecord:
-    artifact_id: int
+    mapping_id: int
+    bundle_id: int
     problem_type_hash: str
     shape_id: str
     candidate_hash: str
@@ -80,7 +98,7 @@ class CandidateArtifactRecord:
     build_run_id: str
     build_output_dir: str
     library_dir: str
-    solution_yaml_paths_json: str
+    solution_yaml_paths: tuple[str, ...]
     manifest_path: str | None
     code_object_identity: str
     created_at: float
@@ -96,7 +114,7 @@ class _TimingBucket:
 class BenchmarkEvidenceState:
     ok_samples: int
     resolved_status: str | None
-    latest_negative_eval_id: int | None
+    latest_negative_event_id: int | None
 
     @property
     def reusable_negative(self) -> bool:
@@ -105,21 +123,26 @@ class BenchmarkEvidenceState:
 
 @dataclass(frozen=True)
 class ProposalOccurrence:
-    proposal_id: int
+    occurrence_id: int
+    proposal_event_id: int
     problem_type_hash: str
     benchmark_protocol_hash: str
     candidate_hash: str
     source: str
     parent_hashes: tuple[str, ...]
     proposal_metadata: dict[str, object]
+    state: str
     scope_kind: str
     scope_shape_ids: tuple[str, ...]
+    island_id: str | None
+    restart_index: int
+    duration_s: float
     selected: bool
     created_at: float
 
 
 @dataclass(frozen=True)
-class EvaluationSummary:
+class BenchmarkSummary:
     shape_id: str
     candidate_hash: str
     samples: int
@@ -132,33 +155,53 @@ class EvaluationSummary:
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 
+CREATE TABLE IF NOT EXISTS database_metadata (
+  metadata_key TEXT PRIMARY KEY,
+  metadata_value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS problem_types (
+  problem_type_id INTEGER PRIMARY KEY,
+  problem_type_hash TEXT NOT NULL UNIQUE,
+  definition_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS benchmark_protocols (
+  benchmark_protocol_id INTEGER PRIMARY KEY,
+  benchmark_protocol_hash TEXT NOT NULL UNIQUE,
+  definition_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS validation_protocols (
+  validation_protocol_id INTEGER PRIMARY KEY,
+  validation_protocol_hash TEXT NOT NULL UNIQUE,
+  definition_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS benchmark_namespaces (
+  benchmark_namespace_id INTEGER PRIMARY KEY,
+  problem_type_id INTEGER NOT NULL REFERENCES problem_types(problem_type_id),
+  benchmark_protocol_id INTEGER NOT NULL REFERENCES benchmark_protocols(benchmark_protocol_id),
+  UNIQUE(problem_type_id, benchmark_protocol_id)
+);
+
+CREATE TABLE IF NOT EXISTS validation_namespaces (
+  validation_namespace_id INTEGER PRIMARY KEY,
+  problem_type_id INTEGER NOT NULL REFERENCES problem_types(problem_type_id),
+  validation_protocol_id INTEGER NOT NULL REFERENCES validation_protocols(validation_protocol_id),
+  UNIQUE(problem_type_id, validation_protocol_id)
+);
+
 CREATE TABLE IF NOT EXISTS candidates (
-  candidate_hash TEXT PRIMARY KEY,
-  candidate_json TEXT NOT NULL,
-  source TEXT NOT NULL,
-  parent_hashes TEXT NOT NULL,
+  candidate_id INTEGER PRIMARY KEY,
+  candidate_hash TEXT NOT NULL UNIQUE,
+  params_json TEXT NOT NULL,
   created_at REAL NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS proposal_occurrences (
-  proposal_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  problem_type_hash TEXT NOT NULL,
-  benchmark_protocol_hash TEXT NOT NULL,
-  candidate_hash TEXT NOT NULL,
-  source TEXT NOT NULL,
-  parent_hashes_json TEXT NOT NULL,
-  proposal_metadata_json TEXT NOT NULL,
-  scope_kind TEXT NOT NULL,
-  scope_shape_ids_json TEXT NOT NULL,
-  selected INTEGER NOT NULL,
-  created_at REAL NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_proposal_occurrences_credit
-  ON proposal_occurrences(problem_type_hash, benchmark_protocol_hash, candidate_hash, created_at);
 
 CREATE TABLE IF NOT EXISTS shapes (
-  shape_id TEXT PRIMARY KEY,
+  shape_key INTEGER PRIMARY KEY,
+  shape_id TEXT NOT NULL UNIQUE,
   m INTEGER NOT NULL,
   n INTEGER NOT NULL,
   batch INTEGER NOT NULL,
@@ -166,88 +209,158 @@ CREATE TABLE IF NOT EXISTS shapes (
   created_at REAL NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS runs (
-  run_id TEXT PRIMARY KEY,
-  timestamp REAL NOT NULL,
-  yaml_path TEXT,
-  output_dir TEXT,
+CREATE TABLE IF NOT EXISTS proposal_events (
+  proposal_event_id INTEGER PRIMARY KEY,
+  benchmark_namespace_id INTEGER NOT NULL REFERENCES benchmark_namespaces(benchmark_namespace_id),
+  scope_kind TEXT NOT NULL,
+  scope_shape_ids_json TEXT NOT NULL,
+  proposal_args_json TEXT NOT NULL,
+  island_id TEXT,
+  restart_index INTEGER NOT NULL,
+  duration_s REAL NOT NULL CHECK(duration_s >= 0),
+  created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS proposal_candidates (
+  occurrence_id INTEGER PRIMARY KEY,
+  proposal_event_id INTEGER NOT NULL REFERENCES proposal_events(proposal_event_id) ON DELETE CASCADE,
+  candidate_id INTEGER NOT NULL REFERENCES candidates(candidate_id),
+  source TEXT NOT NULL,
+  parent_candidate_ids_json TEXT NOT NULL,
+  operator_metadata_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('generated', 'preserved')),
+  selected INTEGER NOT NULL,
+  UNIQUE(proposal_event_id, candidate_id, source, parent_candidate_ids_json, operator_metadata_json, state)
+);
+
+CREATE TABLE IF NOT EXISTS baseline_discoveries (
+  discovery_id INTEGER PRIMARY KEY,
+  problem_type_id INTEGER NOT NULL REFERENCES problem_types(problem_type_id),
+  context_json TEXT NOT NULL,
+  duration_s REAL NOT NULL CHECK(duration_s >= 0),
+  created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS baseline_selections (
+  discovery_id INTEGER NOT NULL REFERENCES baseline_discoveries(discovery_id) ON DELETE CASCADE,
+  shape_key INTEGER NOT NULL REFERENCES shapes(shape_key),
+  candidate_id INTEGER NOT NULL REFERENCES candidates(candidate_id),
+  hipblaslt_solution_index INTEGER NOT NULL,
+  hipblaslt_solution_name TEXT,
+  hipblaslt_kernel_name TEXT,
+  logic_solution_index INTEGER,
+  logic_solution_name TEXT,
+  query_gflops REAL,
+  query_time_us REAL,
+  PRIMARY KEY(discovery_id, shape_key)
+);
+
+CREATE TABLE IF NOT EXISTS evidence_sources (
+  source_id INTEGER PRIMARY KEY,
+  source_kind TEXT NOT NULL CHECK(source_kind IN (
+    'native_run', 'historical_migration', 'static_rule', 'replay'
+  )),
+  source_ref TEXT NOT NULL UNIQUE,
+  created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS native_runs (
+  source_id INTEGER PRIMARY KEY REFERENCES evidence_sources(source_id) ON DELETE CASCADE,
+  phase TEXT NOT NULL,
   status TEXT NOT NULL,
-  returncode INTEGER,
-  metadata_json TEXT
+  duration_s REAL NOT NULL CHECK(duration_s >= 0),
+  returncode INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS run_candidate_costs (
-  run_id TEXT NOT NULL,
-  candidate_hash TEXT NOT NULL,
+  source_id INTEGER NOT NULL REFERENCES native_runs(source_id) ON DELETE CASCADE,
+  candidate_id INTEGER NOT NULL REFERENCES candidates(candidate_id),
   phase TEXT NOT NULL,
   duration_s REAL NOT NULL,
-  PRIMARY KEY(run_id, candidate_hash, phase)
+  PRIMARY KEY(source_id, candidate_id, phase)
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_candidate_costs_candidate
-  ON run_candidate_costs(candidate_hash, phase);
+  ON run_candidate_costs(candidate_id, phase);
 
-CREATE TABLE IF NOT EXISTS evaluations (
-  eval_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  problem_type_hash TEXT NOT NULL DEFAULT '',
-  benchmark_protocol_hash TEXT NOT NULL DEFAULT '',
-  shape_id TEXT NOT NULL,
-  candidate_hash TEXT NOT NULL,
-  run_id TEXT,
+CREATE TABLE IF NOT EXISTS benchmark_events (
+  event_id INTEGER PRIMARY KEY,
+  benchmark_namespace_id INTEGER NOT NULL REFERENCES benchmark_namespaces(benchmark_namespace_id),
+  shape_key INTEGER NOT NULL REFERENCES shapes(shape_key),
+  candidate_id INTEGER NOT NULL REFERENCES candidates(candidate_id),
+  source_id INTEGER NOT NULL REFERENCES evidence_sources(source_id),
   status TEXT NOT NULL,
-  time_us REAL,
-  validation TEXT,
+  validation_namespace_id INTEGER REFERENCES validation_namespaces(validation_namespace_id),
   solution_index INTEGER,
   created_at REAL NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_evaluations_cache_key
-  ON evaluations(problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash);
+CREATE TABLE IF NOT EXISTS benchmark_samples (
+  event_id INTEGER NOT NULL REFERENCES benchmark_events(event_id) ON DELETE CASCADE,
+  sample_index INTEGER NOT NULL CHECK(sample_index >= 0),
+  time_us REAL NOT NULL CHECK(time_us > 0),
+  PRIMARY KEY(event_id, sample_index)
+);
 
-CREATE INDEX IF NOT EXISTS idx_evaluations_shape_candidate
-  ON evaluations(shape_id, candidate_hash);
+CREATE INDEX IF NOT EXISTS idx_benchmark_events_pair
+  ON benchmark_events(benchmark_namespace_id, shape_key, candidate_id);
 
-CREATE INDEX IF NOT EXISTS idx_evaluations_shape_time
-  ON evaluations(problem_type_hash, benchmark_protocol_hash, shape_id, time_us);
+CREATE INDEX IF NOT EXISTS idx_benchmark_events_positive
+  ON benchmark_events(benchmark_namespace_id, shape_key, candidate_id, created_at DESC, event_id DESC)
+  WHERE status = 'ok';
+
+CREATE INDEX IF NOT EXISTS idx_benchmark_events_negative
+  ON benchmark_events(benchmark_namespace_id, shape_key, candidate_id, created_at DESC, event_id DESC)
+  WHERE status IN ('rejected', 'build_failed');
 
 CREATE TABLE IF NOT EXISTS validations (
-  validation_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  problem_type_hash TEXT NOT NULL,
-  validation_protocol_hash TEXT NOT NULL,
-  shape_id TEXT NOT NULL,
-  candidate_hash TEXT NOT NULL,
-  run_id TEXT,
+  validation_id INTEGER PRIMARY KEY,
+  validation_namespace_id INTEGER NOT NULL REFERENCES validation_namespaces(validation_namespace_id),
+  shape_key INTEGER NOT NULL REFERENCES shapes(shape_key),
+  candidate_id INTEGER NOT NULL REFERENCES candidates(candidate_id),
+  source_id INTEGER NOT NULL REFERENCES evidence_sources(source_id),
   status TEXT NOT NULL,
   detail TEXT,
   solution_index INTEGER,
   created_at REAL NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_validations_cache_key
-  ON validations(problem_type_hash, validation_protocol_hash, shape_id, candidate_hash);
+CREATE INDEX IF NOT EXISTS idx_validations_latest
+  ON validations(validation_namespace_id, shape_key, candidate_id, created_at DESC, validation_id DESC);
 
-CREATE TABLE IF NOT EXISTS candidate_artifacts (
-  artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  problem_type_hash TEXT NOT NULL,
-  shape_id TEXT NOT NULL,
-  candidate_hash TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS artifact_bundles (
+  bundle_id INTEGER PRIMARY KEY,
+  build_run_id TEXT NOT NULL,
+  build_output_dir TEXT NOT NULL,
+  library_dir TEXT NOT NULL,
+  manifest_path TEXT,
+  code_object_identity TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  UNIQUE(library_dir, code_object_identity)
+);
+
+CREATE TABLE IF NOT EXISTS artifact_solution_yamls (
+  bundle_id INTEGER NOT NULL REFERENCES artifact_bundles(bundle_id) ON DELETE CASCADE,
+  solution_yaml_path TEXT NOT NULL,
+  PRIMARY KEY(bundle_id, solution_yaml_path)
+);
+
+CREATE TABLE IF NOT EXISTS artifact_mappings (
+  mapping_id INTEGER PRIMARY KEY,
+  bundle_id INTEGER NOT NULL REFERENCES artifact_bundles(bundle_id) ON DELETE CASCADE,
+  problem_type_id INTEGER NOT NULL REFERENCES problem_types(problem_type_id),
+  shape_key INTEGER NOT NULL REFERENCES shapes(shape_key),
+  candidate_id INTEGER NOT NULL REFERENCES candidates(candidate_id),
   problem_index INTEGER NOT NULL,
   requested_solution_index INTEGER NOT NULL,
   library_solution_index INTEGER NOT NULL,
   manifest_solution_index INTEGER,
-  build_run_id TEXT NOT NULL,
-  build_output_dir TEXT NOT NULL,
-  library_dir TEXT NOT NULL,
-  solution_yaml_paths_json TEXT NOT NULL,
-  manifest_path TEXT,
-  code_object_identity TEXT NOT NULL,
   created_at REAL NOT NULL,
-  UNIQUE(problem_type_hash, shape_id, candidate_hash, library_solution_index,
-         library_dir, code_object_identity)
+  UNIQUE(bundle_id, problem_type_id, shape_key, candidate_id, library_solution_index)
 );
 
-CREATE INDEX IF NOT EXISTS idx_candidate_artifacts_pair
-  ON candidate_artifacts(problem_type_hash, shape_id, candidate_hash, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifact_mappings_pair
+  ON artifact_mappings(problem_type_id, shape_key, candidate_id, created_at DESC);
 
 """
 
@@ -255,16 +368,55 @@ CREATE INDEX IF NOT EXISTS idx_candidate_artifacts_pair
 @dataclass
 class EvoTensileDB:
     path: Path
+    environment_compatibility_tag: str
 
     @classmethod
-    def connect(cls, path: str | Path) -> "EvoTensileDB":
-        return cls(Path(path))
+    def connect(
+        cls,
+        path: str | Path,
+        *,
+        environment_compatibility_tag: str | None = None,
+    ) -> "EvoTensileDB":
+        tag = (environment_compatibility_tag or os.environ.get("EVOTENSILE_ENVIRONMENT_COMPATIBILITY_TAG", "")).strip()
+        if not tag:
+            raise ValueError("environment compatibility tag is required")
+        db = cls(Path(path), tag)
+        db._verify_environment_compatibility()
+        return db
+
+    def _verify_environment_compatibility(self) -> None:
+        if not self.path.exists():
+            return
+        with sqlite3.connect(self.path, timeout=60.0) as con:
+            metadata_table = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'database_metadata'"
+            ).fetchone()
+            if metadata_table is None:
+                has_tables = con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
+                ).fetchone()
+                if has_tables is not None:
+                    raise ValueError("database does not use the current schema")
+                return
+            row = con.execute(
+                "SELECT metadata_value FROM database_metadata WHERE metadata_key = ?",
+                ("environment_compatibility_tag",),
+            ).fetchone()
+            if row is None:
+                raise ValueError("database has no environment compatibility tag")
+            actual = str(row[0])
+            if actual != self.environment_compatibility_tag:
+                raise ValueError(
+                    "environment compatibility tag mismatch: "
+                    f"database={actual!r}, expected={self.environment_compatibility_tag!r}"
+                )
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(self.path, timeout=60.0)
         con.row_factory = sqlite3.Row
+        con.execute("PRAGMA foreign_keys=ON")
         con.execute("PRAGMA busy_timeout=60000")
         try:
             yield con
@@ -275,23 +427,176 @@ class EvoTensileDB:
     def init(self) -> None:
         with self.connection() as con:
             con.executescript(SCHEMA)
-
-    def upsert_candidate(self, candidate: Candidate) -> None:
-        with self.connection() as con:
             con.execute(
-                """
-                INSERT OR IGNORE INTO candidates
-                  (candidate_hash, candidate_json, source, parent_hashes, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    candidate.hash,
-                    candidate.to_json(),
-                    candidate.source,
-                    json.dumps(list(candidate.parent_hashes)),
-                    time.time(),
-                ),
+                "INSERT OR IGNORE INTO database_metadata(metadata_key, metadata_value) VALUES (?, ?)",
+                ("environment_compatibility_tag", self.environment_compatibility_tag),
             )
+
+    @staticmethod
+    def _intern_hash(
+        con: sqlite3.Connection,
+        *,
+        table: str,
+        id_column: str,
+        hash_column: str,
+        value: str,
+        definition_json: str | None = None,
+    ) -> int:
+        if not value:
+            raise ValueError(f"{hash_column} is required")
+        con.execute(
+            f"INSERT OR IGNORE INTO {table}({hash_column}, definition_json) VALUES (?, ?)",
+            (value, definition_json),
+        )
+        row = con.execute(f"SELECT {id_column} FROM {table} WHERE {hash_column} = ?", (value,)).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    @classmethod
+    def _benchmark_namespace_id(
+        cls,
+        con: sqlite3.Connection,
+        problem_type_hash: str,
+        benchmark_protocol_hash: str,
+    ) -> int:
+        problem_type_id = cls._intern_hash(
+            con,
+            table="problem_types",
+            id_column="problem_type_id",
+            hash_column="problem_type_hash",
+            value=problem_type_hash,
+        )
+        benchmark_protocol_id = cls._intern_hash(
+            con,
+            table="benchmark_protocols",
+            id_column="benchmark_protocol_id",
+            hash_column="benchmark_protocol_hash",
+            value=benchmark_protocol_hash,
+        )
+        con.execute(
+            "INSERT OR IGNORE INTO benchmark_namespaces(problem_type_id, benchmark_protocol_id) VALUES (?, ?)",
+            (problem_type_id, benchmark_protocol_id),
+        )
+        row = con.execute(
+            "SELECT benchmark_namespace_id FROM benchmark_namespaces "
+            "WHERE problem_type_id = ? AND benchmark_protocol_id = ?",
+            (problem_type_id, benchmark_protocol_id),
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    @classmethod
+    def _validation_namespace_id(
+        cls,
+        con: sqlite3.Connection,
+        problem_type_hash: str,
+        validation_protocol_hash: str,
+    ) -> int:
+        problem_type_id = cls._intern_hash(
+            con,
+            table="problem_types",
+            id_column="problem_type_id",
+            hash_column="problem_type_hash",
+            value=problem_type_hash,
+        )
+        validation_protocol_id = cls._intern_hash(
+            con,
+            table="validation_protocols",
+            id_column="validation_protocol_id",
+            hash_column="validation_protocol_hash",
+            value=validation_protocol_hash,
+        )
+        con.execute(
+            "INSERT OR IGNORE INTO validation_namespaces(problem_type_id, validation_protocol_id) VALUES (?, ?)",
+            (problem_type_id, validation_protocol_id),
+        )
+        row = con.execute(
+            "SELECT validation_namespace_id FROM validation_namespaces "
+            "WHERE problem_type_id = ? AND validation_protocol_id = ?",
+            (problem_type_id, validation_protocol_id),
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    @staticmethod
+    def _candidate_id(con: sqlite3.Connection, candidate_hash: str) -> int:
+        row = con.execute("SELECT candidate_id FROM candidates WHERE candidate_hash = ?", (candidate_hash,)).fetchone()
+        if row is None:
+            raise ValueError(f"candidate is not registered: {candidate_hash}")
+        return int(row[0])
+
+    @staticmethod
+    def _shape_key(con: sqlite3.Connection, shape_id: str) -> int:
+        row = con.execute("SELECT shape_key FROM shapes WHERE shape_id = ?", (shape_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"shape is not registered: {shape_id}")
+        return int(row[0])
+
+    @staticmethod
+    def _source_id(con: sqlite3.Connection, source_ref: str) -> int:
+        row = con.execute("SELECT source_id FROM evidence_sources WHERE source_ref = ?", (source_ref,)).fetchone()
+        if row is None:
+            raise ValueError(f"evidence source is not registered: {source_ref}")
+        return int(row[0])
+
+    @classmethod
+    def _evidence_source_id(
+        cls,
+        con: sqlite3.Connection,
+        *,
+        source_kind: str,
+        source_ref: str,
+        created_at: float,
+    ) -> int:
+        con.execute(
+            """
+            INSERT OR IGNORE INTO evidence_sources(source_kind, source_ref, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (source_kind, source_ref, created_at),
+        )
+        source_id = cls._source_id(con, source_ref)
+        row = con.execute("SELECT source_kind FROM evidence_sources WHERE source_id = ?", (source_id,)).fetchone()
+        assert row is not None
+        if row[0] != source_kind:
+            raise ValueError(f"evidence source kind mismatch for {source_ref}: {row[0]} != {source_kind}")
+        return source_id
+
+    @classmethod
+    def _observation_source_id(
+        cls,
+        con: sqlite3.Connection,
+        *,
+        source_kind: str,
+        source_ref: str | None,
+        created_at: float,
+    ) -> int:
+        if source_kind == "native_run":
+            if not source_ref:
+                raise ValueError("native evidence requires a run reference")
+            source_id = cls._source_id(con, source_ref)
+            native = con.execute("SELECT 1 FROM native_runs WHERE source_id = ?", (source_id,)).fetchone()
+            if native is None:
+                raise ValueError(f"native run is not registered: {source_ref}")
+            return source_id
+        if source_kind == "static_rule":
+            normalized_ref = source_ref or "static_rule:nt_hhs"
+        elif source_kind == "replay":
+            if not source_ref:
+                raise ValueError("replay evidence requires a source reference")
+            normalized_ref = f"replay:{source_ref}"
+        else:
+            raise ValueError(f"unsupported evidence source kind: {source_kind}")
+        return cls._evidence_source_id(
+            con,
+            source_kind=source_kind,
+            source_ref=normalized_ref,
+            created_at=created_at,
+        )
+
+    @staticmethod
+    def _candidate_row(candidate: Candidate, created_at: float) -> tuple[str, str, float]:
+        return candidate.hash, canonical_json(candidate.canonical_params()), created_at
 
     def register_candidates(self, candidates: list[Candidate]) -> None:
         if not candidates:
@@ -299,24 +604,11 @@ class EvoTensileDB:
         now = time.time()
         with self.connection() as con:
             con.executemany(
-                """
-                INSERT OR IGNORE INTO candidates
-                  (candidate_hash, candidate_json, source, parent_hashes, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        candidate.hash,
-                        candidate.to_json(),
-                        candidate.source,
-                        json.dumps(list(candidate.parent_hashes)),
-                        now,
-                    )
-                    for candidate in candidates
-                ],
+                "INSERT OR IGNORE INTO candidates(candidate_hash, params_json, created_at) VALUES (?, ?, ?)",
+                [self._candidate_row(candidate, now) for candidate in candidates],
             )
 
-    def record_proposal_occurrences(
+    def record_proposal_event(
         self,
         candidates: list[Candidate],
         *,
@@ -324,89 +616,219 @@ class EvoTensileDB:
         benchmark_protocol_hash: str,
         scope_kind: str,
         scope_shape_ids: tuple[str, ...],
+        generated_hashes: set[str],
         selected_candidates: list[Candidate],
-    ) -> None:
+        proposal_args: dict[str, object] | None = None,
+        island_id: str | None = None,
+        restart_index: int = 0,
+        duration_s: float = 0.0,
+    ) -> int | None:
         if not candidates:
-            return
+            return None
         now = time.time()
         selected_by_hash = {candidate.hash: candidate for candidate in selected_candidates}
         selected_hashes: set[str] = set()
-        rows = []
-        for candidate in candidates:
-            selected_candidate = selected_by_hash.get(candidate.hash)
-            selected_metadata = {} if selected_candidate is None else dict(selected_candidate.proposal_metadata)
-            selected_metadata.pop("proposal_scope_kind", None)
-            selected_metadata.pop("proposal_scope_shape_ids", None)
-            selected = bool(
-                selected_candidate is not None
-                and candidate.hash not in selected_hashes
-                and candidate.source == selected_candidate.source
-                and candidate.parent_hashes == selected_candidate.parent_hashes
-                and candidate.proposal_metadata == selected_metadata
-            )
-            if selected:
-                selected_hashes.add(candidate.hash)
-            rows.append(
-                (
-                    problem_type_hash,
-                    benchmark_protocol_hash,
-                    candidate.hash,
-                    candidate.source,
-                    json.dumps(list(candidate.parent_hashes)),
-                    json.dumps(candidate.proposal_metadata, sort_keys=True),
-                    scope_kind,
-                    json.dumps(list(scope_shape_ids)),
-                    int(selected),
-                    now,
-                )
-            )
         with self.connection() as con:
             con.executemany(
+                "INSERT OR IGNORE INTO candidates(candidate_hash, params_json, created_at) VALUES (?, ?, ?)",
+                [self._candidate_row(candidate, now) for candidate in candidates],
+            )
+            benchmark_namespace_id = self._benchmark_namespace_id(con, problem_type_hash, benchmark_protocol_hash)
+            cursor = con.execute(
                 """
-                INSERT INTO proposal_occurrences
-                  (problem_type_hash, benchmark_protocol_hash, candidate_hash, source,
-                   parent_hashes_json, proposal_metadata_json, scope_kind,
-                   scope_shape_ids_json, selected, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO proposal_events
+                  (benchmark_namespace_id, scope_kind, scope_shape_ids_json, proposal_args_json,
+                   island_id, restart_index, duration_s, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    benchmark_namespace_id,
+                    scope_kind,
+                    canonical_json(list(scope_shape_ids)),
+                    canonical_json(proposal_args or {}),
+                    island_id,
+                    restart_index,
+                    max(0.0, duration_s),
+                    now,
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("proposal event insert returned no ID")
+            proposal_event_id = int(cursor.lastrowid)
+            rows = []
+            for candidate in candidates:
+                selected_candidate = selected_by_hash.get(candidate.hash)
+                selected = bool(
+                    selected_candidate is not None
+                    and candidate.hash not in selected_hashes
+                    and candidate.source == selected_candidate.source
+                    and candidate.parent_hashes == selected_candidate.parent_hashes
+                )
+                if selected:
+                    selected_hashes.add(candidate.hash)
+                parent_ids = [self._candidate_id(con, parent_hash) for parent_hash in candidate.parent_hashes]
+                metadata = dict(candidate.proposal_metadata)
+                metadata.pop("proposal_scope_kind", None)
+                metadata.pop("proposal_scope_shape_ids", None)
+                metadata.pop("proposal_cost_s", None)
+                metadata.pop("island_id", None)
+                metadata.pop("restart_index", None)
+                rows.append(
+                    (
+                        proposal_event_id,
+                        self._candidate_id(con, candidate.hash),
+                        candidate.source,
+                        canonical_json(parent_ids),
+                        canonical_json(metadata),
+                        "generated" if candidate.hash in generated_hashes else "preserved",
+                        int(selected),
+                    )
+                )
+            con.executemany(
+                """
+                INSERT INTO proposal_candidates
+                  (proposal_event_id, candidate_id, source, parent_candidate_ids_json,
+                   operator_metadata_json, state, selected)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
+            return proposal_event_id
 
-    def proposal_occurrences(
+    def proposal_candidate_occurrences(
         self,
         *,
         problem_type_hash: str,
         benchmark_protocol_hash: str,
         selected_only: bool = True,
     ) -> list[ProposalOccurrence]:
-        selected_clause = "AND selected = 1" if selected_only else ""
+        selected_clause = "AND pc.selected = 1" if selected_only else ""
         with self.connection() as con:
             rows = con.execute(
                 f"""
-                SELECT proposal_id, problem_type_hash, benchmark_protocol_hash,
-                       candidate_hash, source, parent_hashes_json,
-                       proposal_metadata_json, scope_kind, scope_shape_ids_json,
-                       selected, created_at
-                FROM proposal_occurrences
-                WHERE problem_type_hash = ? AND benchmark_protocol_hash = ?
+                SELECT pc.occurrence_id, pe.proposal_event_id, pt.problem_type_hash,
+                       bp.benchmark_protocol_hash, c.candidate_hash, pc.source,
+                       pc.parent_candidate_ids_json, pc.operator_metadata_json, pc.state,
+                       pe.scope_kind, pe.scope_shape_ids_json, pe.island_id, pe.restart_index,
+                       pe.duration_s, pc.selected, pe.created_at
+                FROM proposal_candidates AS pc
+                JOIN proposal_events AS pe USING (proposal_event_id)
+                JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
+                JOIN problem_types AS pt USING (problem_type_id)
+                JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
+                JOIN candidates AS c USING (candidate_id)
+                WHERE pt.problem_type_hash = ? AND bp.benchmark_protocol_hash = ?
                 {selected_clause}
-                ORDER BY proposal_id
+                ORDER BY pc.occurrence_id
                 """,
                 (problem_type_hash, benchmark_protocol_hash),
             ).fetchall()
+            parent_ids = sorted({int(value) for row in rows for value in json.loads(row["parent_candidate_ids_json"])})
+            parent_hashes = {}
+            if parent_ids:
+                placeholders = ",".join("?" for _ in parent_ids)
+                parent_hashes = {
+                    int(row["candidate_id"]): str(row["candidate_hash"])
+                    for row in con.execute(
+                        f"SELECT candidate_id, candidate_hash FROM candidates WHERE candidate_id IN ({placeholders})",
+                        parent_ids,
+                    )
+                }
         return [
             ProposalOccurrence(
-                proposal_id=int(row["proposal_id"]),
+                occurrence_id=int(row["occurrence_id"]),
+                proposal_event_id=int(row["proposal_event_id"]),
                 problem_type_hash=str(row["problem_type_hash"]),
                 benchmark_protocol_hash=str(row["benchmark_protocol_hash"]),
                 candidate_hash=str(row["candidate_hash"]),
                 source=str(row["source"]),
-                parent_hashes=tuple(json.loads(row["parent_hashes_json"])),
-                proposal_metadata=dict(json.loads(row["proposal_metadata_json"])),
+                parent_hashes=tuple(
+                    parent_hashes[int(value)] for value in json.loads(row["parent_candidate_ids_json"])
+                ),
+                proposal_metadata=dict(json.loads(row["operator_metadata_json"])),
+                state=str(row["state"]),
                 scope_kind=str(row["scope_kind"]),
                 scope_shape_ids=tuple(json.loads(row["scope_shape_ids_json"])),
+                island_id=None if row["island_id"] is None else str(row["island_id"]),
+                restart_index=int(row["restart_index"]),
+                duration_s=float(row["duration_s"]),
                 selected=bool(row["selected"]),
                 created_at=float(row["created_at"]),
+            )
+            for row in rows
+        ]
+
+    def record_baseline_discovery(
+        self,
+        selections: list[BaselineSelectionInsert],
+        *,
+        problem_type_hash: str,
+        context: dict[str, object],
+        duration_s: float,
+    ) -> int | None:
+        if not selections:
+            return None
+        now = time.time()
+        self.register_candidates([selection.candidate for selection in selections])
+        self.register_shapes([selection.shape for selection in selections])
+        with self.connection() as con:
+            problem_type_id = self._intern_hash(
+                con,
+                table="problem_types",
+                id_column="problem_type_id",
+                hash_column="problem_type_hash",
+                value=problem_type_hash,
+            )
+            cursor = con.execute(
+                "INSERT INTO baseline_discoveries(problem_type_id, context_json, duration_s, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (problem_type_id, canonical_json(context), max(0.0, duration_s), now),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("baseline discovery insert returned no ID")
+            discovery_id = int(cursor.lastrowid)
+            con.executemany(
+                """
+                INSERT INTO baseline_selections
+                  (discovery_id, shape_key, candidate_id, hipblaslt_solution_index,
+                   hipblaslt_solution_name, hipblaslt_kernel_name, logic_solution_index,
+                   logic_solution_name, query_gflops, query_time_us)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        discovery_id,
+                        self._shape_key(con, selection.shape.id),
+                        self._candidate_id(con, selection.candidate.hash),
+                        selection.hipblaslt_solution_index,
+                        selection.hipblaslt_solution_name,
+                        selection.hipblaslt_kernel_name,
+                        selection.logic_solution_index,
+                        selection.logic_solution_name,
+                        selection.query_gflops,
+                        selection.query_time_us,
+                    )
+                    for selection in selections
+                ],
+            )
+            return discovery_id
+
+    def baseline_selection_pairs(self, discovery_id: int) -> list[tuple[Shape, Candidate]]:
+        with self.connection() as con:
+            rows = con.execute(
+                """
+                SELECT s.m, s.n, s.batch, s.k, c.candidate_hash, c.params_json
+                FROM baseline_selections AS bs
+                JOIN shapes AS s USING (shape_key)
+                JOIN candidates AS c USING (candidate_id)
+                WHERE bs.discovery_id = ? ORDER BY s.shape_key
+                """,
+                (discovery_id,),
+            ).fetchall()
+        return [
+            (
+                Shape(m=int(row["m"]), n=int(row["n"]), batch=int(row["batch"]), k=int(row["k"])),
+                Candidate(params=dict(json.loads(row["params_json"])), source="installed_hipblaslt_baseline"),
             )
             for row in rows
         ]
@@ -442,7 +864,7 @@ class EvoTensileDB:
         with self.connection() as con:
             rows = con.execute(
                 f"""
-                SELECT candidate_hash, candidate_json
+                SELECT candidate_hash, params_json
                 FROM candidates
                 WHERE candidate_hash IN ({placeholders})
                 """,
@@ -450,137 +872,151 @@ class EvoTensileDB:
             ).fetchall()
         by_hash: dict[str, Candidate] = {}
         for row in rows:
-            by_hash[row["candidate_hash"]] = Candidate.from_mapping(json.loads(row["candidate_json"]))
+            by_hash[row["candidate_hash"]] = Candidate(params=dict(json.loads(row["params_json"])))
         return [by_hash[h] for h in candidate_hashes if h in by_hash]
 
     def insert_run(
         self,
         run_id: str,
         *,
-        yaml_path: str | None,
-        output_dir: str | None,
+        phase: str,
         status: str,
+        duration_s: float,
         returncode: int | None = None,
-        metadata_json: str | None = None,
         candidate_hashes: list[str] | None = None,
-        cost_phase: str | None = None,
-        duration_s: float | None = None,
     ) -> None:
+        if duration_s < 0.0:
+            raise ValueError("native run duration must be non-negative")
         with self.connection() as con:
+            source_id = self._evidence_source_id(
+                con,
+                source_kind="native_run",
+                source_ref=run_id,
+                created_at=time.time(),
+            )
             con.execute(
                 """
-                INSERT OR REPLACE INTO runs
-                  (run_id, timestamp, yaml_path, output_dir, status, returncode, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO native_runs(source_id, phase, status, duration_s, returncode)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (
-                    run_id,
-                    time.time(),
-                    yaml_path,
-                    output_dir,
-                    status,
-                    returncode,
-                    metadata_json,
-                ),
+                (source_id, phase, status, duration_s, returncode),
             )
-            con.execute("DELETE FROM run_candidate_costs WHERE run_id = ?", (run_id,))
+            con.execute("DELETE FROM run_candidate_costs WHERE source_id = ?", (source_id,))
             attributed_hashes = sorted(set(candidate_hashes or ()))
-            if cost_phase is not None and attributed_hashes:
-                if duration_s is None or duration_s < 0.0:
-                    raise ValueError("indexed run cost requires a non-negative duration")
+            if attributed_hashes:
                 share = duration_s / len(attributed_hashes)
                 con.executemany(
                     """
-                    INSERT OR REPLACE INTO run_candidate_costs
-                      (run_id, candidate_hash, phase, duration_s)
+                    INSERT INTO run_candidate_costs(source_id, candidate_id, phase, duration_s)
                     VALUES (?, ?, ?, ?)
                     """,
-                    [(run_id, candidate_hash, cost_phase, share) for candidate_hash in attributed_hashes],
+                    [
+                        (source_id, self._candidate_id(con, candidate_hash), phase, share)
+                        for candidate_hash in attributed_hashes
+                    ],
                 )
 
-    def insert_evaluation(
-        self,
-        *,
-        shape_id: str,
-        candidate_hash: str,
-        run_id: str | None,
-        status: str,
-        problem_type_hash: str = "",
-        benchmark_protocol_hash: str = "",
-        time_us: float | None = None,
-        validation: str | None = None,
-        solution_index: int | None = None,
-    ) -> None:
-        evaluation = EvaluationInsert(
-            shape_id=shape_id,
-            candidate_hash=candidate_hash,
-            run_id=run_id,
-            status=status,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            time_us=time_us,
-            validation=validation,
-            solution_index=solution_index,
-        )
-        self.insert_evaluations([evaluation])
-
-    def insert_evaluations(self, evaluations: list[EvaluationInsert]) -> None:
-        if not evaluations:
+    def insert_benchmark_events(self, events: list[BenchmarkEventInsert]) -> None:
+        if not events:
             return
         now = time.time()
         with self.connection() as con:
-            for evaluation in evaluations:
+            for event in events:
+                if event.status == "ok":
+                    if not event.samples_us or any(
+                        not math.isfinite(time_us) or time_us <= 0.0 for time_us in event.samples_us
+                    ):
+                        raise ValueError("successful benchmark event requires finite positive samples")
+                elif event.samples_us:
+                    raise ValueError("negative benchmark event cannot contain timing samples")
+                benchmark_namespace_id = self._benchmark_namespace_id(
+                    con,
+                    event.problem_type_hash,
+                    event.benchmark_protocol_hash,
+                )
+                shape_key = self._shape_key(con, event.shape_id)
+                candidate_id = self._candidate_id(con, event.candidate_hash)
+                validation_namespace_id = None
+                if event.status == "ok":
+                    if not event.validation_protocol_hash:
+                        raise ValueError("successful benchmark event requires a validation protocol")
+                    validation_namespace_id = self._validation_namespace_id(
+                        con,
+                        event.problem_type_hash,
+                        event.validation_protocol_hash,
+                    )
+                    latest_validation = con.execute(
+                        """
+                        SELECT status FROM validations
+                        WHERE validation_namespace_id = ? AND shape_key = ? AND candidate_id = ?
+                        ORDER BY created_at DESC, validation_id DESC LIMIT 1
+                        """,
+                        (validation_namespace_id, shape_key, candidate_id),
+                    ).fetchone()
+                    if latest_validation is None or latest_validation[0] != "passed":
+                        raise ValueError("successful benchmark event requires latest compatible validation pass")
+                source_id = self._observation_source_id(
+                    con,
+                    source_kind=event.source_kind,
+                    source_ref=event.run_id,
+                    created_at=now,
+                )
                 values = (
-                    evaluation.problem_type_hash,
-                    evaluation.benchmark_protocol_hash,
-                    evaluation.shape_id,
-                    evaluation.candidate_hash,
-                    evaluation.run_id,
-                    evaluation.status,
-                    evaluation.time_us,
-                    evaluation.validation,
-                    evaluation.solution_index,
+                    benchmark_namespace_id,
+                    shape_key,
+                    candidate_id,
+                    source_id,
+                    event.status,
+                    validation_namespace_id,
+                    event.solution_index,
                     now,
                 )
-                if evaluation.status in NEGATIVE_CACHE_STATUSES:
-                    con.execute(
+                if event.status in NEGATIVE_CACHE_STATUSES:
+                    cursor = con.execute(
                         """
-                        INSERT INTO evaluations
-                          (problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
-                           run_id, status, time_us, validation, solution_index, created_at)
-                        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        INSERT INTO benchmark_events
+                          (benchmark_namespace_id, shape_key, candidate_id, source_id, status,
+                           validation_namespace_id, solution_index, created_at)
+                        SELECT ?, ?, ?, ?, ?, ?, ?, ?
                         WHERE NOT EXISTS (
-                          SELECT 1 FROM evaluations
-                          WHERE problem_type_hash = ?
-                            AND benchmark_protocol_hash = ?
-                            AND shape_id = ?
-                            AND candidate_hash = ?
-                            AND run_id IS ?
+                          SELECT 1 FROM benchmark_events
+                          WHERE benchmark_namespace_id = ?
+                            AND shape_key = ?
+                            AND candidate_id = ?
+                            AND source_id = ?
                             AND status = ?
                             AND solution_index IS ?
                         )
                         """,
                         (
                             *values,
-                            evaluation.problem_type_hash,
-                            evaluation.benchmark_protocol_hash,
-                            evaluation.shape_id,
-                            evaluation.candidate_hash,
-                            evaluation.run_id,
-                            evaluation.status,
-                            evaluation.solution_index,
+                            benchmark_namespace_id,
+                            shape_key,
+                            candidate_id,
+                            source_id,
+                            event.status,
+                            event.solution_index,
                         ),
                     )
+                    if cursor.rowcount == 0:
+                        continue
                 else:
-                    con.execute(
+                    cursor = con.execute(
                         """
-                        INSERT INTO evaluations
-                          (problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
-                           run_id, status, time_us, validation, solution_index, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO benchmark_events
+                          (benchmark_namespace_id, shape_key, candidate_id, source_id, status,
+                           validation_namespace_id, solution_index, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         values,
                     )
+                if cursor.lastrowid is None:
+                    raise RuntimeError("benchmark event insert did not return an event ID")
+                event_id = cursor.lastrowid
+                con.executemany(
+                    "INSERT INTO benchmark_samples(event_id, sample_index, time_us) VALUES (?, ?, ?)",
+                    [(event_id, sample_index, time_us) for sample_index, time_us in enumerate(event.samples_us)],
+                )
 
     def insert_validations(self, validations: list[ValidationInsert]) -> None:
         if not validations:
@@ -590,17 +1026,25 @@ class EvoTensileDB:
             con.executemany(
                 """
                 INSERT INTO validations
-                  (problem_type_hash, validation_protocol_hash, shape_id, candidate_hash,
-                   run_id, status, detail, solution_index, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (validation_namespace_id, shape_key, candidate_id, source_id, status,
+                   detail, solution_index, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
-                        validation.problem_type_hash,
-                        validation.validation_protocol_hash,
-                        validation.shape_id,
-                        validation.candidate_hash,
-                        validation.run_id,
+                        self._validation_namespace_id(
+                            con,
+                            validation.problem_type_hash,
+                            validation.validation_protocol_hash,
+                        ),
+                        self._shape_key(con, validation.shape_id),
+                        self._candidate_id(con, validation.candidate_hash),
+                        self._observation_source_id(
+                            con,
+                            source_kind=validation.source_kind,
+                            source_ref=validation.run_id,
+                            created_at=now,
+                        ),
                         validation.status,
                         validation.detail,
                         validation.solution_index,
@@ -610,51 +1054,81 @@ class EvoTensileDB:
                 ],
             )
 
-    def insert_candidate_artifacts(self, artifacts: list[CandidateArtifactInsert]) -> None:
-        if not artifacts:
-            return
+    def insert_artifact_bundle(
+        self,
+        bundle: ArtifactBundleInsert,
+        mappings: list[ArtifactMappingInsert],
+    ) -> int | None:
+        if not mappings:
+            return None
         now = time.time()
         with self.connection() as con:
-            con.executemany(
+            con.execute(
                 """
-                INSERT INTO candidate_artifacts
-                  (problem_type_hash, shape_id, candidate_hash, problem_index,
-                   requested_solution_index, library_solution_index, manifest_solution_index,
-                   build_run_id, build_output_dir, library_dir, solution_yaml_paths_json,
-                   manifest_path, code_object_identity, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(problem_type_hash, shape_id, candidate_hash, library_solution_index,
-                            library_dir, code_object_identity)
-                DO UPDATE SET
-                  problem_index = excluded.problem_index,
-                  requested_solution_index = excluded.requested_solution_index,
-                  manifest_solution_index = excluded.manifest_solution_index,
+                INSERT INTO artifact_bundles
+                  (build_run_id, build_output_dir, library_dir, manifest_path,
+                   code_object_identity, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(library_dir, code_object_identity) DO UPDATE SET
                   build_run_id = excluded.build_run_id,
                   build_output_dir = excluded.build_output_dir,
-                  solution_yaml_paths_json = excluded.solution_yaml_paths_json,
                   manifest_path = excluded.manifest_path,
                   created_at = excluded.created_at
                 """,
-                [
-                    (
-                        artifact.problem_type_hash,
-                        artifact.shape_id,
-                        artifact.candidate_hash,
-                        artifact.problem_index,
-                        artifact.requested_solution_index,
-                        artifact.library_solution_index,
-                        artifact.manifest_solution_index,
-                        artifact.build_run_id,
-                        artifact.build_output_dir,
-                        artifact.library_dir,
-                        artifact.solution_yaml_paths_json,
-                        artifact.manifest_path,
-                        artifact.code_object_identity,
-                        now,
-                    )
-                    for artifact in artifacts
-                ],
+                (
+                    bundle.build_run_id,
+                    bundle.build_output_dir,
+                    bundle.library_dir,
+                    bundle.manifest_path,
+                    bundle.code_object_identity,
+                    now,
+                ),
             )
+            row = con.execute(
+                "SELECT bundle_id FROM artifact_bundles WHERE library_dir = ? AND code_object_identity = ?",
+                (bundle.library_dir, bundle.code_object_identity),
+            ).fetchone()
+            assert row is not None
+            bundle_id = int(row["bundle_id"])
+            con.execute("DELETE FROM artifact_solution_yamls WHERE bundle_id = ?", (bundle_id,))
+            con.executemany(
+                "INSERT INTO artifact_solution_yamls(bundle_id, solution_yaml_path) VALUES (?, ?)",
+                [(bundle_id, path) for path in bundle.solution_yaml_paths],
+            )
+            for mapping in mappings:
+                problem_type_id = self._intern_hash(
+                    con,
+                    table="problem_types",
+                    id_column="problem_type_id",
+                    hash_column="problem_type_hash",
+                    value=mapping.problem_type_hash,
+                )
+                con.execute(
+                    """
+                    INSERT INTO artifact_mappings
+                      (bundle_id, problem_type_id, shape_key, candidate_id, problem_index,
+                       requested_solution_index, library_solution_index, manifest_solution_index, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(bundle_id, problem_type_id, shape_key, candidate_id, library_solution_index)
+                    DO UPDATE SET
+                      problem_index = excluded.problem_index,
+                      requested_solution_index = excluded.requested_solution_index,
+                      manifest_solution_index = excluded.manifest_solution_index,
+                      created_at = excluded.created_at
+                    """,
+                    (
+                        bundle_id,
+                        problem_type_id,
+                        self._shape_key(con, mapping.shape_id),
+                        self._candidate_id(con, mapping.candidate_hash),
+                        mapping.problem_index,
+                        mapping.requested_solution_index,
+                        mapping.library_solution_index,
+                        mapping.manifest_solution_index,
+                        now,
+                    ),
+                )
+            return bundle_id
 
     def candidate_artifact_records(
         self,
@@ -663,98 +1137,60 @@ class EvoTensileDB:
         shape_ids: list[str] | None = None,
         candidate_hashes: list[str] | None = None,
     ) -> list[CandidateArtifactRecord]:
-        clauses = ["problem_type_hash = ?"]
-        params: list[str] = [problem_type_hash]
+        clauses = ["pt.problem_type_hash = ?"]
+        params: list[str | int] = [problem_type_hash]
         if shape_ids is not None:
             if not shape_ids:
                 return []
             placeholders = ",".join("?" for _ in shape_ids)
-            clauses.append(f"shape_id IN ({placeholders})")
+            clauses.append(f"s.shape_id IN ({placeholders})")
             params.extend(shape_ids)
         if candidate_hashes is not None:
             if not candidate_hashes:
                 return []
             placeholders = ",".join("?" for _ in candidate_hashes)
-            clauses.append(f"candidate_hash IN ({placeholders})")
+            clauses.append(f"c.candidate_hash IN ({placeholders})")
             params.extend(candidate_hashes)
         with self.connection() as con:
             rows = con.execute(
                 f"""
-                SELECT *
-                FROM candidate_artifacts
+                SELECT am.mapping_id, ab.bundle_id, pt.problem_type_hash, s.shape_id,
+                       c.candidate_hash, am.problem_index, am.requested_solution_index,
+                       am.library_solution_index, am.manifest_solution_index, ab.build_run_id,
+                       ab.build_output_dir, ab.library_dir, ab.manifest_path,
+                       ab.code_object_identity, am.created_at
+                FROM artifact_mappings AS am
+                JOIN artifact_bundles AS ab USING (bundle_id)
+                JOIN problem_types AS pt USING (problem_type_id)
+                JOIN shapes AS s USING (shape_key)
+                JOIN candidates AS c USING (candidate_id)
                 WHERE {" AND ".join(clauses)}
-                ORDER BY created_at DESC, artifact_id DESC
+                ORDER BY am.created_at DESC, am.mapping_id DESC
                 """,
                 params,
             ).fetchall()
-        return [CandidateArtifactRecord(**dict(row)) for row in rows]
-
-    def cached_evaluation_count(
-        self,
-        *,
-        problem_type_hash: str,
-        benchmark_protocol_hash: str,
-        shape_id: str,
-        candidate_hash: str,
-        statuses: tuple[str, ...] = POSITIVE_CACHE_STATUSES,
-    ) -> int:
-        placeholders = ",".join("?" for _ in statuses)
-        with self.connection() as con:
-            row = con.execute(
-                f"""
-                SELECT COUNT(*) AS n
-                FROM evaluations
-                WHERE problem_type_hash = ?
-                  AND benchmark_protocol_hash = ?
-                  AND shape_id = ?
-                  AND candidate_hash = ?
-                  AND status IN ({placeholders})
-                  AND (status != 'ok' OR (
-                    time_us IS NOT NULL AND time_us > 0
-                    AND UPPER(CASE
-                      WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0
-                        THEN TRIM(COALESCE(validation, ''))
-                      ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1,
-                                  INSTR(TRIM(COALESCE(validation, '')), ' ') - 1)
-                    END) IN ('PASSED', 'OK', 'VALID')
-                  ))
-                """,
-                (
-                    problem_type_hash,
-                    benchmark_protocol_hash,
-                    shape_id,
-                    candidate_hash,
-                    *statuses,
-                ),
-            ).fetchone()
-            return int(row["n"])
-
-    def has_cached_evaluation(
-        self,
-        key: CacheKey,
-        *,
-        min_samples: int = 1,
-        statuses: tuple[str, ...] = POSITIVE_CACHE_STATUSES,
-    ) -> bool:
-        return (
-            self.cached_evaluation_count(
-                problem_type_hash=key.problem_type_hash,
-                benchmark_protocol_hash=key.benchmark_protocol_hash,
-                shape_id=key.shape_id,
-                candidate_hash=key.candidate_hash,
-                statuses=statuses,
+            bundle_ids = sorted({int(row["bundle_id"]) for row in rows})
+            solution_paths: dict[int, tuple[str, ...]] = {}
+            if bundle_ids:
+                placeholders = ",".join("?" for _ in bundle_ids)
+                path_rows = con.execute(
+                    f"SELECT bundle_id, solution_yaml_path FROM artifact_solution_yamls "
+                    f"WHERE bundle_id IN ({placeholders}) ORDER BY bundle_id, solution_yaml_path",
+                    bundle_ids,
+                ).fetchall()
+                for bundle_id in bundle_ids:
+                    solution_paths[bundle_id] = tuple(
+                        str(path_row["solution_yaml_path"])
+                        for path_row in path_rows
+                        if int(path_row["bundle_id"]) == bundle_id
+                    )
+        return [
+            CandidateArtifactRecord(
+                **dict(row),
+                solution_yaml_paths=solution_paths[int(row["bundle_id"])],
             )
-            >= min_samples
-        )
-
-    def has_reusable_cache_entry(self, key: CacheKey, *, min_ok_samples: int = 1) -> bool:
-        return (key.shape_id, key.candidate_hash) in self.reusable_cache_entries(
-            problem_type_hash=key.problem_type_hash,
-            benchmark_protocol_hash=key.benchmark_protocol_hash,
-            shape_ids=[key.shape_id],
-            candidate_hashes=[key.candidate_hash],
-            min_ok_samples=min_ok_samples,
-        )
+            for row in rows
+        ]
 
     def benchmark_evidence_states(
         self,
@@ -773,37 +1209,52 @@ class EvoTensileDB:
         with self.connection() as con:
             rows = con.execute(
                 f"""
-                WITH positive AS (
+                WITH compatible AS (
+                  SELECT be.event_id, be.status, bs.time_us, be.validation_namespace_id, be.created_at,
+                         be.shape_key, be.candidate_id, s.shape_id, c.candidate_hash
+                  FROM benchmark_events AS be
+                  LEFT JOIN benchmark_samples AS bs USING (event_id)
+                  JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
+                  JOIN problem_types AS pt USING (problem_type_id)
+                  JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
+                  JOIN shapes AS s USING (shape_key)
+                  JOIN candidates AS c USING (candidate_id)
+                  WHERE pt.problem_type_hash = ?
+                    AND bp.benchmark_protocol_hash = ?
+                    AND s.shape_id IN ({shape_placeholders})
+                    AND c.candidate_hash IN ({candidate_placeholders})
+                ),
+                positive AS (
                   SELECT shape_id, candidate_hash, COUNT(*) AS ok_samples
-                  FROM evaluations
-                  WHERE problem_type_hash = ?
-                    AND benchmark_protocol_hash = ?
-                    AND shape_id IN ({shape_placeholders})
-                    AND candidate_hash IN ({candidate_placeholders})
-                    AND status = 'ok'
+                  FROM compatible
+                  WHERE status = 'ok'
                     AND time_us IS NOT NULL AND time_us > 0
-                    AND UPPER(CASE
-                      WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0
-                        THEN TRIM(COALESCE(validation, ''))
-                      ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1,
-                                  INSTR(TRIM(COALESCE(validation, '')), ' ') - 1)
-                    END) IN ('PASSED', 'OK', 'VALID')
+                    AND EXISTS (
+                      SELECT 1 FROM validations AS v
+                      WHERE v.validation_namespace_id = compatible.validation_namespace_id
+                        AND v.shape_key = compatible.shape_key
+                        AND v.candidate_id = compatible.candidate_id
+                        AND v.status = 'passed'
+                        AND NOT EXISTS (
+                          SELECT 1 FROM validations AS newer
+                          WHERE newer.validation_namespace_id = v.validation_namespace_id
+                            AND newer.shape_key = v.shape_key AND newer.candidate_id = v.candidate_id
+                            AND (newer.created_at > v.created_at OR
+                                 (newer.created_at = v.created_at AND newer.validation_id > v.validation_id))
+                        )
+                    )
                   GROUP BY shape_id, candidate_hash
                 ),
                 negative AS (
-                  SELECT shape_id, candidate_hash, status, eval_id
+                  SELECT shape_id, candidate_hash, status, event_id
                   FROM (
-                    SELECT shape_id, candidate_hash, status, eval_id,
+                    SELECT shape_id, candidate_hash, status, event_id,
                            ROW_NUMBER() OVER (
                              PARTITION BY shape_id, candidate_hash
-                             ORDER BY created_at DESC, eval_id DESC
+                             ORDER BY created_at DESC, event_id DESC
                            ) AS evidence_rank
-                    FROM evaluations
-                    WHERE problem_type_hash = ?
-                      AND benchmark_protocol_hash = ?
-                      AND shape_id IN ({shape_placeholders})
-                      AND candidate_hash IN ({candidate_placeholders})
-                      AND status IN ({negative_placeholders})
+                    FROM compatible
+                    WHERE status IN ({negative_placeholders})
                   )
                   WHERE evidence_rank = 1
                 ),
@@ -815,16 +1266,12 @@ class EvoTensileDB:
                 SELECT evidence_keys.shape_id, evidence_keys.candidate_hash,
                        COALESCE(positive.ok_samples, 0) AS ok_samples,
                        negative.status AS latest_negative_status,
-                       negative.eval_id AS latest_negative_eval_id
+                       negative.event_id AS latest_negative_event_id
                 FROM evidence_keys
                 LEFT JOIN positive USING (shape_id, candidate_hash)
                 LEFT JOIN negative USING (shape_id, candidate_hash)
                 """,
-                (
-                    *common_params,
-                    *common_params,
-                    *NEGATIVE_CACHE_STATUSES,
-                ),
+                (*common_params, *NEGATIVE_CACHE_STATUSES),
             ).fetchall()
 
         states: dict[tuple[str, str], BenchmarkEvidenceState] = {}
@@ -834,8 +1281,8 @@ class EvoTensileDB:
             states[(row["shape_id"], row["candidate_hash"])] = BenchmarkEvidenceState(
                 ok_samples=ok_samples,
                 resolved_status="ok" if ok_samples > 0 else latest_negative_status,
-                latest_negative_eval_id=(
-                    None if row["latest_negative_eval_id"] is None else int(row["latest_negative_eval_id"])
+                latest_negative_event_id=(
+                    None if row["latest_negative_event_id"] is None else int(row["latest_negative_event_id"])
                 ),
             )
         return states
@@ -857,16 +1304,21 @@ class EvoTensileDB:
                 f"""
                 SELECT shape_id, candidate_hash, status
                 FROM (
-                  SELECT shape_id, candidate_hash, status,
+                  SELECT s.shape_id, c.candidate_hash, v.status,
                          ROW_NUMBER() OVER (
-                           PARTITION BY shape_id, candidate_hash
-                           ORDER BY created_at DESC, validation_id DESC
+                           PARTITION BY v.shape_key, v.candidate_id
+                           ORDER BY v.created_at DESC, v.validation_id DESC
                          ) AS evidence_rank
-                  FROM validations
-                  WHERE problem_type_hash = ?
-                    AND validation_protocol_hash = ?
-                    AND shape_id IN ({shape_placeholders})
-                    AND candidate_hash IN ({candidate_placeholders})
+                  FROM validations AS v
+                  JOIN validation_namespaces AS vn USING (validation_namespace_id)
+                  JOIN problem_types AS pt USING (problem_type_id)
+                  JOIN validation_protocols AS vp USING (validation_protocol_id)
+                  JOIN shapes AS s USING (shape_key)
+                  JOIN candidates AS c USING (candidate_id)
+                  WHERE pt.problem_type_hash = ?
+                    AND vp.validation_protocol_hash = ?
+                    AND s.shape_id IN ({shape_placeholders})
+                    AND c.candidate_hash IN ({candidate_placeholders})
                 )
                 WHERE evidence_rank = 1
                 """,
@@ -907,7 +1359,64 @@ class EvoTensileDB:
         )
         return {key for key, state in states.items() if state.ok_samples >= min_ok_samples or state.reusable_negative}
 
-    def latest_positive_evaluation_times(
+    def evidence_status_counts(
+        self,
+        *,
+        problem_type_hash: str,
+        benchmark_protocol_hash: str,
+        shape_ids: set[str] | None,
+    ) -> dict[str, dict[str, int]]:
+        clauses = ["pt.problem_type_hash = ?", "bp.benchmark_protocol_hash = ?"]
+        params: list[str] = [problem_type_hash, benchmark_protocol_hash]
+        if shape_ids is not None:
+            if not shape_ids:
+                return {}
+            placeholders = ",".join("?" for _ in shape_ids)
+            clauses.append(f"s.shape_id IN ({placeholders})")
+            params.extend(sorted(shape_ids))
+        counts: dict[str, dict[str, int]] = {}
+        with self.connection() as con:
+            benchmark_rows = con.execute(
+                f"""
+                SELECT c.candidate_hash, be.status, COUNT(*) AS n
+                FROM benchmark_events AS be
+                LEFT JOIN benchmark_samples AS bs USING (event_id)
+                JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
+                JOIN problem_types AS pt USING (problem_type_id)
+                JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
+                JOIN shapes AS s USING (shape_key)
+                JOIN candidates AS c USING (candidate_id)
+                WHERE {" AND ".join(clauses)}
+                GROUP BY be.candidate_id, be.status
+                """,
+                params,
+            ).fetchall()
+            validation_clauses = ["pt.problem_type_hash = ?"]
+            validation_params: list[str] = [problem_type_hash]
+            if shape_ids is not None:
+                placeholders = ",".join("?" for _ in shape_ids)
+                validation_clauses.append(f"s.shape_id IN ({placeholders})")
+                validation_params.extend(sorted(shape_ids))
+            validation_rows = con.execute(
+                f"""
+                SELECT c.candidate_hash, v.status, COUNT(*) AS n
+                FROM validations AS v
+                JOIN validation_namespaces AS vn USING (validation_namespace_id)
+                JOIN problem_types AS pt USING (problem_type_id)
+                JOIN shapes AS s USING (shape_key)
+                JOIN candidates AS c USING (candidate_id)
+                WHERE {" AND ".join(validation_clauses)}
+                GROUP BY v.candidate_id, v.status
+                """,
+                validation_params,
+            ).fetchall()
+        for row in benchmark_rows:
+            counts.setdefault(str(row["candidate_hash"]), {})[str(row["status"])] = int(row["n"])
+        for row in validation_rows:
+            counts.setdefault(str(row["candidate_hash"]), {})[f"validation_{row['status']}"] = int(row["n"])
+        return counts
+
+    def latest_positive_benchmark_times(
         self,
         *,
         problem_type_hash: str,
@@ -916,26 +1425,37 @@ class EvoTensileDB:
         with self.connection() as con:
             rows = con.execute(
                 """
-                SELECT shape_id, candidate_hash, MAX(created_at) AS latest_created_at
-                FROM evaluations
-                WHERE problem_type_hash = ?
-                  AND benchmark_protocol_hash = ?
-                  AND status = 'ok'
-                  AND time_us IS NOT NULL
-                  AND time_us > 0
-                  AND UPPER(CASE
-                    WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0
-                    THEN TRIM(COALESCE(validation, ''))
-                    ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1,
-                                INSTR(TRIM(COALESCE(validation, '')), ' ') - 1)
-                  END) IN ('PASSED', 'OK', 'VALID')
-                GROUP BY shape_id, candidate_hash
+                SELECT s.shape_id, c.candidate_hash, MAX(be.created_at) AS latest_created_at
+                FROM benchmark_events AS be
+                JOIN benchmark_samples AS bs USING (event_id)
+                JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
+                JOIN problem_types AS pt USING (problem_type_id)
+                JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
+                JOIN shapes AS s USING (shape_key)
+                JOIN candidates AS c USING (candidate_id)
+                WHERE pt.problem_type_hash = ?
+                  AND bp.benchmark_protocol_hash = ?
+                  AND be.status = 'ok'
+                  AND EXISTS (
+                    SELECT 1 FROM validations AS v
+                    WHERE v.validation_namespace_id = be.validation_namespace_id
+                      AND v.shape_key = be.shape_key AND v.candidate_id = be.candidate_id
+                      AND v.status = 'passed'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM validations AS newer
+                        WHERE newer.validation_namespace_id = v.validation_namespace_id
+                          AND newer.shape_key = v.shape_key AND newer.candidate_id = v.candidate_id
+                          AND (newer.created_at > v.created_at OR
+                               (newer.created_at = v.created_at AND newer.validation_id > v.validation_id))
+                      )
+                  )
+                GROUP BY be.shape_key, be.candidate_id
                 """,
                 (problem_type_hash, benchmark_protocol_hash),
             ).fetchall()
         return {(str(row["shape_id"]), str(row["candidate_hash"])): float(row["latest_created_at"]) for row in rows}
 
-    def rank_evaluations(
+    def rank_benchmarks(
         self,
         *,
         problem_type_hash: str | None = None,
@@ -943,33 +1463,40 @@ class EvoTensileDB:
         shape_id: str | None = None,
         min_samples: int = 1,
         limit: int | None = None,
-    ) -> list[EvaluationSummary]:
+    ) -> list[BenchmarkSummary]:
         clauses = [
-            "e.status = 'ok'",
-            "e.time_us IS NOT NULL",
-            "e.time_us > 0",
-            "UPPER(CASE "
-            "WHEN INSTR(TRIM(COALESCE(e.validation, '')), ' ') = 0 THEN TRIM(COALESCE(e.validation, '')) "
-            "ELSE SUBSTR(TRIM(COALESCE(e.validation, '')), 1, "
-            "INSTR(TRIM(COALESCE(e.validation, '')), ' ') - 1) END) IN ('PASSED', 'OK', 'VALID')",
+            "be.status = 'ok'",
+            "EXISTS (SELECT 1 FROM validations AS v "
+            "WHERE v.validation_namespace_id = be.validation_namespace_id "
+            "AND v.shape_key = be.shape_key AND v.candidate_id = be.candidate_id AND v.status = 'passed' "
+            "AND NOT EXISTS (SELECT 1 FROM validations AS newer "
+            "WHERE newer.validation_namespace_id = v.validation_namespace_id "
+            "AND newer.shape_key = v.shape_key AND newer.candidate_id = v.candidate_id "
+            "AND (newer.created_at > v.created_at OR "
+            "(newer.created_at = v.created_at AND newer.validation_id > v.validation_id))))",
         ]
         params: list[str] = []
         if problem_type_hash is not None:
-            clauses.append("e.problem_type_hash = ?")
+            clauses.append("pt.problem_type_hash = ?")
             params.append(problem_type_hash)
         if benchmark_protocol_hash is not None:
-            clauses.append("e.benchmark_protocol_hash = ?")
+            clauses.append("bp.benchmark_protocol_hash = ?")
             params.append(benchmark_protocol_hash)
         if shape_id is not None:
-            clauses.append("e.shape_id = ?")
+            clauses.append("s.shape_id = ?")
             params.append(shape_id)
         where = "WHERE " + " AND ".join(clauses)
         with self.connection() as con:
             rows = con.execute(
                 f"""
-                SELECT e.shape_id, e.candidate_hash, e.time_us, s.m, s.n, s.batch, s.k
-                FROM evaluations AS e
-                JOIN shapes AS s ON s.shape_id = e.shape_id
+                SELECT s.shape_id, c.candidate_hash, bs.time_us, s.m, s.n, s.batch, s.k
+                FROM benchmark_events AS be
+                JOIN benchmark_samples AS bs USING (event_id)
+                JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
+                JOIN problem_types AS pt USING (problem_type_id)
+                JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
+                JOIN shapes AS s USING (shape_key)
+                JOIN candidates AS c USING (candidate_id)
                 {where}
                 """,
                 params,
@@ -992,14 +1519,14 @@ class EvoTensileDB:
             if row["time_us"] is not None:
                 bucket.time_us.append(float(row["time_us"]))
 
-        summaries: list[EvaluationSummary] = []
+        summaries: list[BenchmarkSummary] = []
         for (sid, chash), bucket in grouped.items():
             samples = len(bucket.time_us)
             if samples < min_samples:
                 continue
             gflops_values = [gflops_from_us(bucket.shape, time_us) for time_us in bucket.time_us]
             summaries.append(
-                EvaluationSummary(
+                BenchmarkSummary(
                     shape_id=sid,
                     candidate_hash=chash,
                     samples=samples,
@@ -1010,7 +1537,7 @@ class EvoTensileDB:
                 )
             )
 
-        def sort_key(summary: EvaluationSummary) -> tuple[int, float, float]:
+        def sort_key(summary: BenchmarkSummary) -> tuple[int, float, float]:
             if summary.median_time_us is not None:
                 return (1, -summary.median_time_us, summary.median_gflops or 0.0)
             return (0, 0.0, 0.0)
@@ -1018,7 +1545,7 @@ class EvoTensileDB:
         summaries.sort(key=sort_key, reverse=True)
         return summaries[:limit] if limit is not None else summaries
 
-    def cache_summary(
+    def benchmark_status_summary(
         self,
         *,
         problem_type_hash: str | None = None,
@@ -1027,20 +1554,25 @@ class EvoTensileDB:
         clauses = []
         params: list[str] = []
         if problem_type_hash is not None:
-            clauses.append("problem_type_hash = ?")
+            clauses.append("pt.problem_type_hash = ?")
             params.append(problem_type_hash)
         if benchmark_protocol_hash is not None:
-            clauses.append("benchmark_protocol_hash = ?")
+            clauses.append("bp.benchmark_protocol_hash = ?")
             params.append(benchmark_protocol_hash)
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         with self.connection() as con:
             rows = con.execute(
                 f"""
-                SELECT status, COUNT(*) AS n
-                FROM evaluations
+                SELECT be.status,
+                       SUM(CASE WHEN be.status = 'ok' THEN 1 ELSE 1 END) AS n
+                FROM benchmark_events AS be
+                LEFT JOIN benchmark_samples AS bs USING (event_id)
+                JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
+                JOIN problem_types AS pt USING (problem_type_id)
+                JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
                 {where}
-                GROUP BY status
-                ORDER BY status
+                GROUP BY be.status
+                ORDER BY be.status
                 """,
                 params,
             ).fetchall()
@@ -1050,5 +1582,20 @@ class EvoTensileDB:
         with self.connection() as con:
             return {
                 table: con.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
-                for table in ["candidates", "shapes", "runs", "evaluations", "validations", "candidate_artifacts"]
+                for table in [
+                    "candidates",
+                    "shapes",
+                    "proposal_events",
+                    "proposal_candidates",
+                    "baseline_discoveries",
+                    "baseline_selections",
+                    "evidence_sources",
+                    "native_runs",
+                    "benchmark_events",
+                    "benchmark_samples",
+                    "validations",
+                    "artifact_bundles",
+                    "artifact_solution_yamls",
+                    "artifact_mappings",
+                ]
             }

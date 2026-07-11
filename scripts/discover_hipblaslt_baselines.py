@@ -15,7 +15,7 @@ import yaml
 
 from evotensile.activity import apu_activity_lock
 from evotensile.candidate import Candidate
-from evotensile.database import EvoTensileDB
+from evotensile.database import BaselineSelectionInsert, EvoTensileDB
 from evotensile.profile import PROFILES, get_profile
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.runner import DEFAULT_TENSILELITE_BIN
@@ -368,7 +368,7 @@ def write_selections(path: Path, selections: list[BaselineSelection]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Import current hipBLASLt-selected configs as EvoTensile baseline candidates"
+        description="Discover installed hipBLASLt selections and schedule normal EvoTensile evidence"
     )
     parser.add_argument("--db", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -423,18 +423,53 @@ def main() -> int:
     if runner_timeout is not None and runner_timeout <= 0:
         runner_timeout = None
     env = runtime_env(args.rocm_devel, args.rocm_libraries, args.tensile_libpath)
+    discovery_started = time.perf_counter()
     selections = query_baselines(args, shapes, env)
+    discovery_duration_s = time.perf_counter() - discovery_started
     selections_csv = args.output_dir / "baseline_selections.csv"
     write_selections(selections_csv, selections)
 
+    db = EvoTensileDB.connect(
+        args.db,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
+    )
+    db.init()
+    discovery_id = db.record_baseline_discovery(
+        [
+            BaselineSelectionInsert(
+                shape=item.shape,
+                candidate=item.candidate,
+                hipblaslt_solution_index=item.solution_index,
+                hipblaslt_solution_name=item.solution_name,
+                hipblaslt_kernel_name=item.kernel_name,
+                logic_solution_index=item.logic_solution_index,
+                logic_solution_name=item.logic_solution_name,
+                query_gflops=item.hipblaslt_gflops,
+                query_time_us=item.hipblaslt_time_us,
+            )
+            for item in selections
+        ],
+        problem_type_hash=profile.problem_type_hash,
+        context={
+            "bench": str(args.bench),
+            "logic_yaml": str(args.logic_yaml),
+            "requested_solution": args.requested_solution,
+            "initialization": args.initialization,
+            "cold_iters": args.cold_iters,
+            "iters": args.iters,
+            "use_gpu_timer": not args.no_gpu_timer,
+            "tensile_libpath": env["HIPBLASLT_TENSILE_LIBPATH"],
+        },
+        duration_s=discovery_duration_s,
+    )
+    discovered_pairs = [] if discovery_id is None else db.baseline_selection_pairs(discovery_id)
     grouped: dict[str, tuple[Candidate, list[Shape]]] = {}
-    for item in selections:
-        _, group_shapes = grouped.setdefault(item.candidate.hash, (item.candidate, []))
-        group_shapes.append(item.shape)
+    for shape, candidate in discovered_pairs:
+        _, group_shapes = grouped.setdefault(candidate.hash, (candidate, []))
+        group_shapes.append(shape)
 
     executed_groups = []
     if not args.query_only:
-        db = EvoTensileDB.connect(args.db)
         for group_index, (candidate, group_shapes) in enumerate(grouped.values()):
             group_dir = args.output_dir / f"baseline_group_{group_index:04d}_{candidate.hash}"
             result = execute_schedule(
@@ -479,6 +514,8 @@ def main() -> int:
         "protocol": protocol.global_parameters(),
         "shape_count": len(shapes),
         "unique_candidate_count": len(grouped),
+        "discovery_id": discovery_id,
+        "discovery_duration_s": discovery_duration_s,
         "selections_csv": str(selections_csv),
         "query_only": args.query_only,
         "stop_on_error": args.stop_on_error,

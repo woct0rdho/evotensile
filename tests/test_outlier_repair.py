@@ -6,7 +6,7 @@ from evotensile.cli import main as cli_main
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search.outlier_repair import detect_underperforming_shapes, repair_seed_candidates
-from tests.helpers import sample_candidates
+from tests.helpers import insert_test_benchmark_event, sample_candidates
 
 
 def _time_us_for_gflops(shape: Shape, gflops: float) -> float:
@@ -32,7 +32,8 @@ def test_detect_underperforming_shapes_flags_local_envelope_gap(tmp_path: Path):
     for shape in shapes:
         candidate = candidates[0] if shape == target else candidates[1]
         gflops = 800.0 if shape == target else 1000.0
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -40,7 +41,6 @@ def test_detect_underperforming_shapes_flags_local_envelope_gap(tmp_path: Path):
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=_time_us_for_gflops(shape, gflops),
-            validation="PASSED",
         )
 
     outliers = detect_underperforming_shapes(
@@ -70,7 +70,8 @@ def test_repair_seed_candidates_include_neighbor_top_candidates(tmp_path: Path):
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     db.register_candidates(candidates)
     db.register_shapes([target, neighbor])
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=target.id,
         candidate_hash=candidates[0].hash,
         run_id="cached",
@@ -78,10 +79,10 @@ def test_repair_seed_candidates_include_neighbor_top_candidates(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=_time_us_for_gflops(target, 800.0),
-        validation="PASSED",
     )
     for candidate, gflops in ((candidates[1], 1000.0), (candidates[2], 950.0), (candidates[3], 900.0)):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=neighbor.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -89,7 +90,6 @@ def test_repair_seed_candidates_include_neighbor_top_candidates(tmp_path: Path):
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=_time_us_for_gflops(neighbor, gflops),
-            validation="PASSED",
         )
     outlier = detect_underperforming_shapes(
         db,
@@ -122,7 +122,10 @@ def test_repair_seed_candidates_include_neighbor_top_candidates(tmp_path: Path):
 def test_repair_outliers_cli_writes_metadata(tmp_path: Path):
     db_path = tmp_path / "sched.sqlite"
     output_dir = tmp_path / "repair"
-    db = EvoTensileDB.connect(db_path)
+    db = EvoTensileDB.connect(
+        db_path,
+        environment_compatibility_tag=DEFAULT_PROFILE.environment_compatibility_tag,
+    )
     db.init()
     candidates = sample_candidates(3)
     shapes = [
@@ -138,7 +141,8 @@ def test_repair_outliers_cli_writes_metadata(tmp_path: Path):
     for shape in shapes:
         candidate = candidates[0] if shape == target else candidates[1]
         gflops = 700.0 if shape == target else 1000.0
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="cached",
@@ -146,7 +150,6 @@ def test_repair_outliers_cli_writes_metadata(tmp_path: Path):
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             time_us=_time_us_for_gflops(shape, gflops),
-            validation="PASSED",
         )
 
     rc = cli_main(

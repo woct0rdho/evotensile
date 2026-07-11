@@ -233,7 +233,7 @@ No ablation, prior, seed, linkage priority, or neighborhood order uses the exter
 Completed follow-up campaign and analysis:
 - `out/blind_one_shape_next_v3_20260710_seed20260713/campaign_summary.json`
 - `out/blind_one_shape_next_v3_20260710_seed20260713/hot_loop_top8/summary.json`
-- `out/blind_one_shape_next_v3_analysis.json`
+- `out/blind_one_shape_next_v3_20260710_seed20260713/analysis.json`
 
 Current replay evidence:
 - `out/blind_one_shape_next_replay/baseline.json`

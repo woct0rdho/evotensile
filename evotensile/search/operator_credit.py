@@ -59,7 +59,7 @@ class _ChildOutcome:
     success: bool
     log_speedup: float
     compared_shapes: int
-    evaluation_cost_s: float
+    measured_cost_s: float
 
 
 def _queried_child_outcomes(
@@ -126,7 +126,7 @@ def _queried_child_outcomes(
                 success=event_log_speedup >= improvement_threshold,
                 log_speedup=event_log_speedup,
                 compared_shapes=len(weighted_speedups),
-                evaluation_cost_s=0.0 if candidate_cost is None else candidate_cost.total_s,
+                measured_cost_s=0.0 if candidate_cost is None else candidate_cost.total_s,
             )
         )
     return outcomes
@@ -146,7 +146,7 @@ def _credits_from_outcomes(
         bucket = counts[key]
         bucket[0 if outcome.success else 1] += 1
         bucket[2] += outcome.log_speedup
-        bucket[3] += outcome.evaluation_cost_s
+        bucket[3] += outcome.measured_cost_s
         bucket[4] += outcome.compared_shapes
     return {
         key: OperatorCredit(

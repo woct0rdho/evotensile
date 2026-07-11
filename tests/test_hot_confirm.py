@@ -5,13 +5,13 @@ from textwrap import dedent
 
 import pytest
 
-from evotensile.artifacts import register_candidate_artifacts
+from evotensile.artifacts import register_artifact_bundle
 from evotensile.database import EvoTensileDB, ValidationInsert
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.search.hot_confirm import hot_confirm_topk
 from evotensile.structured_runner import RunnablePair
-from tests.helpers import sample_candidates
+from tests.helpers import insert_test_benchmark_event, sample_candidates
 
 
 def _prepare_hot_db(tmp_path: Path, *, candidate_count: int = 1):
@@ -26,7 +26,8 @@ def _prepare_hot_db(tmp_path: Path, *, candidate_count: int = 1):
     validations = []
     for index, candidate in enumerate(candidates):
         for time_us in (10.0 + index, 10.1 + index):
-            db.insert_evaluation(
+            insert_test_benchmark_event(
+                db,
                 shape_id=shape.id,
                 candidate_hash=candidate.hash,
                 run_id="screening",
@@ -34,7 +35,6 @@ def _prepare_hot_db(tmp_path: Path, *, candidate_count: int = 1):
                 problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
                 benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
                 time_us=time_us,
-                validation="PASSED prior_validation",
                 solution_index=index,
             )
         validations.append(
@@ -47,6 +47,7 @@ def _prepare_hot_db(tmp_path: Path, *, candidate_count: int = 1):
                 validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
                 detail="PASSED",
                 solution_index=index,
+                source_kind="replay",
             )
         )
         runnable_pairs.append(
@@ -68,7 +69,7 @@ def _prepare_hot_db(tmp_path: Path, *, candidate_count: int = 1):
     library_dir.mkdir(parents=True)
     (library_dir / "TensileLibrary.yaml").write_text("solutions: []\n", encoding="utf-8")
     (library_dir / "Kernels.hsaco").write_bytes(b"fake code object")
-    register_candidate_artifacts(
+    register_artifact_bundle(
         db,
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         runnable_pairs=runnable_pairs,

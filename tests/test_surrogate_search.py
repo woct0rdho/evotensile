@@ -21,6 +21,7 @@ from evotensile.search.surrogate import (
     surrogate_model_shape_ids,
 )
 from evotensile.search_space import macro_tile, random_candidate
+from tests.helpers import insert_test_benchmark_event
 
 WORKGROUP_PROCESSOR_COUNT = DEFAULT_PROFILE.workgroup_processor_count
 SURROGATE_JOBS = DEFAULT_PROFILE.default_surrogate_jobs
@@ -165,7 +166,8 @@ def test_surrogate_pool_learns_synthetic_tlds_performance_from_queried_rows(tmp_
     for candidate in training:
         params = candidate.canonical_params()
         time_us = 100.0 if params["TransposeLDS"] == 0 else 400.0
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="queried",
@@ -173,7 +175,6 @@ def test_surrogate_pool_learns_synthetic_tlds_performance_from_queried_rows(tmp_
             problem_type_hash=problem_hash,
             benchmark_protocol_hash=protocol_hash,
             time_us=time_us,
-            validation="PASSED",
         )
     pool = _shape_candidates(shape, 5000, 160)
 

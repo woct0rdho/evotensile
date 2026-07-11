@@ -1,10 +1,9 @@
 import hashlib
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .database import CandidateArtifactInsert, EvoTensileDB
+from .database import ArtifactBundleInsert, ArtifactMappingInsert, EvoTensileDB
 from .structured_runner import RunnablePair
 
 
@@ -36,7 +35,7 @@ def library_content_identity(library_dir: str | Path) -> str:
     return f"artifact_{digest.hexdigest()[:24]}"
 
 
-def register_candidate_artifacts(
+def register_artifact_bundle(
     db: EvoTensileDB,
     *,
     problem_type_hash: str,
@@ -46,9 +45,9 @@ def register_candidate_artifacts(
     library_dir: str | Path,
     solution_yaml_paths: Sequence[str | Path],
     manifest_path: str | Path | None,
-) -> list[CandidateArtifactInsert]:
+) -> int | None:
     if not runnable_pairs:
-        return []
+        return None
     build_root = Path(build_output_dir).resolve(strict=True)
     library_root = Path(library_dir).resolve(strict=True)
     solution_paths = tuple(sorted({Path(path).resolve(strict=True) for path in solution_yaml_paths}))
@@ -56,30 +55,31 @@ def register_candidate_artifacts(
         raise ValueError("candidate artifact registration requires generated solution YAML")
     resolved_manifest = Path(manifest_path).resolve(strict=True) if manifest_path is not None else None
     identity = library_content_identity(library_root)
-    encoded_solution_paths = json.dumps([str(path) for path in solution_paths], sort_keys=True)
-    inserts = [
-        CandidateArtifactInsert(
-            problem_type_hash=problem_type_hash,
-            shape_id=pair.shape_id,
-            candidate_hash=pair.candidate_hash,
-            problem_index=pair.problem_index,
-            requested_solution_index=pair.requested_solution_index,
-            library_solution_index=pair.library_solution_index,
-            manifest_solution_index=pair.manifest_solution_index,
+    return db.insert_artifact_bundle(
+        ArtifactBundleInsert(
             build_run_id=build_run_id,
             build_output_dir=str(build_root),
             library_dir=str(library_root),
-            solution_yaml_paths_json=encoded_solution_paths,
+            solution_yaml_paths=tuple(str(path) for path in solution_paths),
             manifest_path=str(resolved_manifest) if resolved_manifest is not None else None,
             code_object_identity=identity,
-        )
-        for pair in runnable_pairs
-    ]
-    db.insert_candidate_artifacts(inserts)
-    return inserts
+        ),
+        [
+            ArtifactMappingInsert(
+                problem_type_hash=problem_type_hash,
+                shape_id=pair.shape_id,
+                candidate_hash=pair.candidate_hash,
+                problem_index=pair.problem_index,
+                requested_solution_index=pair.requested_solution_index,
+                library_solution_index=pair.library_solution_index,
+                manifest_solution_index=pair.manifest_solution_index,
+            )
+            for pair in runnable_pairs
+        ],
+    )
 
 
-def load_candidate_artifacts(
+def load_artifact_mappings(
     db: EvoTensileDB,
     *,
     problem_type_hash: str,
@@ -99,13 +99,7 @@ def load_candidate_artifacts(
             continue
         build_output_dir = Path(record.build_output_dir)
         library_dir = Path(record.library_dir)
-        try:
-            raw_solution_paths = json.loads(record.solution_yaml_paths_json)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(raw_solution_paths, list) or not all(isinstance(path, str) for path in raw_solution_paths):
-            continue
-        solution_yaml_paths = tuple(Path(path) for path in raw_solution_paths)
+        solution_yaml_paths = tuple(Path(path) for path in record.solution_yaml_paths)
         manifest_path = Path(record.manifest_path) if record.manifest_path is not None else None
         if not build_output_dir.is_dir() or not library_dir.is_dir():
             continue

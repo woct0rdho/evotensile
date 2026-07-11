@@ -35,7 +35,7 @@ def test_execute_schedule_records_shape_rule_rejection_without_build(tmp_path: P
     )
 
     assert result.executed_batches == []
-    assert db.cache_summary() == {"rejected": 1}
+    assert db.benchmark_status_summary() == {"rejected": 1}
 
 
 def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path):
@@ -65,7 +65,7 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
 
     assert len(result.executed_batches) == 1
     assert result.executed_batches[0].build_returncode == 124
-    assert db.cache_summary() == {"build_timeout": 1}
+    assert db.benchmark_status_summary() == {"build_timeout": 1}
     assert (
         len(
             plan_batches(
@@ -173,6 +173,13 @@ def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_b
     def fake_diagnostics(*args, **kwargs):
         diagnostics_path = tmp_path / "diagnostics.jsonl"
         diagnostics_path.write_text("", encoding="utf-8")
+        db.insert_run(
+            "diagnostics_run",
+            phase="prepare",
+            status="ok",
+            duration_s=0.0,
+            candidate_hashes=[candidate.hash for candidate in candidates],
+        )
         return DiagnosticRunResult(
             run_id="diagnostics_run",
             returncode=0,
@@ -210,7 +217,7 @@ def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_b
     assert len(result.executed_batches) == 1
     assert result.executed_batches[0].ingest is not None
     assert result.executed_batches[0].ingest.status_counts == {"ok": 10, "build_failed": 1}
-    assert db.cache_summary() == {"build_failed": 1, "ok": 10}
+    assert db.benchmark_status_summary() == {"build_failed": 1, "ok": 10}
 
 
 def test_multi_candidate_build_failure_unattributed_is_not_reusable_cache(tmp_path: Path, monkeypatch):
@@ -226,6 +233,13 @@ def test_multi_candidate_build_failure_unattributed_is_not_reusable_cache(tmp_pa
     def fake_diagnostics(*args, **kwargs):
         diagnostics_path = tmp_path / "empty_diagnostics.jsonl"
         diagnostics_path.write_text("", encoding="utf-8")
+        db.insert_run(
+            "diagnostics_unattributed",
+            phase="prepare",
+            status="ok",
+            duration_s=0.0,
+            candidate_hashes=[candidate.hash for candidate in candidates],
+        )
         return DiagnosticRunResult(
             run_id="diagnostics_unattributed",
             returncode=0,
@@ -254,7 +268,7 @@ def test_multi_candidate_build_failure_unattributed_is_not_reusable_cache(tmp_pa
     assert len(result.executed_batches) == 1
     assert result.executed_batches[0].ingest is not None
     assert result.executed_batches[0].ingest.status_counts == {"build_failed_unattributed": 2}
-    assert db.cache_summary() == {"build_failed_unattributed": 2}
+    assert db.benchmark_status_summary() == {"build_failed_unattributed": 2}
     assert (
         len(
             plan_batches(
@@ -294,7 +308,7 @@ def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path)
     )
 
     assert len(result.executed_batches) == 1
-    assert db.cache_summary() == {"build_failed": 1}
+    assert db.benchmark_status_summary() == {"build_failed": 1}
     assert (
         plan_batches(
             db,

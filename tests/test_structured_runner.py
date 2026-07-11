@@ -22,7 +22,7 @@ from evotensile.structured_runner import (
     validate_validation_samples,
 )
 from evotensile.subprocess_utils import run_logged_process
-from tests.helpers import fake_build_tensile, fake_structured_runner, sample_candidates
+from tests.helpers import fake_build_tensile, fake_structured_runner, insert_test_benchmark_event, sample_candidates
 
 
 def test_timed_out_process_kills_descendants(tmp_path: Path):
@@ -139,11 +139,12 @@ def test_benchmark_samples_must_be_timing_only():
         problem_type_hash="ptype",
         benchmark_protocol_hash="bproto",
         run_id="benchmark_run",
+        validation_protocol_hash=DEFAULT_BENCHMARK_PROTOCOL.validation_protocol_hash(),
     )
 
     assert inserts[0].status == "ok"
-    assert inserts[0].time_us == 1.0
-    assert inserts[0].validation == "PASSED prior_validation"
+    assert inserts[0].samples_us == (1.0,)
+    assert inserts[0].validation_protocol_hash == DEFAULT_BENCHMARK_PROTOCOL.validation_protocol_hash()
 
 
 def test_library_dir_from_build_accepts_tensilelite_build_only_cache_layout(tmp_path: Path):
@@ -239,7 +240,7 @@ def test_parallel_prepare_finishes_before_serial_benchmark_queue(tmp_path: Path,
     assert events.index("benchmark_start") > max(prepare_end_indices)
     assert not (tmp_path / "gpu-active.overlap").exists()
     assert not (tmp_path / "gpu-active").exists()
-    assert db.cache_summary() == {"ok": 2}
+    assert db.benchmark_status_summary() == {"ok": 2}
 
 
 def test_cost_aware_prepare_order_does_not_change_timing_order(tmp_path: Path, monkeypatch):
@@ -311,7 +312,7 @@ def test_prepare_waves_allow_coordinator_to_stop_before_next_wave(tmp_path: Path
     assert len(result.executed_batches) == 1
     assert len(progress) == 1
     assert progress[0].completed_waves == 1
-    assert db.cache_summary() == {"ok": 1}
+    assert db.benchmark_status_summary() == {"ok": 1}
 
 
 def test_validation_worker_cap_serializes_gpu_validation(tmp_path: Path, monkeypatch):
@@ -392,7 +393,7 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
     ]
     assert not (tmp_path / "gpu-active.overlap").exists()
     assert not (tmp_path / "gpu-active").exists()
-    assert db.cache_summary() == {"ok": 10}
+    assert db.benchmark_status_summary() == {"ok": 10}
 
 
 def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, monkeypatch):
@@ -436,12 +437,12 @@ def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, mon
         syncs_per_benchmark=1,
         num_elements_to_validate=0,
     )
-    probe_rank = db.rank_evaluations(
+    probe_rank = db.rank_benchmarks(
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=probe_protocol.protocol_hash(),
         shape_id=shape.id,
     )
-    main_rank = db.rank_evaluations(
+    main_rank = db.rank_benchmarks(
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=main_protocol.protocol_hash(),
         shape_id=shape.id,
@@ -551,16 +552,18 @@ def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch
     candidates = sample_candidates(2)
     shape = pilot_100_shapes()[0]
     main_protocol = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2)
+    incumbent = sample_candidates(1, seed=2026)[0]
+    db.register_candidates([incumbent])
     db.register_shapes([shape])
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
-        candidate_hash="incumbent",
+        candidate_hash=incumbent.hash,
         run_id="prior",
         status="ok",
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=main_protocol.protocol_hash(),
         time_us=max(1.0, 2.0 * shape.m * shape.n * shape.batch * shape.k / 1.0e9),
-        validation="PASSED prior_validation",
     )
     monkeypatch.setenv(
         "EVOTENSILE_TEST_TIME_MULTIPLIERS",
@@ -583,7 +586,7 @@ def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch
         adaptive_max_rounds=0,
     )
 
-    main_rank = db.rank_evaluations(
+    main_rank = db.rank_benchmarks(
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=main_protocol.protocol_hash(),
         shape_id=shape.id,
@@ -591,7 +594,7 @@ def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch
     by_hash = {summary.candidate_hash: summary.samples for summary in main_rank}
     assert result.probe_survivor_pairs == 1
     assert result.probe_screened_pairs == 1
-    assert by_hash == {"incumbent": 1, candidates[0].hash: 2}
+    assert by_hash == {incumbent.hash: 1, candidates[0].hash: 2}
 
 
 def test_singleton_nonzero_build_salvages_runnable_artifact(tmp_path: Path, monkeypatch):
@@ -619,7 +622,7 @@ def test_singleton_nonzero_build_salvages_runnable_artifact(tmp_path: Path, monk
     assert executed.runner_returncode == 0
     assert executed.ingest is not None
     assert executed.ingest.status_counts == {"ok": 1}
-    assert db.cache_summary() == {"ok": 1}
+    assert db.benchmark_status_summary() == {"ok": 1}
 
 
 def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path: Path):
@@ -649,7 +652,7 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
     assert executed.runner_returncode == 0
     assert executed.ingest is not None
     assert executed.ingest.status_counts == {"ok": 12}
-    assert db.cache_summary() == {"ok": 12}
+    assert db.benchmark_status_summary() == {"ok": 12}
 
     result_files = list(executed.output_dir.glob("benchmark_*.results.jsonl"))
     assert len(result_files) == 1
@@ -658,12 +661,14 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
         (shape.id, candidate.hash) for shape in shapes for candidate in candidates
     }
     assert all(sample.validation == "NO_CHECK" for sample in samples)
-    assert db.counts()["candidate_artifacts"] == 4
+    assert db.counts()["artifact_mappings"] == 4
 
     with sqlite3.connect(tmp_path / "sched.sqlite") as con:
         rows = con.execute(
-            "SELECT shape_id, candidate_hash, COUNT(*) FROM evaluations "
-            "WHERE status='ok' GROUP BY shape_id, candidate_hash ORDER BY shape_id, candidate_hash"
+            "SELECT s.shape_id, c.candidate_hash, COUNT(*) FROM benchmark_events AS be "
+            "JOIN benchmark_samples AS bs USING (event_id) "
+            "JOIN shapes AS s USING (shape_key) JOIN candidates AS c USING (candidate_id) "
+            "WHERE be.status='ok' GROUP BY be.shape_key, be.candidate_id ORDER BY s.shape_id, c.candidate_hash"
         ).fetchall()
     assert rows == sorted((shape.id, candidate.hash, 3) for shape in shapes for candidate in candidates)
 
@@ -705,10 +710,12 @@ def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path
     assert not second.executed_batches[0].planned.requires_validation
     with sqlite3.connect(tmp_path / "sched.sqlite") as con:
         timing_rows = con.execute(
-            "SELECT status, validation, COUNT(*) FROM evaluations GROUP BY status, validation ORDER BY validation"
+            "SELECT be.status, be.validation_namespace_id IS NOT NULL, COUNT(*) "
+            "FROM benchmark_events AS be JOIN benchmark_samples AS bs USING (event_id) "
+            "GROUP BY be.status, be.validation_namespace_id IS NOT NULL"
         ).fetchall()
         validation_rows = con.execute("SELECT status, COUNT(*) FROM validations GROUP BY status").fetchall()
-    assert timing_rows == [("ok", "PASSED prior_validation", 2)]
+    assert timing_rows == [("ok", 1, 2)]
     assert validation_rows == [("passed", 1)]
 
 
@@ -805,7 +812,7 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
     assert (build_dir / ".evotensile_compile_cache_ok").exists()
     assert all(batch.output_dir != batch.build_output_dir for batch in first.executed_batches)
     assert all(batch.output_dir != batch.build_output_dir for batch in second.executed_batches)
-    assert db.counts()["candidate_artifacts"] == 3
+    assert db.counts()["artifact_mappings"] == 3
 
 
 def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
@@ -858,7 +865,7 @@ def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
     assert result.executed_batches[0].ingest is not None
     assert result.executed_batches[0].ingest.ok is False
     assert "unexpected pair" in result.executed_batches[0].ingest.errors[0]
-    assert db.cache_summary() == {}
+    assert db.benchmark_status_summary() == {}
 
 
 def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path):
@@ -915,7 +922,7 @@ def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path
     assert ingest is not None
     assert ingest.ok is False
     assert "wrong solution_index" in ingest.errors[0]
-    assert db.cache_summary() == {}
+    assert db.benchmark_status_summary() == {}
 
 
 def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
@@ -973,7 +980,7 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
     assert ingest is not None
     assert ingest.ok is False
     assert "incomplete sample set" in ingest.errors[0]
-    assert db.cache_summary() == {}
+    assert db.benchmark_status_summary() == {}
 
 
 def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: Path):
@@ -1033,7 +1040,7 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
     assert ingest is not None
     assert ingest.ok is False
     assert "duplicate sample_index" in ingest.errors[0]
-    assert db.cache_summary() == {}
+    assert db.benchmark_status_summary() == {}
 
 
 def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(tmp_path: Path):
@@ -1094,7 +1101,7 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
     assert ingest is not None
     assert ingest.ok is False
     assert "positive result rows" in ingest.errors[0]
-    assert db.cache_summary() == {}
+    assert db.benchmark_status_summary() == {}
 
 
 def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
@@ -1150,7 +1157,7 @@ def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
     assert executed.ingest is not None
     assert executed.ingest.ok is False
     assert "benchmark phase timed out" in executed.ingest.errors[0]
-    assert db.cache_summary() == {"runner_timeout": 1}
+    assert db.benchmark_status_summary() == {"runner_timeout": 1}
 
 
 def test_structured_maps_renumbered_normalized_final_yaml_solution(tmp_path: Path):
@@ -1216,7 +1223,8 @@ def test_structured_maps_renumbered_normalized_final_yaml_solution(tmp_path: Pat
     assert result.executed_batches[0].ingest.status_counts == {"ok": 1, "rejected": 1}
     with sqlite3.connect(tmp_path / "sched.sqlite") as con:
         rows = con.execute(
-            "SELECT candidate_hash, status, solution_index FROM evaluations ORDER BY status, candidate_hash"
+            "SELECT c.candidate_hash, be.status, be.solution_index FROM benchmark_events AS be "
+            "JOIN candidates AS c USING (candidate_id) ORDER BY be.status, c.candidate_hash"
         ).fetchall()
     assert (candidates[1].hash, "ok", 0) in rows
     assert (candidates[0].hash, "rejected", None) in rows
@@ -1279,4 +1287,4 @@ def test_structured_records_rejected_candidate_from_final_yaml(tmp_path: Path):
     assert len(result.executed_batches) == 1
     assert result.executed_batches[0].ingest is not None
     assert result.executed_batches[0].ingest.status_counts == {"ok": 2, "rejected": 1}
-    assert db.cache_summary() == {"ok": 2, "rejected": 1}
+    assert db.benchmark_status_summary() == {"ok": 2, "rejected": 1}

@@ -38,6 +38,7 @@ def main() -> int:
     )
     records = hot_confirm_topk(
         db_path=args.db,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
         output_dir=args.output,
         runner_bin=args.runner_bin,
         shape_id=shape.id,

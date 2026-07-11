@@ -1,12 +1,13 @@
 from textwrap import dedent
 
-from evotensile.cache import CacheKey
+import pytest
+
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL, global_parameter_items
 from evotensile.runner import run_tensilelite
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import sample_candidates
+from tests.helpers import insert_test_benchmark_event, sample_candidates
 
 
 def test_default_protocol_uses_full_hipblaslt_validation():
@@ -46,6 +47,44 @@ def test_validation_protocol_hash_tracks_correctness_compatibility():
     assert base != DEFAULT_BENCHMARK_PROTOCOL.with_overrides(data_init_type_a=2).validation_protocol_hash()
 
 
+def test_database_environment_compatibility_tag_guards_open(tmp_path, monkeypatch):
+    monkeypatch.delenv("EVOTENSILE_ENVIRONMENT_COMPATIBILITY_TAG", raising=False)
+    path = tmp_path / "cache.sqlite"
+
+    with pytest.raises(ValueError, match="environment compatibility tag is required"):
+        EvoTensileDB.connect(path)
+
+    db = EvoTensileDB.connect(path, environment_compatibility_tag="test-a")
+    db.init()
+    reopened = EvoTensileDB.connect(path, environment_compatibility_tag="test-a")
+    with reopened.connection() as con:
+        assert con.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+    with pytest.raises(ValueError, match="environment compatibility tag mismatch"):
+        EvoTensileDB.connect(path, environment_compatibility_tag="test-b")
+
+
+def test_historical_provenance_is_read_only(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
+    db.init()
+    candidate = sample_candidates(1)[0]
+    shape = pilot_100_shapes()[0]
+    db.register_candidates([candidate])
+    db.register_shapes([shape])
+
+    with pytest.raises(ValueError, match="unsupported evidence source kind"):
+        insert_test_benchmark_event(
+            db,
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="retired_import",
+            source_kind="historical_migration",
+            status="rejected",
+            problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+            benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        )
+
+
 def test_db_cache_key_lookup(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
     db.init()
@@ -53,15 +92,20 @@ def test_db_cache_key_lookup(tmp_path):
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
-    key = CacheKey(
-        problem_type_hash=p_hash,
-        benchmark_protocol_hash=b_hash,
-        shape_id=shape.id,
-        candidate_hash=candidate.hash,
-    )
+    db.register_candidates([candidate])
+    db.register_shapes([shape])
 
-    assert not db.has_cached_evaluation(key)
-    db.insert_evaluation(
+    assert (
+        db.reusable_cache_entries(
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            shape_ids=[shape.id],
+            candidate_hashes=[candidate.hash],
+        )
+        == set()
+    )
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidate.hash,
         run_id="run_test",
@@ -69,11 +113,65 @@ def test_db_cache_key_lookup(tmp_path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=123.0,
-        validation="PASSED prior_validation",
     )
-    assert db.has_cached_evaluation(key)
-    assert db.has_reusable_cache_entry(key)
-    assert db.cache_summary() == {"ok": 1}
+    assert db.reusable_cache_entries(
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        shape_ids=[shape.id],
+        candidate_hashes=[candidate.hash],
+    ) == {(shape.id, candidate.hash)}
+    assert db.benchmark_status_summary() == {"ok": 1}
+
+
+def test_evidence_provenance_rejects_dangling_native_runs(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
+    db.init()
+    candidate = sample_candidates(1)[0]
+    shape = pilot_100_shapes()[0]
+    db.register_candidates([candidate])
+    db.register_shapes([shape])
+
+    with pytest.raises(ValueError, match="not registered"):
+        insert_test_benchmark_event(
+            db,
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="missing_native_run",
+            source_kind="native_run",
+            status="ok",
+            problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+            benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+            time_us=123.0,
+        )
+
+    with db.connection() as con:
+        assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert con.execute("SELECT COUNT(*) FROM benchmark_events").fetchone()[0] == 0
+
+
+def test_benchmark_event_preserves_equal_ordered_samples(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
+    db.init()
+    candidate = sample_candidates(1)[0]
+    shape = pilot_100_shapes()[0]
+    db.register_candidates([candidate])
+    db.register_shapes([shape])
+
+    insert_test_benchmark_event(
+        db,
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+        run_id="repeated_samples",
+        status="ok",
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        samples_us=(12.5, 12.5, 13.0),
+    )
+
+    with db.connection() as con:
+        assert con.execute("SELECT COUNT(*) FROM benchmark_events").fetchone()[0] == 1
+        samples = con.execute("SELECT sample_index, time_us FROM benchmark_samples ORDER BY sample_index").fetchall()
+    assert [tuple(row) for row in samples] == [(0, 12.5), (1, 12.5), (2, 13.0)]
 
 
 def test_positive_benchmark_evidence_supersedes_reusable_negatives(tmp_path):
@@ -83,11 +181,11 @@ def test_positive_benchmark_evidence_supersedes_reusable_negatives(tmp_path):
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
-    key = CacheKey(p_hash, b_hash, shape.id, candidate.hash)
     db.register_candidates([candidate])
     db.register_shapes([shape])
 
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidate.hash,
         run_id="rejected",
@@ -95,7 +193,8 @@ def test_positive_benchmark_evidence_supersedes_reusable_negatives(tmp_path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidate.hash,
         run_id="timed",
@@ -103,9 +202,9 @@ def test_positive_benchmark_evidence_supersedes_reusable_negatives(tmp_path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         time_us=123.0,
-        validation="PASSED prior_validation",
     )
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidate.hash,
         run_id="later_build",
@@ -123,9 +222,23 @@ def test_positive_benchmark_evidence_supersedes_reusable_negatives(tmp_path):
     assert state.ok_samples == 1
     assert state.resolved_status == "ok"
     assert not state.reusable_negative
-    assert db.has_reusable_cache_entry(key)
-    assert not db.has_reusable_cache_entry(key, min_ok_samples=2)
-    assert len(db.rank_evaluations()) == 1
+    assert db.reusable_cache_entries(
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        shape_ids=[shape.id],
+        candidate_hashes=[candidate.hash],
+    ) == {(shape.id, candidate.hash)}
+    assert (
+        db.reusable_cache_entries(
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            shape_ids=[shape.id],
+            candidate_hashes=[candidate.hash],
+            min_ok_samples=2,
+        )
+        == set()
+    )
+    assert len(db.rank_benchmarks()) == 1
 
 
 def test_latest_reusable_negative_resolves_negative_only_state(tmp_path):
@@ -133,8 +246,11 @@ def test_latest_reusable_negative_resolves_negative_only_state(tmp_path):
     db.init()
     candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]
+    db.register_candidates([candidate])
+    db.register_shapes([shape])
     for run_id, status in (("first", "rejected"), ("second", "build_failed")):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id=run_id,
@@ -152,7 +268,7 @@ def test_latest_reusable_negative_resolves_negative_only_state(tmp_path):
     assert state.ok_samples == 0
     assert state.resolved_status == "build_failed"
     assert state.reusable_negative
-    assert state.latest_negative_eval_id is not None
+    assert state.latest_negative_event_id is not None
 
 
 def test_reusable_negative_insertion_is_idempotent(tmp_path):
@@ -160,8 +276,11 @@ def test_reusable_negative_insertion_is_idempotent(tmp_path):
     db.init()
     candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]
+    db.register_candidates([candidate])
+    db.register_shapes([shape])
     for _ in range(2):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="same_run",
@@ -170,7 +289,7 @@ def test_reusable_negative_insertion_is_idempotent(tmp_path):
             benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
         )
 
-    assert db.cache_summary() == {"rejected": 1}
+    assert db.benchmark_status_summary() == {"rejected": 1}
 
 
 def test_run_tensilelite_use_cache_emits_cli_flag(tmp_path):
@@ -208,14 +327,11 @@ def test_negative_cache_statuses_are_reusable_but_not_rankable(tmp_path):
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
-    key = CacheKey(
-        problem_type_hash=p_hash,
-        benchmark_protocol_hash=b_hash,
-        shape_id=shape.id,
-        candidate_hash=candidate.hash,
-    )
+    db.register_candidates([candidate])
+    db.register_shapes([shape])
 
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=candidate.hash,
         run_id="run_test",
@@ -224,7 +340,11 @@ def test_negative_cache_statuses_are_reusable_but_not_rankable(tmp_path):
         benchmark_protocol_hash=b_hash,
     )
 
-    assert not db.has_cached_evaluation(key)
-    assert db.has_reusable_cache_entry(key)
-    assert db.rank_evaluations() == []
-    assert db.cache_summary() == {"rejected": 1}
+    assert db.reusable_cache_entries(
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        shape_ids=[shape.id],
+        candidate_hashes=[candidate.hash],
+    ) == {(shape.id, candidate.hash)}
+    assert db.rank_benchmarks() == []
+    assert db.benchmark_status_summary() == {"rejected": 1}

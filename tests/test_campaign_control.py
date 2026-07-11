@@ -13,11 +13,10 @@ from evotensile.search.campaign_control import (
     plateau_detected,
     population_diagnostics,
     restart_epoch,
-    tag_generated_proposals,
 )
 from evotensile.search.operator_credit import OperatorCredit, allocate_operator_budget
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import sample_candidates
+from tests.helpers import insert_test_benchmark_event, sample_candidates
 
 
 def test_island_metadata_and_elite_loading_are_query_local(tmp_path: Path):
@@ -25,22 +24,35 @@ def test_island_metadata_and_elite_loading_are_query_local(tmp_path: Path):
     db.init()
     shape = pilot_100_shapes()[0]
     candidates = sample_candidates(6)
-    first = tag_generated_proposals(
-        candidates[:3],
-        generated_hashes={candidate.hash for candidate in candidates[:3]},
-        island_id="island-0",
-        proposal_cost_s=0.1,
-    )
-    second = tag_generated_proposals(
-        candidates[3:],
-        generated_hashes={candidate.hash for candidate in candidates[3:]},
-        island_id="island-1",
-        proposal_cost_s=0.2,
-    )
+    first = candidates[:3]
+    second = candidates[3:]
     db.register_candidates([*first, *second])
+    db.record_proposal_event(
+        first,
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        scope_kind="shape",
+        scope_shape_ids=(shape.id,),
+        generated_hashes={candidate.hash for candidate in first},
+        selected_candidates=first,
+        island_id="island-0",
+        duration_s=0.3,
+    )
+    db.record_proposal_event(
+        second,
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        scope_kind="shape",
+        scope_shape_ids=(shape.id,),
+        generated_hashes={candidate.hash for candidate in second},
+        selected_candidates=second,
+        island_id="island-1",
+        duration_s=0.6,
+    )
     db.register_shapes([shape])
     for index, candidate in enumerate([*first, *second]):
-        db.insert_evaluation(
+        insert_test_benchmark_event(
+            db,
             shape_id=shape.id,
             candidate_hash=candidate.hash,
             run_id="queried",
@@ -48,7 +60,6 @@ def test_island_metadata_and_elite_loading_are_query_local(tmp_path: Path):
             problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
             benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
             time_us=100.0 + index,
-            validation="PASSED",
         )
 
     elites = load_island_elites(

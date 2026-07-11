@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from evotensile.artifacts import register_candidate_artifacts
+from evotensile.artifacts import register_artifact_bundle
 from evotensile.candidate import Shape
 from evotensile.database import EvoTensileDB, ValidationInsert
 from evotensile.profile import DEFAULT_PROFILE
@@ -15,7 +15,7 @@ from scripts.update_hipblaslt_gridbased_logic import (
     _validate_winner_shape_set,
     update_logic_files,
 )
-from tests.helpers import REFERENCE_CANDIDATE
+from tests.helpers import REFERENCE_CANDIDATE, insert_test_benchmark_event
 
 
 def _profile_with_shapes(*shapes: Shape):
@@ -74,11 +74,15 @@ def _logic_export_fixture(tmp_path: Path, *, validation: bool, artifact: bool):
     shape = Shape(128, 128, 1, 128)
     profile = _profile_with_shapes(shape)
     db_path = tmp_path / "logic.sqlite"
-    db = EvoTensileDB.connect(db_path)
+    db = EvoTensileDB.connect(
+        db_path,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
+    )
     db.init()
     db.register_candidates([REFERENCE_CANDIDATE])
     db.register_shapes([shape])
-    db.insert_evaluation(
+    insert_test_benchmark_event(
+        db,
         shape_id=shape.id,
         candidate_hash=REFERENCE_CANDIDATE.hash,
         run_id="screening",
@@ -86,24 +90,23 @@ def _logic_export_fixture(tmp_path: Path, *, validation: bool, artifact: bool):
         problem_type_hash=profile.problem_type_hash,
         benchmark_protocol_hash=profile.benchmark_protocol_hash(),
         time_us=1.0,
-        validation="PASSED prior_validation",
         solution_index=0,
     )
-    if validation:
-        db.insert_validations(
-            [
-                ValidationInsert(
-                    shape_id=shape.id,
-                    candidate_hash=REFERENCE_CANDIDATE.hash,
-                    run_id="validation",
-                    status="passed",
-                    problem_type_hash=profile.problem_type_hash,
-                    validation_protocol_hash=profile.default_protocol.validation_protocol_hash(),
-                    detail="PASSED",
-                    solution_index=0,
-                )
-            ]
-        )
+    db.insert_validations(
+        [
+            ValidationInsert(
+                shape_id=shape.id,
+                candidate_hash=REFERENCE_CANDIDATE.hash,
+                run_id="validation",
+                status="passed" if validation else "failed",
+                problem_type_hash=profile.problem_type_hash,
+                validation_protocol_hash=profile.default_protocol.validation_protocol_hash(),
+                detail="PASSED" if validation else "FAILED",
+                solution_index=0,
+                source_kind="replay",
+            )
+        ]
+    )
 
     solution = _artifact_solution()
     logic_dir = tmp_path / "logic"
@@ -122,7 +125,7 @@ def _logic_export_fixture(tmp_path: Path, *, validation: bool, artifact: bool):
         library_dir.mkdir(parents=True)
         (library_dir / "TensileLibrary.yaml").write_text("solutions: []\n", encoding="utf-8")
         (library_dir / "Kernels.hsaco").write_bytes(b"code")
-        register_candidate_artifacts(
+        register_artifact_bundle(
             db,
             problem_type_hash=profile.problem_type_hash,
             runnable_pairs=[
@@ -147,7 +150,7 @@ def _logic_export_fixture(tmp_path: Path, *, validation: bool, artifact: bool):
 def test_logic_export_requires_current_validation(tmp_path: Path):
     db_path, profile, logic_dir = _logic_export_fixture(tmp_path, validation=False, artifact=False)
 
-    with pytest.raises(ValueError, match="lack current passed validation"):
+    with pytest.raises(ValueError, match="without winners"):
         update_logic_files(
             db_path=db_path,
             profile=profile,

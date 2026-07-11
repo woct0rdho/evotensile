@@ -12,7 +12,7 @@ Neither mechanism changes candidate validity, correctness evidence, benchmark ra
 
 ## Measured Candidate Cost
 
-`CandidateEvaluationCost` separates:
+`CandidateMeasuredCost` separates:
 
 ```text
 proposal_s
@@ -26,13 +26,13 @@ screening_s
 
 ### Proposal Cost
 
-The blind campaign measures one proposal call's wall time and divides it by the scheduler's explicit novel `generated` set before surrogate shortlisting. `tag_generated_proposals()` persists this per-generated-hash estimate as `proposal_metadata.proposal_cost_s` for selected novel candidates without changing the parameter-only candidate hash.
+The blind campaign measures one proposal call's wall time and divides it by the scheduler's explicit novel `generated` set before surrogate shortlisting. Each proposal call persists one `proposal_events` row with its duration and child `proposal_candidates` rows identifying generated versus preserved candidates. Proposal cost is derived as event duration divided across distinct generated candidates.
 
-Preserved parents and previously registered duplicate hashes do not receive new island, restart, or proposal-cost metadata merely because they appear in another selected set. Each round persists a separate proposal event containing breeding parents, preserved hashes, all novel generated hashes, selected hashes, duration, and per-generated-hash cost. Candidate registration remains first-write-wins for the originating candidate metadata.
+Preserved parents and previously registered duplicate hashes receive no new proposal cost merely because they appear in another selected set. Island, restart, lineage, operator metadata, and selection state remain occurrence-owned and never alter parameter-only candidate identity.
 
 ### Run Cost Attribution
 
-Execution boundaries pass exact candidate hashes, phase, and duration to `insert_run()`. SQLite records one shared-cost row per distinct candidate in `run_candidate_costs` for prepare, validation, probe, and screening work. `load_candidate_evaluation_costs()` aggregates this index and combines it with proposal-origin cost metadata. It does not reopen manifests, pair files, or run directories.
+Execution boundaries pass exact candidate hashes, phase, and duration to `insert_run()`. SQLite records one shared-cost row per distinct candidate in `run_candidate_costs` for prepare, validation, probe, and screening work. `load_candidate_measured_costs()` aggregates this index and combines it with proposal-event cost. It does not reopen manifests, pair files, or run directories.
 
 One invocation's duration is divided equally between the distinct candidate hashes attributed to that invocation at insertion time.
 
@@ -90,7 +90,7 @@ Both default off in the general CLI. The blind one-shape policy enables both exp
 
 ## Persistence And Identity
 
-Proposal metadata is stored inside candidate JSON and restored by `EvoTensileDB.get_candidates()`. Candidate hashes remain a function only of canonical parameter dictionaries. Cost metadata therefore affects future proposal policy without fragmenting cache identity.
+Candidate rows store only compact canonical parameters. Proposal context and cost live in proposal event/occurrence rows and affect future proposal policy without fragmenting cache identity.
 
 Run durations and commands remain the authoritative low-level provenance. Derived shared candidate costs are indexed when each run is inserted and loaded into the immutable proposal evidence snapshot.
 

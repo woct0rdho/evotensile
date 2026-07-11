@@ -35,7 +35,7 @@ The implementation requires `scikit-learn>=1.4`.
 
 ## Training Evidence
 
-Training rows come from the immutable proposal evidence snapshot, whose ranking summaries were loaded once through `EvoTensileDB.rank_evaluations()` under the requested problem type and benchmark protocol. The surrogate filters those summaries to its target shapes without another DB scan.
+Training rows come from the immutable proposal evidence snapshot, whose ranking summaries were loaded once through `EvoTensileDB.rank_benchmarks()` under the requested problem type and benchmark protocol. The surrogate filters those summaries to its target shapes without another DB scan.
 
 Eligible evidence has:
 - `status='ok'` timing samples.

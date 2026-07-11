@@ -1,4 +1,3 @@
-import random
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -56,10 +55,6 @@ def genome_to_candidate(
     if repair:
         overrides = repair_linked_overrides(overrides)
     return make_candidate(overrides, source=source, parents=parents)
-
-
-def random_genome(rng: random.Random) -> tuple[int, ...]:
-    return tuple(rng.randrange(len(DOMAINS[name])) for name in PARAM_NAMES)
 
 
 def hamming_distance(left: Sequence[int], right: Sequence[int]) -> int:

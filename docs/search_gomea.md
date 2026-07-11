@@ -53,7 +53,7 @@ The scheduler normally gives this operator part of the configured GOMEA budget. 
 ## Mixing Operator
 
 `gomea_candidates()` is the stochastic GOMEA mixer:
-- Load ranked parents from DB evidence, ordered best-first by `rank_evaluations()`.
+- Load ranked parents from DB evidence, ordered best-first by `rank_benchmarks()`.
 - Encode parents as categorical genomes.
 - Pick a base parent and a different donor parent.
 - When family-aware adaptive search is active, prefer a donor from the base candidate's family with probability `0.8` when one exists.

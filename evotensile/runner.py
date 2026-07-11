@@ -1,4 +1,3 @@
-import json
 import os
 import time
 import uuid
@@ -111,23 +110,10 @@ def run_tensilelite(
     if db is not None:
         db.insert_run(
             run_id,
-            yaml_path=str(yaml_path),
-            output_dir=str(output_dir),
+            phase="prepare",
             status="timeout" if result.timed_out else "ok" if result.ok else "failed",
+            duration_s=duration_s,
             returncode=result.returncode,
             candidate_hashes=candidate_hashes,
-            cost_phase="prepare",
-            duration_s=duration_s,
-            metadata_json=json.dumps(
-                {
-                    "command": cmd,
-                    "duration_s": duration_s,
-                    "stdout_path": str(stdout_path),
-                    "stderr_path": str(stderr_path),
-                    "timed_out": timed_out,
-                    "use_cache": use_cache,
-                },
-                sort_keys=True,
-            ),
         )
     return result

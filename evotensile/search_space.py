@@ -461,14 +461,6 @@ def _repair_valu_vgpr_lower_bound(params: dict[str, Any], *, rng: random.Random 
         params["MatrixInstruction"] = rng.choice(ranked) if rng else ranked[0]
 
 
-def _unique_choices(values: Sequence[Any]) -> tuple[Any, ...]:
-    out = []
-    for value in values:
-        if value not in out:
-            out.append(value)
-    return tuple(out)
-
-
 def _repair_random_valu_vgpr_headroom(params: dict[str, Any], *, rng: random.Random) -> None:
     if _valu_vgpr_lower_bound(params) <= NT_HHS_RANDOM_VALU_VGPR_HEADROOM:
         return

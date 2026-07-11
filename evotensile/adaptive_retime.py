@@ -1,13 +1,10 @@
-import csv
 import math
-import sqlite3
 import statistics
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
-from .candidate import Candidate, stable_hash
+from .candidate import stable_hash
 from .database import EvoTensileDB
 from .utils import round_up
 
@@ -442,41 +439,49 @@ def decide_shape_retime(
 def load_timing_stats(
     db: EvoTensileDB,
     *,
-    problem_type_hash: str = "",
+    problem_type_hash: str,
     benchmark_protocol_hashes: Iterable[str] | None = None,
     min_samples: int = 1,
     shape_ids: set[str] | None = None,
     candidate_hashes: set[str] | None = None,
 ) -> dict[str, list[CandidateTimingStats]]:
     clauses = [
-        "problem_type_hash = ?",
-        "status = 'ok'",
-        "time_us IS NOT NULL",
-        "time_us > 0",
-        "UPPER(CASE "
-        "WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0 THEN TRIM(COALESCE(validation, '')) "
-        "ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1, "
-        "INSTR(TRIM(COALESCE(validation, '')), ' ') - 1) END) IN ('PASSED', 'OK', 'VALID')",
+        "pt.problem_type_hash = ?",
+        "be.status = 'ok'",
+        "EXISTS (SELECT 1 FROM validations AS v "
+        "WHERE v.validation_namespace_id = be.validation_namespace_id "
+        "AND v.shape_key = be.shape_key AND v.candidate_id = be.candidate_id AND v.status = 'passed' "
+        "AND NOT EXISTS (SELECT 1 FROM validations AS newer "
+        "WHERE newer.validation_namespace_id = v.validation_namespace_id "
+        "AND newer.shape_key = v.shape_key AND newer.candidate_id = v.candidate_id "
+        "AND (newer.created_at > v.created_at OR "
+        "(newer.created_at = v.created_at AND newer.validation_id > v.validation_id))))",
     ]
     params: list[str] = [problem_type_hash]
     protocol_hashes = list(benchmark_protocol_hashes or [])
     if protocol_hashes:
         placeholders = ",".join("?" for _ in protocol_hashes)
-        clauses.append(f"benchmark_protocol_hash IN ({placeholders})")
+        clauses.append(f"bp.benchmark_protocol_hash IN ({placeholders})")
         params.extend(protocol_hashes)
     if shape_ids:
         placeholders = ",".join("?" for _ in shape_ids)
-        clauses.append(f"shape_id IN ({placeholders})")
+        clauses.append(f"s.shape_id IN ({placeholders})")
         params.extend(sorted(shape_ids))
     if candidate_hashes:
         placeholders = ",".join("?" for _ in candidate_hashes)
-        clauses.append(f"candidate_hash IN ({placeholders})")
+        clauses.append(f"c.candidate_hash IN ({placeholders})")
         params.extend(sorted(candidate_hashes))
     query = f"""
-        SELECT shape_id, candidate_hash, time_us
-        FROM evaluations
+        SELECT s.shape_id, c.candidate_hash, bs.time_us
+        FROM benchmark_events AS be
+        JOIN benchmark_samples AS bs USING (event_id)
+        JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
+        JOIN problem_types AS pt USING (problem_type_id)
+        JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
+        JOIN shapes AS s USING (shape_key)
+        JOIN candidates AS c USING (candidate_id)
         WHERE {" AND ".join(clauses)}
-        ORDER BY shape_id, candidate_hash, eval_id
+        ORDER BY s.shape_id, c.candidate_hash, be.event_id, bs.sample_index
     """
     grouped: dict[tuple[str, str], list[float]] = defaultdict(list)
     with db.connection() as con:
@@ -499,160 +504,3 @@ def decide_retime_by_shape(
         shape_id: decide_shape_retime(shape_id, stats, policy=policy)
         for shape_id, stats in sorted(stats_by_shape.items())
     }
-
-
-def candidate_map(db: EvoTensileDB, candidate_hashes: Iterable[str]) -> dict[str, Candidate]:
-    hashes = list(dict.fromkeys(candidate_hashes))
-    candidates = db.get_candidates(hashes)
-    by_hash = {candidate.hash: candidate for candidate in candidates}
-    missing = sorted(set(hashes) - set(by_hash))
-    if missing:
-        raise ValueError(f"missing candidate records in DB: {', '.join(missing[:8])}")
-    return by_hash
-
-
-def write_timing_stats_csv(path: str | Path, stats_by_shape: dict[str, list[CandidateTimingStats]]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "shape_id",
-                "candidate_hash",
-                "samples",
-                "median_time_us",
-                "mean_log_time",
-                "median_log_time",
-                "stddev_log_time",
-                "robust_sigma_log",
-                "stderr_median_log",
-                "mad_log",
-                "iqr_log",
-                "p10_time_us",
-                "p90_time_us",
-                "outlier_count",
-            ],
-        )
-        writer.writeheader()
-        for shape_id in sorted(stats_by_shape):
-            for stats in sorted(stats_by_shape[shape_id], key=lambda item: (item.score_log_time, item.candidate_hash)):
-                writer.writerow(
-                    {
-                        "shape_id": stats.shape_id,
-                        "candidate_hash": stats.candidate_hash,
-                        "samples": stats.samples,
-                        "median_time_us": f"{stats.median_time_us:.10g}",
-                        "mean_log_time": f"{stats.mean_log_time:.10g}",
-                        "median_log_time": f"{stats.median_log_time:.10g}",
-                        "stddev_log_time": f"{stats.stddev_log_time:.10g}",
-                        "robust_sigma_log": f"{stats.robust_sigma_log:.10g}",
-                        "stderr_median_log": f"{stats.stderr_median_log:.10g}",
-                        "mad_log": f"{stats.mad_log:.10g}",
-                        "iqr_log": f"{stats.iqr_log:.10g}",
-                        "p10_time_us": f"{stats.p10_time_us:.10g}",
-                        "p90_time_us": f"{stats.p90_time_us:.10g}",
-                        "outlier_count": stats.outlier_count,
-                    }
-                )
-
-
-def write_decisions_csv(path: str | Path, decisions: Sequence[ShapeRetimingDecision]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "shape_id",
-                "status",
-                "winner_hash",
-                "retime_candidate_count",
-                "retime_candidate_hashes",
-                "target_samples",
-                "source_candidates",
-                "plausible_candidates",
-                "truncated_plausible_candidates",
-                "top_gap_pct",
-                "top_gap_ci_low_pct",
-                "top_gap_ci_high_pct",
-            ],
-        )
-        writer.writeheader()
-        for decision in decisions:
-            writer.writerow(
-                {
-                    "shape_id": decision.shape_id,
-                    "status": decision.status,
-                    "winner_hash": decision.winner_hash or "",
-                    "retime_candidate_count": len(decision.retime_candidate_hashes),
-                    "retime_candidate_hashes": ";".join(decision.retime_candidate_hashes),
-                    "target_samples": decision.target_samples,
-                    "source_candidates": decision.source_candidates,
-                    "plausible_candidates": decision.plausible_candidates,
-                    "truncated_plausible_candidates": decision.truncated_plausible_candidates,
-                    "top_gap_pct": "" if decision.top_gap_pct is None else f"{decision.top_gap_pct:.6g}",
-                    "top_gap_ci_low_pct": ""
-                    if decision.top_gap_ci_low_pct is None
-                    else f"{decision.top_gap_ci_low_pct:.6g}",
-                    "top_gap_ci_high_pct": ""
-                    if decision.top_gap_ci_high_pct is None
-                    else f"{decision.top_gap_ci_high_pct:.6g}",
-                }
-            )
-
-
-def write_pair_decisions_csv(path: str | Path, decisions: Sequence[ShapeRetimingDecision]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "shape_id",
-                "candidate_hash",
-                "rank",
-                "gap_pct",
-                "ci_low_pct",
-                "ci_high_pct",
-                "plausible",
-            ],
-        )
-        writer.writeheader()
-        for decision in decisions:
-            for pair in decision.pair_decisions:
-                writer.writerow(
-                    {
-                        "shape_id": decision.shape_id,
-                        "candidate_hash": pair.candidate_hash,
-                        "rank": pair.rank,
-                        "gap_pct": f"{pair.gap_pct:.6g}",
-                        "ci_low_pct": f"{pair.ci_low_pct:.6g}",
-                        "ci_high_pct": f"{pair.ci_high_pct:.6g}",
-                        "plausible": int(pair.plausible),
-                    }
-                )
-
-
-def winner_by_shape(stats_by_shape: dict[str, list[CandidateTimingStats]]) -> dict[str, CandidateTimingStats]:
-    winners = {}
-    for shape_id, stats in stats_by_shape.items():
-        if not stats:
-            continue
-        winners[shape_id] = min(stats, key=lambda item: (item.score_log_time, item.candidate_hash))
-    return winners
-
-
-def distinct_protocol_hashes(db_path: str | Path) -> list[str]:
-    con = sqlite3.connect(db_path)
-    try:
-        rows = con.execute(
-            """
-            SELECT DISTINCT benchmark_protocol_hash
-            FROM evaluations
-            ORDER BY benchmark_protocol_hash
-            """
-        ).fetchall()
-    finally:
-        con.close()
-    return [str(row[0]) for row in rows]

@@ -4,7 +4,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from evotensile.candidate import Candidate, Shape
-from evotensile.database import EvaluationSummary
+from evotensile.database import BenchmarkSummary
 from evotensile.search.encoding import PARAM_NAMES, candidate_to_genome, hamming_distance
 from evotensile.search.evidence import ProposalEvidenceSnapshot
 from evotensile.search.grid_evidence import candidate_grid_scores
@@ -94,7 +94,7 @@ def load_candidate_evidence(
     limit: int | None = None,
 ) -> list[CandidateEvidence]:
     target_shape_ids = [shape.id for shape in shapes] if shapes is not None else []
-    summaries_by_shape: dict[str, list[EvaluationSummary]] = {}
+    summaries_by_shape: dict[str, list[BenchmarkSummary]] = {}
     for summary in snapshot.summaries:
         if summary.samples < min_samples:
             continue

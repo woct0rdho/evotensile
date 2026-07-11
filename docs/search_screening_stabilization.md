@@ -87,7 +87,7 @@ This queue is an allocation mechanism only. It does not infer winners for unmeas
 - a content-verified artifact registered for that exact pair.
 - the unchanged main screening protocol identity.
 
-Artifact lookup uses indexed `candidate_artifacts` records filtered by problem type, shape, and candidate. It does not scan run-directory history or reconstruct artifacts from manifests and pair files.
+Artifact lookup uses indexed `artifact_mappings` filtered by problem type, shape, and candidate, then verifies the shared bundle. It does not scan run-directory history or reconstruct artifacts from manifests and pair files.
 
 ## Execution And Admission
 

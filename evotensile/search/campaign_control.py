@@ -7,6 +7,7 @@ from evotensile.database import EvoTensileDB
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.search.encoding import candidate_to_genome, hamming_distance
 from evotensile.search.family import family_descriptor_counts
+from evotensile.search.measured_cost import load_candidate_measured_costs
 from evotensile.search.mechanics import mechanical_coverage_tokens
 
 
@@ -142,17 +143,47 @@ def load_island_elites(
     benchmark_protocol_hash: str,
     limit: int,
 ) -> list[Candidate]:
-    summaries = db.rank_evaluations(
+    summaries = db.rank_benchmarks(
         shape_id=shape_id,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         min_samples=1,
         limit=None,
     )
-    candidates = db.get_candidates([summary.candidate_hash for summary in summaries])
-    return [
-        candidate for candidate in candidates if str(candidate.proposal_metadata.get("island_id", "")) == island_id
-    ][:limit]
+    occurrences = db.proposal_candidate_occurrences(
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+        selected_only=True,
+    )
+    latest_by_hash = {
+        occurrence.candidate_hash: occurrence
+        for occurrence in occurrences
+        if occurrence.island_id == island_id and shape_id in occurrence.scope_shape_ids
+    }
+    candidates = {candidate.hash: candidate for candidate in db.get_candidates(list(latest_by_hash))}
+    costs = load_candidate_measured_costs(db)
+    elites = []
+    for summary in summaries:
+        occurrence = latest_by_hash.get(summary.candidate_hash)
+        candidate = candidates.get(summary.candidate_hash)
+        if occurrence is None or candidate is None:
+            continue
+        elites.append(
+            Candidate(
+                params=candidate.canonical_params(),
+                source=occurrence.source,
+                parent_hashes=occurrence.parent_hashes,
+                proposal_metadata={
+                    **occurrence.proposal_metadata,
+                    "island_id": island_id,
+                    "restart_index": occurrence.restart_index,
+                    "proposal_cost_s": costs[summary.candidate_hash].proposal_s,
+                },
+            )
+        )
+        if len(elites) >= limit:
+            break
+    return elites
 
 
 def population_diagnostics(

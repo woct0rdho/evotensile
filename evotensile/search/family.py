@@ -222,7 +222,7 @@ def family_stratified_random_candidates(
     rng = random.Random(seed)
     cells = nt_hhs_family_cells()
     counts: dict[str, int] = {}
-    for candidate_hash in snapshot.evaluation_status_counts:
+    for candidate_hash in snapshot.evidence_status_counts:
         candidate = snapshot.candidates.get(candidate_hash)
         if candidate is None:
             continue
@@ -377,7 +377,7 @@ def load_family_archive(
         if candidate_hash in snapshot.candidates
     }
     status_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for candidate_hash, counts in snapshot.evaluation_status_counts.items():
+    for candidate_hash, counts in snapshot.evidence_status_counts.items():
         candidate = snapshot.candidates.get(candidate_hash)
         if candidate is None:
             continue

@@ -141,7 +141,7 @@ Transfer candidates record the target and source shape IDs that caused selection
 
 A `cluster` proposal scope is an explicit label and shape set. It does not itself discover clusters, select medoids, stage representative-first evaluation, or promote candidates to unmeasured members. Those actions require the production grid controller tracked in `docs/plan.md`.
 
-Imported hipBLASLt baselines are normal DB candidates. Once imported, they can become elites, transfer seeds, GOMEA parents, and final winners like any other candidate.
+Installed hipBLASLt discovery creates zero-evidence planning pairs. After those exact pairs run through the normal scheduler, their measured candidates can become elites, transfer seeds, GOMEA parents, and final winners like any other candidate.
 
 ## Cache-Aware Planning
 
