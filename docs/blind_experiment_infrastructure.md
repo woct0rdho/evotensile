@@ -1,6 +1,6 @@
 # Blind Experiment Infrastructure
 
-This document describes the infrastructure for blind EvoTensile search experiments, including real wall-time campaigns, exact-hash historical replay, simulated time accounting, finalist confirmation, and audit artifacts. The one-shape campaign state machine is documented in `docs/blind_campaign_control.md`. Individual experiment outcomes belong in logs such as `docs/blind_one_shape_experiment.md`.
+This document describes the infrastructure for blind EvoTensile search experiments, including real wall-time campaigns, exact-hash historical replay, simulated time accounting, finalist confirmation, and audit artifacts. The one-shape campaign state machine is documented in `docs/blind_campaign_control.md`. Individual experiment outcomes belong in logs such as `docs/experiment_blind_one_shape.md`.
 
 ## Blindness Contract
 

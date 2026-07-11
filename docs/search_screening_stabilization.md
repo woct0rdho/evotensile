@@ -142,4 +142,4 @@ The blind campaign stores this structure in each round record.
 - Timer resolution is an explicit policy input rather than hardware-probed automatically.
 - The 30-second runner budget is a soft admission limit. One admitted invocation may finish beyond it.
 - The value of stabilization relative to its wall-time cost has not been isolated in a full real multi-seed grid ablation.
-- Experiment outcomes and observed screening-to-hot gaps belong in `docs/blind_one_shape_experiment.md`.
+- Experiment outcomes and observed screening-to-hot gaps belong in `docs/experiment_blind_one_shape.md`.
