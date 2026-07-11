@@ -30,18 +30,7 @@ class TargetProfile:
     compute_unit_count: int
     workgroup_processor_count: int
     compute_units_per_workgroup_processor: int
-    default_proposal: str = "seed-random-gomea"
-    default_num_random: int = 64
-    default_elite_count: int = 8
-    default_local_count: int = 32
-    default_de_count: int = 32
-    default_gomea_count: int = 64
-    default_transfer_shapes: int = 4
-    default_transfer_per_shape: int = 2
-    default_mutation_rate: float = 0.25
-    default_crossover_rate: float = 0.8
-    default_random_gene_rate: float = 0.1
-    default_candidate_batch_size: int = 32
+    max_no_cache_candidate_batch_size: int = 32
     default_shape_batch_size: int = 100
     default_prepare_workers: int = 32
     default_prepare_wave_batches: int = 32

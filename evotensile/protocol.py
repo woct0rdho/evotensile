@@ -6,6 +6,15 @@ from .candidate import stable_hash
 
 VALIDATION_PROTOCOL_VERSION = 1
 
+BENCHMARK_PROTOCOL_OVERRIDE_FIELDS = (
+    "num_warmups",
+    "num_benchmarks",
+    "enqueues_per_sync",
+    "syncs_per_benchmark",
+    "num_elements_to_validate",
+    "validation_backend",
+)
+
 BENCHMARK_PROTOCOL_KEYS = (
     "KernelTime",
     "PreciseKernelTime",
@@ -137,6 +146,13 @@ class BenchmarkProtocol:
 
     def validation_protocol_hash(self) -> str:
         return stable_hash(self.validation_identity_parameters(), prefix="vproto_")[:23]
+
+
+def apply_benchmark_protocol_overrides(
+    protocol: BenchmarkProtocol,
+    overrides: Mapping[str, Any],
+) -> BenchmarkProtocol:
+    return protocol.with_overrides(**{field: overrides.get(field) for field in BENCHMARK_PROTOCOL_OVERRIDE_FIELDS})
 
 
 def _format_global_value(value: Any) -> str:

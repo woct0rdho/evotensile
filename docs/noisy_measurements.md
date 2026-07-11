@@ -20,7 +20,7 @@ $$
 y_{c,i} = \log(t_{c,i}), \qquad s_c = \mathrm{median}(y_{c,*}).
 $$
 
-The score `s_c` is median log time, so lower is better. Median time in microseconds is `exp(s_c)`.
+The score `s_c` is median log time, so lower is better. `exp(s_c)` is the log-space center used by adaptive comparisons. Audit output reports the ordinary arithmetic sample median as `median_time_us`, matching database ranking. For even sample counts these two centers can differ.
 
 ## Robust Scale Estimate
 
@@ -44,7 +44,7 @@ The coefficient is `sqrt(pi / 2)`, the asymptotic ratio between the standard err
 
 `timing_stats_from_times()` also records mean log time, standard deviation, MAD, IQR, `p10`, `p90`, and high-side outlier count for audit output.
 
-## Staged Three-Launch Probe
+## Staged Probe
 
 Adaptive schedules first run one low-fidelity launch for every validation-passed pair:
 
@@ -55,7 +55,7 @@ EnqueuesPerSync=1
 SyncsPerBenchmark=1
 ```
 
-The first launch screens the catastrophic slow tail. Provisional survivors are then given two additional launches, reaching the default three-launch evidence target. Candidates screened after the first stage consume only one launch. Probe timing has a distinct `BenchmarkRole=probe` protocol identity and is never pooled with main timing.
+The initial probe budget screens the catastrophic slow tail. Provisional survivors then receive the remaining probe samples. Candidates screened after the first stage consume only the initial budget. Probe timing has a distinct `BenchmarkRole=probe` protocol identity and is never pooled with main timing.
 
 Let `r` be the fastest compatible reference: the current probe leader or a faster existing main-protocol incumbent for the same shape. A probe candidate `c` is screened out only when the lower confidence bound on its log-time gap exceeds the coarse slowdown threshold:
 
@@ -63,20 +63,9 @@ $$
 \mathrm{CI}_{c,\mathrm{low}} > \log(F)
 $$
 
-The default factor is `F=4`. The probe also applies a `5%` minimum log-noise floor because two or three observations cannot provide a reliable zero-noise estimate. At least eight probe candidates per shape survive regardless of the threshold, or all candidates when fewer than eight are available.
+`ProbePolicy` owns `F`, the initial and total sample budgets, confidence, the minimum log-noise floor, and the forced survivor floor. The CLI derives its adaptive-probe defaults from that policy. Use `schedule-batches --help` for current values and `schedule_metadata.json` for the effective recorded policy.
 
 Probe screening is a timing-allocation decision, not invalidity or reusable negative cache evidence. Missing or incomplete probe evidence is not admitted to main timing in that schedule, but it also creates no reusable negative cache row and may be retried later.
-
-The probe controls are:
-
-```text
---adaptive-probe-samples 3
---adaptive-probe-initial-samples 1
---adaptive-probe-max-slowdown-factor 4.0
---adaptive-probe-confidence 0.90
---adaptive-probe-noise-floor-pct 5.0
---adaptive-probe-min-survivors 8
-```
 
 ## Pairwise Plausibility
 
@@ -92,7 +81,7 @@ $$
 \mathrm{CI}_c = g_c \pm z_\alpha \sqrt{\mathrm{SE}_c^2 + \mathrm{SE}_b^2}.
 $$
 
-`z_alpha` is derived from `--adaptive-confidence`. the CLI default is `0.90`.
+`z_alpha` is derived from `AdaptivePolicy.confidence`, exposed as `--adaptive-confidence`.
 
 A contender remains plausible if the lower bound of its gap confidence interval is within the indifference zone:
 
@@ -100,7 +89,7 @@ $$
 \mathrm{CI}_{c,\mathrm{low}} \le \log(1 + \epsilon).
 $$
 
-`epsilon` is `--adaptive-epsilon-pct` as a fraction. The default is `2%`. This means a candidate is still retimed if current evidence cannot confidently show it is slower than the best by more than the requested tolerance.
+`epsilon` is `AdaptivePolicy.epsilon_pct`, exposed as `--adaptive-epsilon-pct`, converted to a fraction. A candidate is still retimed if current evidence cannot confidently show it is slower than the best by more than the requested tolerance.
 
 The percent form of a log gap is:
 
@@ -130,13 +119,9 @@ $$
 n_c = \left\lceil\left(\frac{z_\alpha \cdot 1.2533141373155001 \sqrt{\sigma_b^2 + \sigma_c^2}}{d_c}\right)^2\right\rceil.
 $$
 
-`delta_min` is `--adaptive-min-effect-pct` converted to log space. the default is `0.5%`. It prevents the sample estimate from exploding when two candidates are nearly tied or exactly on the indifference boundary.
+`delta_min` is `AdaptivePolicy.min_effect_pct`, exposed as `--adaptive-min-effect-pct`, converted to log space. It prevents the sample estimate from exploding when two candidates are nearly tied or exactly on the indifference boundary.
 
-The scheduled target is:
-- at least `--adaptive-min-samples` (`20` by default).
-- at most `--adaptive-max-samples` (`80` by default).
-- rounded up to `--adaptive-sample-step` (`10` by default).
-- applied to at most `--adaptive-max-k` plausible candidates per shape (`8` by default).
+The scheduled target uses the policy's minimum samples, maximum samples, sample step, and maximum contender count. Corresponding CLI flags override those fields. Metadata records the effective policy.
 
 ## Adaptive Execution
 
@@ -145,13 +130,13 @@ The scheduled target is:
 The execution sequence is:
 - Prepare all batches in parallel: compile, map/salvage, diagnose, and validate.
 - Join every prepare worker before timing starts.
-- Run one serial probe launch for every validation-passed pair.
+- Run the initial serial probe budget for every validation-passed pair.
 - Screen catastrophic candidates against the compatible reference and retain the minimum survivor floor.
 - Give provisional survivors the remaining launches needed for complete probe evidence.
 - Run the main timing protocol only for probe survivors. `--num-benchmarks` is the initial main sample budget.
 - Load main-protocol timing stats and decide retime groups for unresolved shapes.
 - Run only missing main-protocol samples for plausible contenders from the original prepared-artifact index.
-- Repeat for up to `--adaptive-max-rounds`. Default `4`.
+- Repeat for up to `AdaptivePolicy.max_rounds`, exposed as `--adaptive-max-rounds`.
 
 Probe, main, and adaptive rounds never recompile or revalidate. A pair without a successful prepared artifact is ineligible for timing. Main top-ups use the same main benchmark-protocol identity because `NumBenchmarks` is an execution budget, not a timing-compatibility field.
 

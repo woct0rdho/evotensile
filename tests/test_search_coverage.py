@@ -5,13 +5,13 @@ from evotensile.cli import main as cli_main
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search.coverage import candidate_coverage
-from evotensile.search.random_search import initial_random_batch
+from evotensile.search_space import random_candidates
 from evotensile.shapes import pilot_100_shapes
 from tests.helpers import insert_test_benchmark_event
 
 
 def test_candidate_coverage_counts_unique_values():
-    candidates = initial_random_batch(16, seed=1151)
+    candidates = random_candidates(16, seed=1151)
 
     summary = candidate_coverage(candidates)
 
@@ -43,7 +43,7 @@ def test_proposal_coverage_cli(tmp_path: Path, capsys):
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["candidates"] == 8
-    assert payload["proposal"] == "seed-random-gomea"
+    assert payload["proposal_provider"]["identity"] == "builtin:family-qd:gfx1151-grid-v1"
     assert payload["candidate_family_count"] >= 1
 
 
@@ -54,7 +54,7 @@ def test_summarize_families_cli(tmp_path: Path, capsys):
         environment_compatibility_tag=DEFAULT_PROFILE.environment_compatibility_tag,
     )
     db.init()
-    candidates = initial_random_batch(2, seed=1151)
+    candidates = random_candidates(2, seed=1151)
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()

@@ -36,7 +36,6 @@ class TimingContext:
     probe_protocol: BenchmarkProtocol | None
     probe_protocol_hash: str | None
     probe_policy_hash: str | None
-    adaptive_max_rounds: int
     preprepare_screened_pairs: int = 0
     timing_batch_order: Callable[[Sequence[PreparedBatch]], Sequence[PreparedBatch]] | None = None
 
@@ -211,8 +210,6 @@ def _benchmark_prepared_pairs(
     record_structured_run(
         db,
         output,
-        yaml_path=prepared.yaml_path,
-        output_dir=prepared.output_dir,
         pairs=pairs,
         cost_phase="probe" if protocol.num_warmups == 0 else "screening",
     )
@@ -284,7 +281,6 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
     probe_protocol = context.probe_protocol
     probe_protocol_hash = context.probe_protocol_hash
     probe_policy_hash = context.probe_policy_hash
-    adaptive_max_rounds = context.adaptive_max_rounds
     preprepare_screened_pair_count = context.preprepare_screened_pairs
     prepared_by_batch_index = {item.planned.batch_index: item for item in prepared}
     if context.timing_batch_order is not None:
@@ -465,7 +461,7 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
             )
 
     completed_rounds = 0
-    for _ in range(adaptive_max_rounds):
+    for _ in range(adaptive_policy.max_rounds if adaptive_policy is not None else 0):
         groups = _adaptive_topup_groups(
             db,
             shapes=shapes,

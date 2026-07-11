@@ -1,3 +1,5 @@
+import math
+
 from evotensile.adaptive_retime import (
     AdaptivePolicy,
     ProbePolicy,
@@ -9,6 +11,13 @@ from evotensile.adaptive_retime import (
 
 def _stats(candidate_hash: str, samples: list[float]):
     return timing_stats_from_times("m1_n1_b1_k1", candidate_hash, samples)
+
+
+def test_timing_stats_report_arithmetic_median_while_scoring_in_log_space():
+    stats = _stats("candidate", [1.0, 9.0])
+
+    assert stats.median_time_us == 5.0
+    assert math.isclose(math.exp(stats.median_log_time), 3.0)
 
 
 def test_probe_screens_only_confidently_slow_candidates():

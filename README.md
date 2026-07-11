@@ -11,7 +11,7 @@ It separates search strategies from underlying measurements. When evaluating the
 ## Workflow
 
 1. Define problem type, input shapes, and config search space.
-2. Discover installed hipBLASLt selections, then search them through the normal scheduler alongside evolutionary candidates.
+2. Discover installed hipBLASLt selections, then search them through the normal scheduler alongside family-QD candidates.
 3. Repair local outliers by rerunning search with neighbor-seeded configs.
 4. Update hipBLASLt configs.
 5. Rebuild and reinstall hipBLASLt.
@@ -25,13 +25,15 @@ A target profile defines:
 - a typed benchmark protocol used consistently for YAML generation, runner JSONL, and cache hashing.
 - a candidate search space made of complete TensileLite solution dictionaries, not independent Cartesian products.
 
-Each target profile derives `problem_type_hash` and `benchmark_protocol_hash`. Pass the selected profile with `--profile <profile-name>`.
+Each target profile derives `problem_type_hash` and `benchmark_protocol_hash`. Commands use the registry's default profile when `--profile` is omitted.
 
-Inspect a target search space with:
+Inspect the default target search space with:
 
 ```bash
-python3 -m evotensile.cli summarize-space --profile <profile-name>
+python3 -m evotensile.cli summarize-space
 ```
+
+When an installation provides another profile, select it explicitly with `--profile <profile-name>`.
 
 `proposal-coverage` helps define and maintain a profile's search space by generating proposals without executing them, then reporting value coverage and invalid-rule counts so proposal bias can be tuned without shrinking the underlying domains.
 
@@ -47,7 +49,6 @@ Dry-run a plan:
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
   --output-dir out/search \
-  --profile <profile-name> \
   --dry-run
 ```
 
@@ -70,7 +71,6 @@ Discover the current hipBLASLt-selected configs once per DB/problem/grid. Discov
 python3 scripts/discover_hipblaslt_baselines.py \
   --db out/evotensile.sqlite \
   --output-dir out/hipblaslt_baselines \
-  --profile <profile-name> \
   --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/<gfx-target>"
 ```
 
@@ -79,15 +79,14 @@ Run planned batches with adaptive sampling:
 ```bash
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
-  --output-dir out/search \
-  --profile <profile-name>
+  --output-dir out/search
 ```
 
 The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each SQLite DB file is one evidence namespace for a target hardware/environment/campaign. Use separate DB paths when comparing incompatible campaigns. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout. Profiles provide compile and runner timeout defaults. Pass `0` to a timeout flag to disable it or `--stop-on-error` to fail fast.
 
-Production CLI defaults favor throughput: `--prepare-workers` defaults to available CPU cores, `--compile-threads` defaults to `1`, compile-cache reuse is enabled under `OUTPUT_DIR/compile_cache`, and `--candidate-batch-size` is chosen as the largest profile-bounded value that still leaves enough candidate/shape batches to saturate preparation. Preparation performs build/map/diagnostic/validation in parallel. Timing starts only after that pool drains and always runs serially.
+Production CLI defaults favor reusable throughput: the selected profile supplies the preparation-worker cap, compile threads default to one, and compile-cache reuse is enabled under `OUTPUT_DIR/compile_cache`. Cache-backed schedules use singleton candidate libraries so artifacts remain reusable across proposal cohorts. With `--no-compile-cache`, a profile-bounded throughput heuristic chooses the candidate batch size. Preparation performs build/map/diagnostic/validation in parallel. Timing starts only after that pool drains and always runs serially.
 
-Useful proposal modes include `random`, `seed-random`, `local`, `seed-random-local`, `de`, `seed-random-de`, `gomea`, `seed-random-gomea`, `evolutionary`, and `family-qd`. Exact-shape and nearest-shape validation-passed winners, including measured discovered hipBLASLt candidates when they remain best, can initialize non-random proposal operators through `--transfer-shapes` / `--transfer-per-shape`. Command examples omit hyperparameters when the intended value is already the profile or CLI default.
+With no custom provider, proposal-generating commands run the built-in family-QD policy and record policy version `gfx1151-grid-v1`. Exact-shape and nearest-shape validation-passed winners, including measured discovered hipBLASLt candidates when they remain best, can initialize its operators through `--transfer-shapes` / `--transfer-per-shape`. Random, local/semantic mutation, DE, GOMEA, family archive, linkage, covering, operator-allocation, and surrogate functions remain supported building blocks through `evotensile.proposals`. Trusted custom compositions use `--proposal-script`. See `docs/custom_proposals.md`.
 
 Supported protocol overrides include `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, `--num-elements-to-validate`, and `--validation-backend`. The default performs full hipBLASLt GPU-oracle validation with `NumElementsToValidate=-1`. `--validation-backend cpu` selects CPU audit validation. There is no no-validation backend: benchmark-only execution is admitted only after compatible correctness evidence exists.
 
@@ -99,15 +98,12 @@ Structured scheduler runs ingest their own JSONL results directly into SQLite. T
 
 ### 3. Repair Local Outliers
 
-Before manual inspection or GridBased updates, `repair-outliers` can identify shapes whose current best config sits below a robust local neighbor envelope in log GFLOP/s space. It then reruns only those shapes, seeding candidates from the outlier's current winner, nearest-shape winners/top candidates, and the selected proposal mode.
+Before manual inspection or GridBased updates, `repair-outliers` can identify shapes whose current best config sits below a robust local neighbor envelope in log GFLOP/s space. It then reruns only those shapes, seeding candidates from the outlier's current winner, nearest-shape winners/top candidates, and the built-in family-QD provider or an explicitly supplied custom provider.
 
 ```bash
 python3 -m evotensile.cli repair-outliers \
   --db out/evotensile.sqlite \
-  --output-dir out/repair_outliers \
-  --profile <profile-name> \
-  --num-random 32 \
-  --gomea-count 32
+  --output-dir out/repair_outliers
 ```
 
 This is a search-budget heuristic, not a correctness rule: real performance cliffs from divisibility, edge handling, LDS pressure, or occupancy can legitimately sit below nearby shapes. The command writes `repair_metadata.json` with detected residuals, neighbors, candidate hashes, and planned/executed batch summaries.
@@ -118,8 +114,7 @@ Summarize cache status:
 
 ```bash
 python3 -m evotensile.cli summarize-cache \
-  --db out/evotensile.sqlite \
-  --profile <profile-name>
+  --db out/evotensile.sqlite
 ```
 
 Rank validation-passed observations:
@@ -127,7 +122,6 @@ Rank validation-passed observations:
 ```bash
 python3 -m evotensile.cli rank-benchmarks \
   --db out/evotensile.sqlite \
-  --profile <profile-name> \
   --min-samples 2
 ```
 
@@ -137,8 +131,7 @@ The updater requires the complete profile shape set, latest compatible passed va
 
 ```bash
 python3 scripts/update_hipblaslt_gridbased_logic.py \
-  --db out/evotensile.sqlite \
-  --profile <profile-name>
+  --db out/evotensile.sqlite
 ```
 
 Stage the complete variant set outside the hipBLASLt source tree for review:
@@ -146,7 +139,6 @@ Stage the complete variant set outside the hipBLASLt source tree for review:
 ```bash
 python3 scripts/update_hipblaslt_gridbased_logic.py \
   --db out/evotensile.sqlite \
-  --profile <profile-name> \
   --output-dir out/gridbased-logic-staged
 ```
 
@@ -198,7 +190,7 @@ LD_LIBRARY_PATH="$ROCM_PATH/llvm/lib:$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}" \
 ./hipblaslt-test --gtest_filter='<test-filter>' --gtest_output=xml:/tmp/hipblaslt_test.xml
 ```
 
-Then run an application-level benchmark with the intended runtime environment. If the Python runtime uses a separate TensileLite asset package, point `HIPBLASLT_TENSILE_LIBPATH` at the newly installed assets so the rebuilt logic is actually used.
+Then run an application-level benchmark, such as `~/ComfyUI-FeatherOps/benchmark_mm_hipblaslt_fp16.py`. If the Python runtime uses a separate TensileLite asset package, point `HIPBLASLT_TENSILE_LIBPATH` at the newly installed assets so the rebuilt logic is actually used.
 
 ## Benchmark Protocol
 

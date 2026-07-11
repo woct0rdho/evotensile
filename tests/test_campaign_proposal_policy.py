@@ -7,6 +7,7 @@ from evotensile.campaign.configuration import CampaignConfigurationRequest, buil
 from evotensile.campaign.proposal_policy import propose_campaign_candidates
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
+from evotensile.proposal import FamilyQDPolicy
 from evotensile.search.acquisition import propose_candidates
 from evotensile.shapes import pilot_100_shapes
 from tests.helpers import insert_test_benchmark_event, sample_candidates
@@ -115,12 +116,22 @@ def test_parent_override_prevents_cross_island_parent_selection(tmp_path: Path):
 
     proposed = propose_candidates(
         db,
-        proposal="family-qd",
-        num_random=0,
-        local_count=8,
-        de_count=0,
-        gomea_count=8,
-        elite_count=8,
+        policy=FamilyQDPolicy(
+            num_random=0,
+            local_count=8,
+            de_count=0,
+            gomea_count=8,
+            elite_count=8,
+            transfer_shape_count=0,
+            transfer_per_shape=0,
+            adaptive_operators=False,
+            surrogate_pool_multiplier=1,
+            covering_cold_start=False,
+            adaptive_group_credit=False,
+            micro_exhaustive_neighborhoods=False,
+            adaptive_donor_selection=False,
+            cost_aware_operator_credit=False,
+        ),
         target_shapes=[shape],
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),

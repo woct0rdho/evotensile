@@ -8,7 +8,12 @@ from .profile import DEFAULT_PROFILE, TargetProfile
 from .protocol import BenchmarkProtocol
 from .runner import DEFAULT_TENSILELITE_BIN
 from .scheduling.models import ExecutedBatch, PreparedBatch, ScheduleResult
-from .scheduling.planning import plan_batches, preprepare_probe_screened_pairs, record_shape_rule_rejections
+from .scheduling.planning import (
+    plan_batches,
+    preprepare_probe_screened_pairs,
+    production_candidate_batch_size,
+    record_shape_rule_rejections,
+)
 from .scheduling.preparation import PreparationContext, prepare_wave, write_batch_inputs
 from .scheduling.timing import TimingContext, run_serial_timing
 from .subprocess_utils import resolve_timeout
@@ -25,8 +30,8 @@ def execute_schedule(
     target_profile: TargetProfile = DEFAULT_PROFILE,
     protocol: BenchmarkProtocol | None = None,
     min_samples: int = 1,
-    candidate_batch_size: int = 32,
-    shape_batch_size: int = 100,
+    candidate_batch_size: int | None = None,
+    shape_batch_size: int | None = None,
     ignore_cache: bool = False,
     max_batches: int | None = None,
     dry_run: bool = False,
@@ -39,7 +44,6 @@ def execute_schedule(
     runner_timeout_s: float | None = None,
     adaptive_policy: AdaptivePolicy | None = None,
     probe_policy: ProbePolicy | None = None,
-    adaptive_max_rounds: int = 4,
     prepare_workers: int | None = None,
     compile_cache_root: str | Path | None = None,
     cost_aware_scheduling: bool = False,
@@ -48,22 +52,8 @@ def execute_schedule(
     admit_next_wave: Callable[[ScheduleResult], bool] | None = None,
     timing_batch_order: Callable[[Sequence[PreparedBatch]], Sequence[PreparedBatch]] | None = None,
 ) -> ScheduleResult:
-    if not dry_run and not generate_only and runner_bin is None:
-        raise ValueError("--runner-bin is required")
-    if prepare_workers is not None and prepare_workers <= 0:
-        raise ValueError("prepare_workers must be positive")
-    if validation_workers is not None and validation_workers <= 0:
-        raise ValueError("validation_workers must be positive")
-    if prepare_wave_batches is not None and prepare_wave_batches <= 0:
-        raise ValueError("prepare_wave_batches must be positive")
-    if adaptive_policy is not None and probe_policy is None:
-        raise ValueError("probe_policy is required when adaptive sampling is enabled")
-    if adaptive_max_rounds < 0:
-        raise ValueError("adaptive_max_rounds must be non-negative")
-
-    protocol = protocol or target_profile.default_protocol
-    if protocol.role != "main":
-        raise ValueError("execute_schedule requires a main benchmark protocol")
+    runner_bin = target_profile.default_runner_bin if runner_bin is None else runner_bin
+    shape_batch_size = target_profile.default_shape_batch_size if shape_batch_size is None else shape_batch_size
     resolved_prepare_workers = target_profile.default_prepare_workers if prepare_workers is None else prepare_workers
     resolved_validation_workers = (
         target_profile.default_validation_workers if validation_workers is None else validation_workers
@@ -71,14 +61,37 @@ def execute_schedule(
     resolved_wave_batches = (
         target_profile.default_prepare_wave_batches if prepare_wave_batches is None else prepare_wave_batches
     )
+    if candidate_batch_size is None:
+        candidate_batch_size = production_candidate_batch_size(
+            candidate_count=len(candidates),
+            shape_count=len(shapes),
+            shape_batch_size=shape_batch_size,
+            prepare_workers=resolved_prepare_workers,
+            max_candidate_batch_size=target_profile.max_no_cache_candidate_batch_size,
+        )
+    effective_candidate_batch_size = 1 if compile_cache_root is not None else candidate_batch_size
+    if effective_candidate_batch_size <= 0:
+        raise ValueError("candidate_batch_size must be positive")
+    if shape_batch_size <= 0:
+        raise ValueError("shape_batch_size must be positive")
+    if resolved_prepare_workers <= 0:
+        raise ValueError("prepare_workers must be positive")
+    if resolved_validation_workers <= 0:
+        raise ValueError("validation_workers must be positive")
+    if resolved_wave_batches <= 0:
+        raise ValueError("prepare_wave_batches must be positive")
+    if adaptive_policy is not None and probe_policy is None:
+        raise ValueError("probe_policy is required when adaptive sampling is enabled")
+
+    protocol = protocol or target_profile.default_protocol
+    if protocol.role != "main":
+        raise ValueError("execute_schedule requires a main benchmark protocol")
     problem_type_hash = target_profile.problem_type_hash
     benchmark_protocol_hash = target_profile.benchmark_protocol_hash(protocol)
     validation_protocol_hash = protocol.validation_protocol_hash()
     build_timeout_s = resolve_timeout(build_timeout_s, target_profile.default_build_timeout_s)
     runner_timeout_s = resolve_timeout(runner_timeout_s, target_profile.default_runner_timeout_s)
     initial_samples = max(min_samples, protocol.num_benchmarks)
-    effective_candidate_batch_size = 1 if compile_cache_root is not None else candidate_batch_size
-
     probe_protocol = None
     probe_protocol_hash = None
     probe_policy_hash = None
@@ -135,6 +148,14 @@ def execute_schedule(
     if dry_run:
         return ScheduleResult(
             planned_batches=planned,
+            build_timeout_s=build_timeout_s,
+            runner_timeout_s=runner_timeout_s,
+            candidate_batch_size=effective_candidate_batch_size,
+            shape_batch_size=shape_batch_size,
+            prepare_workers=resolved_prepare_workers,
+            prepare_wave_batches=resolved_wave_batches,
+            validation_workers=resolved_validation_workers,
+            runner_bin=str(runner_bin),
             probe_protocol_hash=probe_protocol_hash,
             probe_policy_hash=probe_policy_hash,
             probe_screened_pairs=len(preprepare_screened_pairs),
@@ -162,6 +183,14 @@ def execute_schedule(
         return ScheduleResult(
             planned_batches=planned,
             executed_batches=generated,
+            build_timeout_s=build_timeout_s,
+            runner_timeout_s=runner_timeout_s,
+            candidate_batch_size=effective_candidate_batch_size,
+            shape_batch_size=shape_batch_size,
+            prepare_workers=resolved_prepare_workers,
+            prepare_wave_batches=resolved_wave_batches,
+            validation_workers=resolved_validation_workers,
+            runner_bin=str(runner_bin),
             probe_protocol_hash=probe_protocol_hash,
             probe_policy_hash=probe_policy_hash,
             probe_screened_pairs=len(preprepare_screened_pairs),
@@ -179,6 +208,14 @@ def execute_schedule(
             progress = ScheduleResult(
                 planned_batches=planned,
                 executed_batches=executed,
+                build_timeout_s=build_timeout_s,
+                runner_timeout_s=runner_timeout_s,
+                candidate_batch_size=effective_candidate_batch_size,
+                shape_batch_size=shape_batch_size,
+                prepare_workers=resolved_prepare_workers,
+                prepare_wave_batches=resolved_wave_batches,
+                validation_workers=resolved_validation_workers,
+                runner_bin=str(runner_bin),
                 completed_waves=completed_waves,
                 adaptive_rounds=adaptive_rounds,
                 probe_protocol_hash=probe_protocol_hash,
@@ -233,7 +270,6 @@ def execute_schedule(
                 probe_protocol=probe_protocol,
                 probe_protocol_hash=probe_protocol_hash,
                 probe_policy_hash=probe_policy_hash,
-                adaptive_max_rounds=adaptive_max_rounds,
                 timing_batch_order=timing_batch_order,
             ),
             prepared,
@@ -251,6 +287,14 @@ def execute_schedule(
     return ScheduleResult(
         planned_batches=planned,
         executed_batches=executed,
+        build_timeout_s=build_timeout_s,
+        runner_timeout_s=runner_timeout_s,
+        candidate_batch_size=effective_candidate_batch_size,
+        shape_batch_size=shape_batch_size,
+        prepare_workers=resolved_prepare_workers,
+        prepare_wave_batches=resolved_wave_batches,
+        validation_workers=resolved_validation_workers,
+        runner_bin=str(runner_bin),
         completed_waves=completed_waves,
         adaptive_rounds=adaptive_rounds,
         probe_protocol_hash=probe_protocol_hash,

@@ -191,8 +191,8 @@ sqlite3 out/grid100_full_20260618_repaired.sqlite \
 Run operational checks through current APIs:
 
 ```bash
-python3 -m evotensile.cli summarize-cache --db out/grid100_full_20260618_repaired.sqlite --profile gfx1151-nt-hhs
-python3 -m evotensile.cli rank-benchmarks --db out/grid100_full_20260618_repaired.sqlite --profile gfx1151-nt-hhs
+python3 -m evotensile.cli summarize-cache --db out/grid100_full_20260618_repaired.sqlite
+python3 -m evotensile.cli rank-benchmarks --db out/grid100_full_20260618_repaired.sqlite
 ```
 
 The consolidated historical corpus intentionally has no current-protocol validation passes, so current ranking is empty until the normal scheduler validates and benchmarks pairs under current identities.

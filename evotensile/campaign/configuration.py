@@ -5,10 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from evotensile.campaign.models import CAMPAIGN_CONFIGURATION_VERSION, CAMPAIGN_ENVIRONMENT_KEYS, CampaignConfiguration
+from evotensile.campaign.protocols import CAMPAIGN_HOT_PROTOCOL, CAMPAIGN_SCREENING_PROTOCOL
 from evotensile.candidate import Shape
 from evotensile.profile import TargetProfile
-from evotensile.protocol import BenchmarkProtocol
-from evotensile.search.screening_stabilize import ScreeningStabilizationPolicy
 
 
 def _content_fingerprint(paths: Sequence[Path]) -> str:
@@ -59,20 +58,6 @@ def build_campaign_configuration(
     profile: TargetProfile,
     shape: Shape,
 ) -> CampaignConfiguration:
-    screening_protocol = BenchmarkProtocol(
-        num_warmups=1,
-        num_benchmarks=2,
-        enqueues_per_sync=1,
-        syncs_per_benchmark=1,
-    )
-    hot_protocol = BenchmarkProtocol(
-        num_warmups=20,
-        num_benchmarks=10,
-        enqueues_per_sync=10,
-        syncs_per_benchmark=1,
-        num_elements_to_validate=0,
-        validation_backend=screening_protocol.validation_backend,
-    )
     runner_bin, runner_fingerprint = _binary_identity(request.runner_bin)
     tensilelite_bin, tensilelite_fingerprint = _binary_identity(request.tensilelite_bin, include_python_tree=True)
     return CampaignConfiguration(
@@ -93,9 +78,8 @@ def build_campaign_configuration(
         early_stop_on_convergence=request.early_stop_on_convergence,
         build_timeout_s=request.build_timeout_s,
         runner_timeout_s=request.runner_timeout_s,
-        screening_protocol=screening_protocol,
-        hot_protocol=hot_protocol,
-        stabilization_policy=ScreeningStabilizationPolicy(),
+        screening_protocol=CAMPAIGN_SCREENING_PROTOCOL,
+        hot_protocol=CAMPAIGN_HOT_PROTOCOL,
         leader_stabilization=request.leader_stabilization,
         prepare_workers=profile.default_prepare_workers,
         prepare_wave_batches=profile.default_prepare_wave_batches,
@@ -104,7 +88,4 @@ def build_campaign_configuration(
         compute_unit_count=profile.compute_unit_count,
         workgroup_processor_count=profile.workgroup_processor_count,
         compute_units_per_workgroup_processor=profile.compute_units_per_workgroup_processor,
-        mutation_rate=profile.default_mutation_rate,
-        crossover_rate=profile.default_crossover_rate,
-        random_gene_rate=profile.default_random_gene_rate,
     )

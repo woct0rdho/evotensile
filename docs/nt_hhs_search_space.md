@@ -126,14 +126,14 @@ Shape-dependent failures are recorded as rejected observations for that `(shape,
 
 The search-space module exposes deterministic construction helpers for callers that need fresh candidates. These helpers sample broad domain values, apply linked repairs, and retry until `cheap_constraints()` passes. Generated random candidates balance the compatible TLDS0 and TLDS2 construction branches and enforce proposal-side VALU headroom, but explicit candidates from imports or DB parents can still use any valid domain path.
 
-Search algorithms decide how many candidates to request, which parents to use, and how generated candidates are shortlisted. A proposal declares a global, one-shape, cluster, or shape-set scope. Scoped construction requires global validity plus eligibility for at least one shape in that scope. It never requires the intersection of every shape rule. The scheduler records ineligible `(shape, candidate)` pairs separately. Scope kind and shape IDs are lineage metadata and do not affect candidate identity. Profile-dependent proposal counts, rates, batch sizes, concurrency, surrogate jobs, timeouts, runner paths, physical CU topology, and WGP dispatch count resolve only after the CLI selects a target profile. NT-HHS family helpers are explicitly target-specific rather than exposing a generic profile switch that supports no other target. Search policies are documented separately in `docs/search_algorithms.md`, `docs/search_family_qd.md`, `docs/search_gomea.md`, `docs/search_linkage_learning.md`, `docs/search_operator_portfolio.md`, and `docs/search_surrogate.md`.
+Search algorithms decide how many candidates to request, which parents to use, and how generated candidates are shortlisted. A proposal declares a global, one-shape, cluster, or shape-set scope. Scoped construction requires global validity plus eligibility for at least one shape in that scope. It never requires the intersection of every shape rule. The scheduler records ineligible `(shape, candidate)` pairs separately. Scope kind and shape IDs are lineage metadata and do not affect candidate identity. Profile-dependent proposal counts, rates, batch sizes, concurrency, surrogate jobs, timeouts, runner paths, physical CU topology, and WGP dispatch count resolve only after the CLI selects a target profile. NT-HHS family helpers are explicitly target-specific rather than exposing a generic profile switch that supports no other target. Built-in and custom proposal composition is documented separately in `docs/search_algorithms.md`, `docs/search_family_qd.md`, `docs/search_gomea.md`, `docs/search_linkage_learning.md`, `docs/search_operator_portfolio.md`, and `docs/search_surrogate.md`.
 
 ## Maintenance Checks
 
 Use `summarize-space` to inspect the constructed domain sizes and matrix-instruction macro tiles:
 
 ```bash
-python3 -m evotensile.cli summarize-space --profile gfx1151-nt-hhs
+python3 -m evotensile.cli summarize-space
 ```
 
 Use `proposal-coverage` to check generated candidate coverage without running TensileLite. Coverage reports are used to tune construction helpers and proposal bias without shrinking the underlying domains.

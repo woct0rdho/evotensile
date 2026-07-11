@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from evotensile.profile import DEFAULT_PROFILE
+from evotensile.profile import PROFILES, get_profile
 from evotensile.search.replay import (
     ReplayCostModel,
     load_csv_oracle,
@@ -13,12 +13,14 @@ from evotensile.search.replay import (
     merge_oracle_records,
     simulate_candidate_stream,
 )
+from evotensile.search.surrogate import DEFAULT_SURROGATE_MIN_EVIDENCE
 from evotensile.shapes import parse_shape
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Replay blind candidate streams against exact historical measurements")
     parser.add_argument("--shape", default="8192,8192,1,8192")
+    parser.add_argument("--profile", choices=sorted(PROFILES), default=None)
     parser.add_argument("--oracle-db", action="append", default=[])
     parser.add_argument("--oracle-csv", action="append", default=[])
     parser.add_argument("--stream-db", action="append", default=[])
@@ -30,7 +32,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--time-budget", type=float, default=1200.0)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--pool-window", type=int, default=128)
-    parser.add_argument("--surrogate-min-evidence", type=int, default=24)
+    parser.add_argument(
+        "--surrogate-min-evidence",
+        type=int,
+        default=DEFAULT_SURROGATE_MIN_EVIDENCE,
+    )
     parser.add_argument("--prepare-workers", type=int, default=4)
     parser.add_argument("--prepare-seconds-per-candidate", type=float, default=8.0)
     parser.add_argument("--hot-reserve", type=float, default=60.0)
@@ -51,6 +57,7 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     shape = parse_shape(args.shape)
+    profile = get_profile(args.profile)
     oracle_groups = [
         load_db_oracle(path, shape=shape, benchmark_protocol_hash=args.protocol_hash) for path in args.oracle_db
     ]
@@ -90,8 +97,7 @@ def main() -> int:
             stream,
             oracle=oracle,
             shape=shape,
-            problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
-            benchmark_protocol_hash=args.protocol_hash or DEFAULT_PROFILE.benchmark_protocol_hash(),
+            profile=profile,
             cost=cost,
             seed=seed,
             batch_size=args.batch_size,
@@ -111,7 +117,11 @@ def main() -> int:
         "proof_eligible": not args.diagnostic_pool,
         "oracle_candidates": len(oracle),
         "stream_candidates": len(stream),
-        "cost_model": asdict(cost),
+        "cost_model": {
+            **asdict(cost),
+            "screening_launches": cost.screening_launches,
+            "hot_launches": cost.hot_launches,
+        },
         "results": [result.summary() for result in results],
         "successes": sum(result.reached_target for result in results),
     }

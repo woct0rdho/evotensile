@@ -6,6 +6,7 @@ from textwrap import dedent
 import pytest
 
 from evotensile.artifacts import register_artifact_bundle
+from evotensile.campaign.protocols import CAMPAIGN_SCREENING_PROTOCOL
 from evotensile.database import EvoTensileDB, ValidationInsert
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
@@ -33,7 +34,7 @@ def _prepare_hot_db(tmp_path: Path, *, candidate_count: int = 1):
                 run_id="screening",
                 status="ok",
                 problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
-                benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+                benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(CAMPAIGN_SCREENING_PROTOCOL),
                 time_us=time_us,
                 solution_index=index,
             )
@@ -157,8 +158,7 @@ def _confirm(
         runner_bin=runner,
         shape_id=shape.id,
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
-        screening_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
-        validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
+        screening_protocol=CAMPAIGN_SCREENING_PROTOCOL,
         hot_protocol=protocol,
         top_k=candidate_count,
         admission_deadline=admission_deadline,

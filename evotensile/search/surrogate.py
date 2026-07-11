@@ -370,7 +370,7 @@ def select_surrogate_pool(
     shapes: Sequence[Shape],
     count: int,
     seed: int,
-    min_evidence: int = DEFAULT_SURROGATE_MIN_EVIDENCE,
+    min_evidence: int,
     covering_cold_start: bool = False,
     cold_start_precovered_tokens: set[str] | None = None,
     surrogate_jobs: int,

@@ -33,7 +33,7 @@ Its responsibilities are:
 ## Frozen Configuration
 
 A new campaign writes `campaign_configuration.json` before measurement. One immutable versioned configuration owns:
-- seed, shape, profile, problem identity, proposal mode/counts/operator controls, linkage settings, and profile mutation rates.
+- seed, shape, profile, problem identity, built-in proposal policy/counts/operator controls, linkage settings, and profile mutation rates.
 - screening, validation, probe, adaptive-retiming, stabilization, and hot-confirmation protocols.
 - sample limits, round limits, restart/convergence controls, soft search budget, and confirmation reserve.
 - batch sizes, compile threads, preparation/validation concurrency, cache behavior, timeouts, and explicit physical-CU/WGP topology.

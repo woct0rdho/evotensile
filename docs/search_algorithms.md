@@ -15,7 +15,7 @@ Search algorithms only propose candidates. They do not select final winners dire
 
 `schedule-batches` is the main search entry point:
 - Resolve the target profile, shapes, benchmark protocol, and SQLite DB.
-- Propose candidates with the selected proposal mode, optional adaptive operator portfolio, and optional oversized surrogate pool.
+- Propose candidates with built-in family-QD or an explicitly supplied custom provider.
 - Register candidates and shapes in the DB.
 - Record immediate shape-dependent rule rejections.
 - Plan missing `(shape, candidate)` observations from reusable cache status.
@@ -28,28 +28,15 @@ Search algorithms only propose candidates. They do not select final winners dire
 
 Timing begins only after the currently admitted preparation wave drains. This wave barrier prevents benchmark overlap with compilation or correctness verification on integrated CPU/GPU systems while allowing coordinator feedback and soft-budget admission between waves.
 
-## Proposal Modes
+## Proposal Providers
 
-`propose_candidates()` supports these proposal modes:
+With no custom provider, proposal-generating commands call the built-in `family_qd_provider()` using `FamilyQDPolicy`. The immutable policy version `gfx1151-grid-v1` and every resolved policy field are recorded in metadata. The policy combines family-aware initialization and archives, random exploration, semantic mutation, categorical DE, GOMEA, learned linkage, adaptive allocation, covering, surrogate shortlisting, and cost-aware preparation. It does not change target-profile resources, validity, measurement identity, or cache semantics.
 
-```text
-random
-seed-random
-local
-seed-random-local
-de
-seed-random-de
-gomea
-seed-random-gomea
-evolutionary
-family-qd
-```
+`--proposal-script PATH.py` loads trusted Python code in process and calls `propose(context)`. An optional `--proposal-config PATH.json` supplies one JSON object through `context.config`. The core finalizer owns candidate completeness, global and scoped validity, deduplication, parent existence, generated/preserved classification, selected-subset validation, lineage scope, persistence, and audit metadata.
 
-The default profile proposal is `seed-random-gomea`.
+`evotensile.proposals` is the stable installed-package import surface for custom compositions. It re-exports maintained random, mutation, DE, GOMEA, family archive, linkage, covering, operator-allocation, and surrogate building blocks without adding wrapper behavior. Implementation modules under `evotensile.search` remain internal organization details. See `docs/custom_proposals.md` for concise providers and the reproducibility limits of arbitrary Python scripts.
 
-Named search policies are opt-in mechanism bundles, separate from target profiles. `--search-policy gfx1151-grid-v1` selects `family-qd`, an `8x` surrogate pool, adaptive operator/group/donor allocation, micro-exhaustive neighborhoods, covering cold start, measured-cost operator credit, and cost-aware preparation. Explicit low-level flags, including `--no-*` overrides and zero proposal counts, take precedence. Metadata records the policy name and every resolved policy-controlled value. The policy does not change profile resources, validity, measurement identity, or generic defaults.
-
-`family-qd` is the family-aware quality-diversity proposal mode. Its descriptors, archive, and stratified initialization are documented in `docs/search_family_qd.md`.
+## Elementary Building Blocks
 
 ### Proposal Scope
 
@@ -65,9 +52,9 @@ The current NT HHS generator samples the compatible TLDS0 and TLDS2 construction
 
 Local mutation starts from DB elites and independently resamples each domain gene with probability `--mutation-rate` (`0.25` by default). Each child is checked through `make_candidate()`, and invalid children are discarded.
 
-This mode is simple and useful around measured elites, but it does not preserve multi-field couplings as strongly as GOMEA.
+This operator is simple and useful around measured elites, but it does not preserve multi-field couplings as strongly as GOMEA.
 
-When `family-qd` uses `--adaptive-operators`, the broad mutation arm is replaced by semantic mutation. Semantic mutation changes one mechanical group and only one or two genes before linked repair, producing much smaller local steps. It is documented in `docs/search_operator_portfolio.md`.
+The built-in family-QD policy uses semantic mutation when adaptive operators are enabled. Semantic mutation changes one mechanical group and only one or two genes before linked repair, producing much smaller local steps. It is documented in `docs/search_operator_portfolio.md`.
 
 ### Categorical Differential Evolution
 
@@ -87,13 +74,9 @@ GOMEA mixes linked groups of genes from elite candidates. The scheduler splits t
 
 GOMEA mechanics are documented in `docs/search_gomea.md`. Learned linkage is documented in `docs/search_linkage_learning.md`.
 
-### Evolutionary
-
-`evolutionary` combines random candidates, local mutations, categorical DE, and GOMEA into one proposal set. All candidates are deduplicated by hash before scheduling.
-
 ### Family QD
 
-`family-qd` adds a family-aware quality-diversity layer:
+The built-in family-QD provider adds a family-aware quality-diversity layer:
 - It computes coarse profile-specific family descriptors from candidate structure.
 - It uses descriptor-stratified random generation with repeated family occupancy and one retry for negative-only cells.
 - It loads a DB-derived archive scored by validation-passed shape-local rank percentiles.
@@ -106,7 +89,7 @@ Family descriptors and archive entries are proposal metadata only. They do not s
 
 ## Adaptive Operator Portfolio
 
-`--adaptive-operators` is currently used with `family-qd`. It separates variation into four measured arms:
+The built-in family-QD policy enables adaptive operators by default. It separates variation into four measured arms:
 
 ```text
 semantic-mutation
@@ -125,11 +108,11 @@ The portfolio changes proposal counts and proposal ordering only. It does not ch
 
 After at least `--surrogate-min-evidence` unique varied candidates on a shape, a shape-local ExtraTrees model predicts log median time and ensemble disagreement from candidate, shape, tile, vectorization, and resource features. Multi-shape acquisition compares predictions with each shape incumbent and separates complementary specialist gain, broad generalist regret, epistemic uncertainty, unresolved-shape mechanics, family diversity, and random exploration. Before any shape has enough evidence, multi-shape selection combines per-shape mechanical priority with family-diverse round-robin sampling.
 
-Archive and transfer parents are preserved outside the generated-candidate shortlist. Before enough model evidence exists, an opt-in one-shape covering selector can use decomposed mechanical coverage instead of the default family round-robin fallback. The default multiplier is `1`, so oversized shortlisting remains opt-in. See `docs/search_surrogate.md` and `docs/search_mechanical_coverage.md`.
+Archive and transfer parents are preserved outside the generated-candidate shortlist. Before enough model evidence exists, the one-shape fallback can use decomposed mechanical coverage instead of family round-robin selection. `FamilyQDPolicy` owns the built-in multiplier, evidence threshold, and covering choice. CLI help and metadata expose their effective values. Custom providers pass these choices explicitly to `select_surrogate_pool()`. See `docs/search_surrogate.md` and `docs/search_mechanical_coverage.md`.
 
 ## Elite And Transfer Sources
 
-Proposal modes that need one-shape parents load that shape's validation-passed DB ranking directly. Multi-shape parent selection never pools absolute latency. Half of the available parent lane is filled round-robin from shape-local specialist rankings. The remainder prefers candidates with broad measured coverage and low mean incumbent-normalized regret. One-shape search is the one-ranking special case.
+The built-in provider and custom providers that call `ranked_elites()` load one-shape parents from that shape's validation-passed DB ranking directly. Multi-shape parent selection never pools absolute latency. Half of the available parent lane is filled round-robin from shape-local specialist rankings. The remainder prefers candidates with broad measured coverage and low mean incumbent-normalized regret. One-shape search is the one-ranking special case.
 
 For scoped schedules, the scheduler can also seed from nearest previously tuned shapes:
 - `--transfer-shapes` controls the nearest source-shape depth considered independently for each target.
@@ -160,13 +143,13 @@ Each batch writes:
 - `config.manifest.csv`: intended shape/candidate/solution mapping.
 - `run/` or a unique run directory for build and structured-runner outputs.
 
-The production path requires `--runner-bin` unless using `--dry-run` or `--generate-only`. `--prepare-workers` controls parallel build/map/diagnostic/validation work. `--validation-workers` caps concurrent validators, `--prepare-wave-batches` bounds each admitted wave, and `--cost-aware-scheduling` orders heavier predicted preparation batches first without changing timing priority. After each wave's preparation workers exit, its benchmarks run serially. A shared/exclusive APU gate at `EVOTENSILE_APU_LOCK_PATH` protects this invariant across cooperating processes and direct runner invocations.
+The core `execute_schedule()` boundary requires an effective runner path for execution. The CLI resolves that path from the selected target profile unless `--runner-bin` overrides it. Dry-run and generation-only paths do not launch the runner. `--prepare-workers` controls parallel build/map/diagnostic/validation work and defaults to the selected profile's resource cap. `--validation-workers` caps concurrent validators, `--prepare-wave-batches` bounds each admitted wave, and `--cost-aware-scheduling` orders heavier predicted preparation batches first without changing timing priority. After each wave's preparation workers exit, its benchmarks run serially. A shared/exclusive APU gate at `EVOTENSILE_APU_LOCK_PATH` protects this invariant across cooperating processes and direct runner invocations.
 
-Without stable compile caching, the default candidate batch size is chosen by a throughput heuristic that keeps enough candidate/shape batches to saturate available workers while respecting the profile's max candidate batch size. Stable caching forces singleton candidate libraries for composable reuse. The gfx1151 profile uses 32 parallel preparation workers, so singleton libraries retain broad compile parallelism while validation remains capped at one worker.
+Stable compile caching is enabled by default and forces singleton candidate libraries for composable reuse across proposal cohorts. With `--no-compile-cache`, the candidate batch size defaults to a throughput heuristic that keeps enough candidate/shape batches to saturate the selected profile's preparation workers while respecting its maximum candidate batch size.
 
 ## Adaptive Sampling
 
-Adaptive sampling is enabled by default. After parallel compilation and one-time validation, every pair receives one probe launch. Candidates confidently slower than the shape reference by more than the default `4*` factor stop there. Provisional survivors receive two additional launches to reach the `3*1` probe target. Survivors then receive the main `--num-benchmarks` budget and existing confidence-based top-ups. Probe, main, and adaptive rounds reuse the same prepared artifacts and never recompile or revalidate.
+Adaptive sampling is enabled by default. After parallel compilation and one-time validation, every pair receives the initial probe budget. Confidently catastrophic candidates stop after that stage. Provisional survivors receive the remaining probe budget and then the main timing budget plus confidence-based top-ups. `ProbePolicy` and `AdaptivePolicy` own the current defaults, which are exposed by `--help` and recorded in schedule metadata. Probe, main, and adaptive rounds reuse the same prepared artifacts and never recompile or revalidate.
 
 Probe timing has a distinct protocol identity, so it cannot enter production ranking, family archives, transfer, or learned linkage. `--fixed-sampling` disables both probe racing and adaptive top-ups.
 
@@ -179,13 +162,13 @@ Use `--fixed-sampling` for deterministic fixed-budget utility runs or debugging.
 `repair-outliers` is a second-stage search command that detects shapes whose current best GFLOP/s is below a robust nearest-neighbor envelope. It reruns only those shapes with seeds from:
 - the outlier's current winner.
 - nearest-shape winners and near-winners.
-- the selected proposal mode.
+- the built-in family-QD provider or an explicitly supplied custom provider.
 
 Outlier detection and repair math are documented in `docs/search_outlier_repair.md`.
 
 ## Excluded From Current Search
 
-The implemented search stack is cache-aware random/evolutionary/family-QD generation, optional adaptive operator allocation, optional ExtraTrees shortlisting, structured measurement, and adaptive sampling.
+The implemented search stack is built-in family-QD plus supported elementary proposal APIs, optional custom Python composition, structured measurement, and adaptive sampling.
 
 Not currently implemented:
 - family-level measurement bandits.

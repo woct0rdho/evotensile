@@ -166,10 +166,7 @@ Real campaign:
 ```bash
 timeout --signal=TERM --kill-after=60s 1800s python scripts/run_blind_one_shape.py \
   --output out/blind-seed-1 \
-  --shape 8192,8192,1,8192 \
-  --seed 1 \
-  --time-budget 1200 \
-  --runner-bin build/evotensile-structured-runner
+  --seed 1
 ```
 
 Here `1200s` is the campaign's soft admission budget. The `1800s` outer timeout is intentionally longer so an admitted round or finalist can use its configured subprocess timeout and the driver can checkpoint and clean up. Increase this guard when worst-case build or confirmation time exceeds the default margin.

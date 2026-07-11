@@ -27,7 +27,7 @@ The relevant controls are:
 
 `--covering-cold-start` changes only the one-shape evidence-free fallback and is independent of model activation.
 
-The default multiplier is `1`, so existing proposal behavior is unchanged unless shortlisting is requested. The default evidence threshold is `24` unique candidates per shape. A shape model also requires variation in at least four candidate genes, so repeated rows or one candidate measured across many shapes cannot activate the surrogate.
+`FamilyQDPolicy` owns the built-in multiplier and minimum-evidence threshold. CLI help and proposal metadata expose their effective values. Custom providers pass `count`, `min_evidence`, and the other selection inputs explicitly to `select_surrogate_pool()`. A shape model also requires variation in at least four candidate genes, so repeated rows or one candidate measured across many shapes cannot activate the surrogate.
 
 For example, a multiplier of `8` generates eight times the configured random and variation counts, then returns the original requested measurement count plus preserved archive or transfer candidates.
 
@@ -113,7 +113,7 @@ This mixture prevents the model from converting early noisy evidence into a full
 
 A shape without enough unique varied candidates remains unresolved and gets no fitted model. If no shape is modeled, multi-shape selection uses per-shape mechanical-priority round-robin for half the budget and family diversity for the remainder. If only some shapes are modeled, the unresolved-shape lane remains separate from model exploitation and uncertainty.
 
-For an explicitly enabled one-shape covering cold start, the fallback uses the quality-weighted mechanical covering selector from `docs/search_mechanical_coverage.md`. Exact MatrixInstruction identities are not coverage tokens. This policy changes only which generated candidates are shortlisted and preserves the same measurement budget.
+When one-shape covering cold start is enabled by the active policy, the fallback uses the quality-weighted mechanical covering selector from `docs/search_mechanical_coverage.md`. The built-in family-QD policy enables it. Custom providers choose explicitly. Exact MatrixInstruction identities are not coverage tokens. This policy changes only which generated candidates are shortlisted and preserves the same measurement budget.
 
 ## Scheduler Integration
 

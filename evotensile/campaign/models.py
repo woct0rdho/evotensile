@@ -4,13 +4,8 @@ from typing import TypedDict
 
 from evotensile.adaptive_retime import AdaptivePolicy, ProbePolicy
 from evotensile.candidate import Candidate, stable_hash
+from evotensile.proposal import FamilyQDPolicy
 from evotensile.protocol import BenchmarkProtocol
-from evotensile.search.acquisition import (
-    DEFAULT_LINKAGE_MAX_CLUSTERS,
-    DEFAULT_LINKAGE_MIN_SAMPLES,
-    DEFAULT_LINKAGE_ORDINAL_BINS,
-    DEFAULT_LINKAGE_TRUNCATION_TAU,
-)
 from evotensile.search.campaign_control import ProposalEvent
 from evotensile.search.screening_stabilize import ScreeningStabilizationPolicy
 
@@ -54,7 +49,14 @@ class CampaignConfiguration:
     runner_timeout_s: float
     screening_protocol: BenchmarkProtocol
     hot_protocol: BenchmarkProtocol
-    adaptive_policy: AdaptivePolicy = field(default_factory=AdaptivePolicy)
+    prepare_workers: int
+    prepare_wave_batches: int
+    validation_workers: int
+    surrogate_jobs: int
+    compute_unit_count: int
+    workgroup_processor_count: int
+    compute_units_per_workgroup_processor: int
+    adaptive_policy: AdaptivePolicy = field(default_factory=lambda: AdaptivePolicy(max_rounds=0))
     probe_policy: ProbePolicy = field(default_factory=ProbePolicy)
     stabilization_policy: ScreeningStabilizationPolicy = field(default_factory=ScreeningStabilizationPolicy)
     cold_candidates: int = 48
@@ -70,14 +72,6 @@ class CampaignConfiguration:
     candidate_batch_size: int = 1
     shape_batch_size: int = 1
     min_samples: int = 2
-    adaptive_max_rounds: int = 0
-    prepare_workers: int = 32
-    prepare_wave_batches: int = 32
-    validation_workers: int = 1
-    surrogate_jobs: int = 1
-    compute_unit_count: int = 40
-    workgroup_processor_count: int = 20
-    compute_units_per_workgroup_processor: int = 2
     compile_threads: int = 1
     keep_going: bool = True
     compile_cache: bool = True
@@ -93,14 +87,13 @@ class CampaignConfiguration:
     convergence_minimum_improvement_fraction: float = 0.0025
     convergence_maximum_mean_hamming: float = 4.0
     hot_top_k: int = 8
-    proposal_mode: str = "family-qd"
-    mutation_rate: float = 0.25
-    crossover_rate: float = 0.8
-    random_gene_rate: float = 0.1
-    linkage_truncation_tau: float = DEFAULT_LINKAGE_TRUNCATION_TAU
-    linkage_min_samples: int = DEFAULT_LINKAGE_MIN_SAMPLES
-    linkage_max_clusters: int = DEFAULT_LINKAGE_MAX_CLUSTERS
-    linkage_ordinal_bins: int = DEFAULT_LINKAGE_ORDINAL_BINS
+    mutation_rate: float = FamilyQDPolicy.mutation_rate
+    crossover_rate: float = FamilyQDPolicy.crossover_rate
+    random_gene_rate: float = FamilyQDPolicy.random_gene_rate
+    linkage_truncation_tau: float = FamilyQDPolicy.linkage_truncation_tau
+    linkage_min_samples: int = FamilyQDPolicy.linkage_min_samples
+    linkage_max_clusters: int = FamilyQDPolicy.linkage_max_clusters
+    linkage_ordinal_bins: int = FamilyQDPolicy.linkage_ordinal_bins
     transfer_shape_count: int = 0
     transfer_per_shape: int = 0
     adaptive_operators: bool = True

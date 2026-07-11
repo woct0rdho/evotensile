@@ -9,7 +9,6 @@ from evotensile.search.gomea import (
     neighborhood_group_names,
 )
 from evotensile.search.learned_linkage import LinkageModel
-from evotensile.search.random_search import initial_random_batch
 from evotensile.search_space import (
     DOMAINS,
     MATRIX_INSTRUCTIONS,
@@ -21,6 +20,7 @@ from evotensile.search_space import (
     macro_tile,
     make_candidate,
     random_candidate,
+    random_candidates,
     repair_linked_overrides,
 )
 from evotensile.shapes import Shape
@@ -471,7 +471,7 @@ def test_encoding_accepts_nt_hhs_values():
 
 
 def test_differential_evolution_generates_valid_candidates():
-    parents = initial_random_batch(4, seed=7)
+    parents = random_candidates(4, seed=7)
     proposed = differential_evolution_candidates(parents, count=8, seed=11, exclude={parent.hash for parent in parents})
 
     assert proposed
@@ -481,13 +481,13 @@ def test_differential_evolution_generates_valid_candidates():
 
 
 def test_differential_evolution_requires_four_supplied_parents():
-    parents = initial_random_batch(3, seed=7)
+    parents = random_candidates(3, seed=7)
 
     assert differential_evolution_candidates(parents, count=8, seed=11) == []
 
 
 def test_gomea_uses_nt_hhs_linkage_groups_with_random_parents():
-    parents = initial_random_batch(12, seed=1151)
+    parents = random_candidates(12, seed=1151)
     shape = Shape(8192, 8192, 1, 8192)
     proposed = gomea_candidates(parents, count=12, seed=1152, target_shapes=[shape])
 
@@ -500,7 +500,7 @@ def test_gomea_uses_nt_hhs_linkage_groups_with_random_parents():
 
 
 def test_gomea_accepts_learned_linkage_models():
-    parents = initial_random_batch(12, seed=1151)
+    parents = random_candidates(12, seed=1151)
     leader = candidate_to_genome(parents[0])
     model = LinkageModel(
         leader_genome=leader,

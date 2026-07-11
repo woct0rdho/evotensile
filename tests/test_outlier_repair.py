@@ -175,7 +175,7 @@ def test_repair_outliers_cli_writes_metadata(tmp_path: Path):
             "0",
             "--de-count",
             "0",
-            "--dry-run",
+            "--generate-only",
         ]
     )
 
@@ -184,4 +184,13 @@ def test_repair_outliers_cli_writes_metadata(tmp_path: Path):
     assert metadata["outliers"][0]["shape_id"] == target.id
     assert metadata["repair_seed_candidates"] == 2
     assert metadata["planned_missing_pairs"] >= 1
-    assert metadata["executed_batches"] == []
+    assert metadata["executed_batches"]
+    assert metadata["executed_batches"][0]["phase"] == "generated"
+    assert metadata["executed_batches"][0]["ingest"] == {
+        "errors": [],
+        "inserted": 0,
+        "rejected": 0,
+        "status_counts": {},
+        "unmapped": 0,
+    }
+    assert metadata["status_counts"] == {}

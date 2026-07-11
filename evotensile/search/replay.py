@@ -10,10 +10,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from evotensile.adaptive_retime import load_timing_stats
+from evotensile.campaign.protocols import CAMPAIGN_HOT_PROTOCOL, CAMPAIGN_SCREENING_PROTOCOL, protocol_launches
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import BenchmarkEventInsert, EvoTensileDB, ValidationInsert
 from evotensile.metrics import gflops_from_us
-from evotensile.profile import DEFAULT_PROFILE
+from evotensile.profile import TargetProfile
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.search.campaign_control import convergence_detected, population_diagnostics, split_budget
 from evotensile.search.evidence import load_proposal_evidence_snapshot
@@ -38,20 +39,20 @@ class ReplayCostModel:
     prepare_seconds_per_candidate: float = 8.0
     probe_launches: int = 3
     initial_probe_launches: int = 1
-    screening_launches: int = 3
-    hot_launches: int = 120
     hot_reserve_s: float = 60.0
     probe_max_slowdown_factor: float = 4.0
     probe_min_survivors: int = 8
-    stabilization_protocol: BenchmarkProtocol = field(
-        default_factory=lambda: BenchmarkProtocol(
-            num_warmups=1,
-            num_benchmarks=2,
-            enqueues_per_sync=1,
-            syncs_per_benchmark=1,
-        )
-    )
+    screening_protocol: BenchmarkProtocol = CAMPAIGN_SCREENING_PROTOCOL
+    hot_protocol: BenchmarkProtocol = CAMPAIGN_HOT_PROTOCOL
     stabilization_policy: ScreeningStabilizationPolicy = field(default_factory=ScreeningStabilizationPolicy)
+
+    @property
+    def screening_launches(self) -> int:
+        return protocol_launches(self.screening_protocol)
+
+    @property
+    def hot_launches(self) -> int:
+        return protocol_launches(self.hot_protocol)
 
 
 @dataclass
@@ -231,15 +232,16 @@ def _insert_screening_evidence(
     *,
     shape: Shape,
     record: OracleRecord,
-    problem_type_hash: str,
-    benchmark_protocol_hash: str,
+    profile: TargetProfile,
+    screening_protocol: BenchmarkProtocol,
     source_ref: str,
-    samples: int = 2,
+    samples: int | None = None,
 ) -> None:
     if record.screening_gflops is None or record.screening_gflops <= 0.0:
         return
     time_us = 2.0 * shape.m * shape.n * shape.batch * shape.k / (record.screening_gflops * 1e3)
-    validation_protocol_hash = DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
+    validation_protocol_hash = screening_protocol.validation_protocol_hash()
+    samples = screening_protocol.num_benchmarks if samples is None else samples
     db.insert_validations(
         [
             ValidationInsert(
@@ -247,7 +249,7 @@ def _insert_screening_evidence(
                 candidate_hash=record.candidate.hash,
                 run_id=source_ref,
                 status="passed",
-                problem_type_hash=problem_type_hash,
+                problem_type_hash=profile.problem_type_hash,
                 validation_protocol_hash=validation_protocol_hash,
                 source_kind="replay",
             )
@@ -260,8 +262,8 @@ def _insert_screening_evidence(
                 candidate_hash=record.candidate.hash,
                 run_id=source_ref,
                 status="ok",
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
+                problem_type_hash=profile.problem_type_hash,
+                benchmark_protocol_hash=profile.benchmark_protocol_hash(screening_protocol),
                 source_kind="replay",
                 samples_us=(time_us,) * samples,
                 validation_protocol_hash=validation_protocol_hash,
@@ -278,8 +280,8 @@ def _select_replay_batch(
     pending: Sequence[Candidate],
     *,
     db: EvoTensileDB,
-    problem_type_hash: str,
-    benchmark_protocol_hash: str,
+    profile: TargetProfile,
+    screening_protocol: BenchmarkProtocol,
     shape: Shape,
     count: int,
     seed: int,
@@ -290,8 +292,8 @@ def _select_replay_batch(
 ) -> list[Candidate]:
     evidence = load_proposal_evidence_snapshot(
         db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
+        problem_type_hash=profile.problem_type_hash,
+        benchmark_protocol_hash=profile.benchmark_protocol_hash(screening_protocol),
         shapes=[shape],
     )
     if not isolated or island_count <= 1:
@@ -304,7 +306,7 @@ def _select_replay_batch(
             min_evidence=min_evidence,
             covering_cold_start=covering_cold_start,
             surrogate_jobs=1,
-            workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
+            workgroup_processor_count=profile.workgroup_processor_count,
         )
     selected: list[Candidate] = []
     budgets = split_budget(count, island_count)
@@ -322,7 +324,7 @@ def _select_replay_batch(
                 min_evidence=min_evidence,
                 covering_cold_start=covering_cold_start,
                 surrogate_jobs=1,
-                workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
+                workgroup_processor_count=profile.workgroup_processor_count,
             )
         )
     if len(selected) < min(count, len(pending)):
@@ -336,13 +338,12 @@ def simulate_candidate_stream(
     *,
     oracle: Mapping[str, OracleRecord],
     shape: Shape,
-    problem_type_hash: str,
-    benchmark_protocol_hash: str,
+    profile: TargetProfile,
     cost: ReplayCostModel,
     seed: int,
+    surrogate_min_evidence: int,
     batch_size: int = 32,
     pool_window: int = 128,
-    surrogate_min_evidence: int = 24,
     hot_finalists: int = 8,
     target_hot_gflops: float | None = None,
     covering_cold_start: bool = False,
@@ -355,7 +356,7 @@ def simulate_candidate_stream(
     with tempfile.TemporaryDirectory(prefix="evotensile-replay-") as directory:
         db = EvoTensileDB.connect(
             Path(directory) / "replay.sqlite",
-            environment_compatibility_tag=DEFAULT_PROFILE.environment_compatibility_tag,
+            environment_compatibility_tag=profile.environment_compatibility_tag,
         )
         db.init()
         db.register_shapes([shape])
@@ -379,8 +380,8 @@ def simulate_candidate_stream(
             selected = _select_replay_batch(
                 list(pending.values()),
                 db=db,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
+                profile=profile,
+                screening_protocol=cost.screening_protocol,
                 shape=shape,
                 count=min(batch_size, len(pending)),
                 seed=seed + round_index,
@@ -462,8 +463,8 @@ def simulate_candidate_stream(
                         db,
                         shape=shape,
                         record=record,
-                        problem_type_hash=problem_type_hash,
-                        benchmark_protocol_hash=benchmark_protocol_hash,
+                        profile=profile,
+                        screening_protocol=cost.screening_protocol,
                         source_ref=replay_source_ref,
                     )
                     if incumbent_gflops is None or record.screening_gflops > incumbent_gflops:
@@ -475,15 +476,15 @@ def simulate_candidate_stream(
             if leader_stabilization:
                 stats_by_shape = load_timing_stats(
                     db,
-                    problem_type_hash=problem_type_hash,
-                    benchmark_protocol_hashes=[benchmark_protocol_hash],
+                    problem_type_hash=profile.problem_type_hash,
+                    benchmark_protocol_hashes=[profile.benchmark_protocol_hash(cost.screening_protocol)],
                     min_samples=1,
                     shape_ids={shape.id},
                 )
                 stabilization_plan = plan_screening_stabilization(
                     stats_by_shape,
                     shapes=[shape],
-                    protocol=cost.stabilization_protocol,
+                    protocol=cost.screening_protocol,
                     policy=cost.stabilization_policy,
                 )
                 for request in stabilization_plan.requests:
@@ -491,7 +492,12 @@ def simulate_candidate_stream(
                     if record is None or record.screening_gflops is None or record.screening_gflops <= 0.0:
                         continue
                     launch_seconds = _launch_seconds(shape, record.screening_gflops)
-                    topup_cost = (request.remaining_samples + 1) * launch_seconds
+                    topup_cost = (
+                        cost.screening_protocol.num_warmups
+                        + request.remaining_samples
+                        * cost.screening_protocol.enqueues_per_sync
+                        * cost.screening_protocol.syncs_per_benchmark
+                    ) * launch_seconds
                     if result.simulated_time_s + topup_cost > search_time_limit:
                         continue
                     result.simulated_time_s += topup_cost
@@ -499,8 +505,8 @@ def simulate_candidate_stream(
                         db,
                         shape=shape,
                         record=record,
-                        problem_type_hash=problem_type_hash,
-                        benchmark_protocol_hash=benchmark_protocol_hash,
+                        profile=profile,
+                        screening_protocol=cost.screening_protocol,
                         source_ref=replay_source_ref,
                         samples=request.remaining_samples,
                     )
@@ -511,7 +517,7 @@ def simulate_candidate_stream(
             diagnostics = population_diagnostics(
                 selected,
                 shape,
-                workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
+                workgroup_processor_count=profile.workgroup_processor_count,
             )
             result.trace.append(
                 {
@@ -541,8 +547,8 @@ def simulate_candidate_stream(
         ranked_hashes = [
             summary.candidate_hash
             for summary in db.rank_benchmarks(
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
+                problem_type_hash=profile.problem_type_hash,
+                benchmark_protocol_hash=profile.benchmark_protocol_hash(cost.screening_protocol),
                 shape_id=shape.id,
                 min_samples=2,
                 limit=hot_finalists,
