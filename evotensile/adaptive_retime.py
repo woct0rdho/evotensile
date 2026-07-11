@@ -142,7 +142,7 @@ class ProbePolicy:
 @dataclass(frozen=True)
 class AdaptivePolicy:
     epsilon_pct: float = 2.0
-    confidence: float = 0.95
+    confidence: float = 0.90
     min_retime_samples: int = 20
     max_retime_samples: int = 80
     sample_step: int = 10

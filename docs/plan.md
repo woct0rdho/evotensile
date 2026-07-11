@@ -132,7 +132,7 @@ Compilation artifacts should remain candidate-centric and reusable across promot
 
 ### Workload And Cost Allocation
 
-For application-derived workloads, shape priority should reflect `call_count × baseline_latency`, predicted improvement headroom, uncertainty, and expected evaluation cost. Low-contribution shapes may be deferred or omitted only in an explicitly workload-weighted mode. A fixed GridBased coverage campaign must continue to evaluate every required shape.
+For application-derived workloads, shape priority should reflect `call_count * baseline_latency`, predicted improvement headroom, uncertainty, and expected evaluation cost. Low-contribution shapes may be deferred or omitted only in an explicitly workload-weighted mode. A fixed GridBased coverage campaign must continue to evaluate every required shape.
 
 Preparation cost should be predicted from observed build, validation, candidate-count, and resource-complexity history. Parallel preparation should use longest-processing-time-first ordering to reduce the compile/validation barrier. Serialized benchmark work should be ordered by expected improvement or information per second, and campaign admission should reserve enough measured time for finalist confirmation and outlier repair.
 

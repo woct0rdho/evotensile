@@ -25,7 +25,7 @@ sample_step = 2
 min_timed_duration_us = 100000
 ```
 
-The campaign may override these values in its frozen policy.
+The campaign persists these values in its immutable campaign configuration.
 
 ## Contender Selection
 
@@ -35,8 +35,8 @@ For contender `c` and current leader `b`:
 
 ```text
 gap_log = score_c - score_b
-combined_se = sqrt(SE_c² + SE_b²)
-ci_low_log = gap_log - z × combined_se
+combined_se = sqrt(SE_c^2 + SE_b^2)
+ci_low_log = gap_log - z * combined_se
 ```
 
 The leader is always eligible. Another contender is eligible only when its lower confidence bound does not prove it slower than the leader by more than `contender_epsilon_pct`.
@@ -50,7 +50,7 @@ The minimum accumulated timing-duration target is converted into samples using t
 ```text
 duration_target = ceil(
     min_timed_duration_us /
-    (median_time_us × enqueues_per_sync × syncs_per_benchmark)
+    (median_time_us * enqueues_per_sync * syncs_per_benchmark)
 )
 ```
 
@@ -82,7 +82,7 @@ Each top-up run:
 - records phase `screening_stabilization` in the `runs` table.
 - validates row identity, sample count, solution index, timing fields, and runner return code before insertion.
 
-A campaign deadline can shorten the runner timeout. Requests without compatible validation/artifacts, requests that miss the deadline, and failed result ingestion are reported as skipped or errors. They do not create reusable negative candidate evidence.
+A campaign soft deadline prevents admission of later stabilization groups, but a group admitted before it retains the configured runner timeout and may finish afterward. Requests without compatible validation/artifacts, requests not admitted before the deadline, and failed result ingestion are reported as skipped or errors. They do not create reusable negative candidate evidence.
 
 ## Search Integration
 

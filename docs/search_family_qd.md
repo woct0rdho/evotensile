@@ -97,7 +97,9 @@ The `family-qd` proposal mode combines:
 - GOMEA neighborhood trials.
 - two-parent GOMEA mixing.
 
-Family archive elites are inserted before generated proposals and are preserved when an oversized surrogate pool is shortlisted. Existing archive candidates are normally cache hits, so retaining them as parents does not imply repeating their measurements.
+Family archive elites are inserted before generated proposals and are preserved when an oversized surrogate pool is shortlisted. `elite_count` is a global cap on the preserved family archive returned to one proposal call. Per-family diversity remains bounded separately by the archive's per-cell limit. Existing archive candidates are normally cache hits, so retaining them as parents does not imply repeating their measurements.
+
+`propose_candidates()` returns explicit `preserved`, `generated`, and `selected` collections. Preserved entries include intentional parents and any generated hash already registered in the DB. Generated entries are novel hashes produced by the call before optional surrogate shortlisting. Selected entries are the exact candidates passed to scheduling.
 
 When adaptive operators are enabled, two-parent GOMEA chooses a donor from the base candidate's family with probability `0.8` when a compatible donor exists. This keeps recombination local enough to preserve a basin while still allowing cross-family exploration.
 

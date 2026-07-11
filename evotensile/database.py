@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cache import POSITIVE_CACHE_STATUSES, REUSABLE_CACHE_STATUSES, CacheKey
+from .cache import NEGATIVE_CACHE_STATUSES, POSITIVE_CACHE_STATUSES, CacheKey
 from .candidate import Candidate, Shape
 from .metrics import gflops_from_us
 
@@ -90,6 +90,17 @@ class CandidateArtifactRecord:
 class _TimingBucket:
     shape: Shape
     time_us: list[float]
+
+
+@dataclass(frozen=True)
+class BenchmarkEvidenceState:
+    ok_samples: int
+    resolved_status: str | None
+    latest_negative_eval_id: int | None
+
+    @property
+    def reusable_negative(self) -> bool:
+        return self.ok_samples == 0 and self.resolved_status in NEGATIVE_CACHE_STATUSES
 
 
 @dataclass(frozen=True)
@@ -351,56 +362,76 @@ class EvoTensileDB:
         validation: str | None = None,
         solution_index: int | None = None,
     ) -> None:
-        with self.connection() as con:
-            con.execute(
-                """
-                INSERT INTO evaluations
-                  (problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
-                   run_id, status, time_us, validation, solution_index, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    problem_type_hash,
-                    benchmark_protocol_hash,
-                    shape_id,
-                    candidate_hash,
-                    run_id,
-                    status,
-                    time_us,
-                    validation,
-                    solution_index,
-                    time.time(),
-                ),
-            )
+        evaluation = EvaluationInsert(
+            shape_id=shape_id,
+            candidate_hash=candidate_hash,
+            run_id=run_id,
+            status=status,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            time_us=time_us,
+            validation=validation,
+            solution_index=solution_index,
+        )
+        self.insert_evaluations([evaluation])
 
     def insert_evaluations(self, evaluations: list[EvaluationInsert]) -> None:
         if not evaluations:
             return
         now = time.time()
         with self.connection() as con:
-            con.executemany(
-                """
-                INSERT INTO evaluations
-                  (problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
-                   run_id, status, time_us, validation, solution_index, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        evaluation.problem_type_hash,
-                        evaluation.benchmark_protocol_hash,
-                        evaluation.shape_id,
-                        evaluation.candidate_hash,
-                        evaluation.run_id,
-                        evaluation.status,
-                        evaluation.time_us,
-                        evaluation.validation,
-                        evaluation.solution_index,
-                        now,
+            for evaluation in evaluations:
+                values = (
+                    evaluation.problem_type_hash,
+                    evaluation.benchmark_protocol_hash,
+                    evaluation.shape_id,
+                    evaluation.candidate_hash,
+                    evaluation.run_id,
+                    evaluation.status,
+                    evaluation.time_us,
+                    evaluation.validation,
+                    evaluation.solution_index,
+                    now,
+                )
+                if evaluation.status in NEGATIVE_CACHE_STATUSES:
+                    con.execute(
+                        """
+                        INSERT INTO evaluations
+                          (problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
+                           run_id, status, time_us, validation, solution_index, created_at)
+                        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        WHERE NOT EXISTS (
+                          SELECT 1 FROM evaluations
+                          WHERE problem_type_hash = ?
+                            AND benchmark_protocol_hash = ?
+                            AND shape_id = ?
+                            AND candidate_hash = ?
+                            AND run_id IS ?
+                            AND status = ?
+                            AND solution_index IS ?
+                        )
+                        """,
+                        (
+                            *values,
+                            evaluation.problem_type_hash,
+                            evaluation.benchmark_protocol_hash,
+                            evaluation.shape_id,
+                            evaluation.candidate_hash,
+                            evaluation.run_id,
+                            evaluation.status,
+                            evaluation.solution_index,
+                        ),
                     )
-                    for evaluation in evaluations
-                ],
-            )
+                else:
+                    con.execute(
+                        """
+                        INSERT INTO evaluations
+                          (problem_type_hash, benchmark_protocol_hash, shape_id, candidate_hash,
+                           run_id, status, time_us, validation, solution_index, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        values,
+                    )
 
     def insert_validations(self, validations: list[ValidationInsert]) -> None:
         if not validations:
@@ -576,54 +607,89 @@ class EvoTensileDB:
             min_ok_samples=min_ok_samples,
         )
 
-    def reusable_cache_entry_counts(
+    def benchmark_evidence_states(
         self,
         *,
         problem_type_hash: str,
         benchmark_protocol_hash: str,
         shape_ids: list[str],
         candidate_hashes: list[str],
-    ) -> dict[tuple[str, str], dict[str, int]]:
+    ) -> dict[tuple[str, str], BenchmarkEvidenceState]:
         if not shape_ids or not candidate_hashes:
             return {}
         shape_placeholders = ",".join("?" for _ in shape_ids)
         candidate_placeholders = ",".join("?" for _ in candidate_hashes)
-        status_placeholders = ",".join("?" for _ in REUSABLE_CACHE_STATUSES)
+        negative_placeholders = ",".join("?" for _ in NEGATIVE_CACHE_STATUSES)
+        common_params = (problem_type_hash, benchmark_protocol_hash, *shape_ids, *candidate_hashes)
         with self.connection() as con:
             rows = con.execute(
                 f"""
-                SELECT shape_id, candidate_hash, status, COUNT(*) AS n
-                FROM evaluations
-                WHERE problem_type_hash = ?
-                  AND benchmark_protocol_hash = ?
-                  AND shape_id IN ({shape_placeholders})
-                  AND candidate_hash IN ({candidate_placeholders})
-                  AND status IN ({status_placeholders})
-                  AND (status != 'ok' OR (
-                    time_us IS NOT NULL AND time_us > 0
+                WITH positive AS (
+                  SELECT shape_id, candidate_hash, COUNT(*) AS ok_samples
+                  FROM evaluations
+                  WHERE problem_type_hash = ?
+                    AND benchmark_protocol_hash = ?
+                    AND shape_id IN ({shape_placeholders})
+                    AND candidate_hash IN ({candidate_placeholders})
+                    AND status = 'ok'
+                    AND time_us IS NOT NULL AND time_us > 0
                     AND UPPER(CASE
                       WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0
                         THEN TRIM(COALESCE(validation, ''))
                       ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1,
                                   INSTR(TRIM(COALESCE(validation, '')), ' ') - 1)
                     END) IN ('PASSED', 'OK', 'VALID')
-                  ))
-                GROUP BY shape_id, candidate_hash, status
+                  GROUP BY shape_id, candidate_hash
+                ),
+                negative AS (
+                  SELECT shape_id, candidate_hash, status, eval_id
+                  FROM (
+                    SELECT shape_id, candidate_hash, status, eval_id,
+                           ROW_NUMBER() OVER (
+                             PARTITION BY shape_id, candidate_hash
+                             ORDER BY created_at DESC, eval_id DESC
+                           ) AS evidence_rank
+                    FROM evaluations
+                    WHERE problem_type_hash = ?
+                      AND benchmark_protocol_hash = ?
+                      AND shape_id IN ({shape_placeholders})
+                      AND candidate_hash IN ({candidate_placeholders})
+                      AND status IN ({negative_placeholders})
+                  )
+                  WHERE evidence_rank = 1
+                ),
+                evidence_keys AS (
+                  SELECT shape_id, candidate_hash FROM positive
+                  UNION
+                  SELECT shape_id, candidate_hash FROM negative
+                )
+                SELECT evidence_keys.shape_id, evidence_keys.candidate_hash,
+                       COALESCE(positive.ok_samples, 0) AS ok_samples,
+                       negative.status AS latest_negative_status,
+                       negative.eval_id AS latest_negative_eval_id
+                FROM evidence_keys
+                LEFT JOIN positive USING (shape_id, candidate_hash)
+                LEFT JOIN negative USING (shape_id, candidate_hash)
                 """,
                 (
-                    problem_type_hash,
-                    benchmark_protocol_hash,
-                    *shape_ids,
-                    *candidate_hashes,
-                    *REUSABLE_CACHE_STATUSES,
+                    *common_params,
+                    *common_params,
+                    *NEGATIVE_CACHE_STATUSES,
                 ),
             ).fetchall()
 
-        counts: dict[tuple[str, str], dict[str, int]] = {}
+        states: dict[tuple[str, str], BenchmarkEvidenceState] = {}
         for row in rows:
-            key = (row["shape_id"], row["candidate_hash"])
-            counts.setdefault(key, {})[row["status"]] = int(row["n"])
-        return counts
+            ok_samples = int(row["ok_samples"])
+            latest_negative_status = row["latest_negative_status"]
+            states[(row["shape_id"], row["candidate_hash"])] = BenchmarkEvidenceState(
+                ok_samples=ok_samples,
+                resolved_status="ok" if ok_samples > 0 else latest_negative_status,
+                latest_negative_eval_id=(
+                    None if row["latest_negative_eval_id"] is None else int(row["latest_negative_eval_id"])
+                ),
+            )
+        return states
 
     def validation_cache_states(
         self,
@@ -684,21 +750,13 @@ class EvoTensileDB:
         candidate_hashes: list[str],
         min_ok_samples: int = 1,
     ) -> set[tuple[str, str]]:
-        counts = self.reusable_cache_entry_counts(
+        states = self.benchmark_evidence_states(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
             shape_ids=shape_ids,
             candidate_hashes=candidate_hashes,
         )
-        reusable: set[tuple[str, str]] = set()
-        for key, status_counts in counts.items():
-            ok_count = sum(status_counts.get(status, 0) for status in POSITIVE_CACHE_STATUSES)
-            negative_count = sum(
-                count for status, count in status_counts.items() if status not in POSITIVE_CACHE_STATUSES
-            )
-            if ok_count >= min_ok_samples or negative_count > 0:
-                reusable.add(key)
-        return reusable
+        return {key for key, state in states.items() if state.ok_samples >= min_ok_samples or state.reusable_negative}
 
     def rank_evaluations(
         self,

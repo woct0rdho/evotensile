@@ -26,9 +26,9 @@ screening_s
 
 ### Proposal Cost
 
-The blind campaign measures one proposal call's wall time and divides it by the number of newly generated candidates. `tag_proposals()` persists this estimate as `proposal_metadata.proposal_cost_s` without changing the parameter-only candidate hash.
+The blind campaign measures one proposal call's wall time and divides it by the scheduler's explicit novel `generated` set before surrogate shortlisting. `tag_generated_proposals()` persists this per-generated-hash estimate as `proposal_metadata.proposal_cost_s` for selected novel candidates without changing the parameter-only candidate hash.
 
-Preserved parents do not receive new proposal cost merely because they appear in another proposal list. Because candidate registration is first-write-wins by parameter hash, later duplicate proposals remain in round artifacts but do not replace the DB-level proposal-cost attribution.
+Preserved parents and previously registered duplicate hashes do not receive new island, restart, or proposal-cost metadata merely because they appear in another selected set. Each round persists a separate proposal event containing breeding parents, preserved hashes, all novel generated hashes, selected hashes, duration, and per-generated-hash cost. Candidate registration remains first-write-wins for the originating candidate metadata.
 
 ### Run Cost Attribution
 
@@ -67,10 +67,10 @@ Minimum exploration is applied before proportional allocation, so a high estimat
 
 ```text
 1
-+ 0.40 × VALU_VGPR_fraction
-+ 0.25 × LDS_fraction
-+ 0.10 × log2(max(1, WMMA_wave_tile_area))
-+ 0.05 × log2(max(1, WMMA_wave_group_size))
++ 0.40 * VALU_VGPR_fraction
++ 0.25 * LDS_fraction
++ 0.10 * log2(max(1, WMMA_wave_tile_area))
++ 0.05 * log2(max(1, WMMA_wave_group_size))
 ```
 
 A batch weight sums candidate weights averaged over its shapes.
@@ -79,7 +79,7 @@ With `--cost-aware-scheduling`, the scheduler submits higher-weight preparation 
 
 ## Campaign Round Admission
 
-The one-shape campaign does not use the analytical preparation weight as its wall-time estimate. It computes recent measured seconds per missing pair and applies a robust margin before admitting another round. That policy is described in `docs/blind_campaign_control.md`.
+The one-shape campaign does not use the analytical preparation weight as its wall-time estimate. It computes recent measured seconds per missing pair and applies a robust margin before admitting another round. The campaign budget is a soft admission deadline: an admitted schedule retains normal build and runner timeouts and may finish afterward. The confirmation reserve is recalculated from measured finalist launch cost with a configured minimum floor. That policy is described in `docs/blind_campaign_control.md`.
 
 ## CLI Controls
 

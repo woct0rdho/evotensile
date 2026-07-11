@@ -4,9 +4,77 @@ from dataclasses import dataclass
 
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
+from evotensile.protocol import BenchmarkProtocol
 from evotensile.search.encoding import candidate_to_genome, hamming_distance
 from evotensile.search.family import family_descriptor_counts
 from evotensile.search.mechanics import mechanical_coverage_tokens
+
+
+@dataclass(frozen=True)
+class ProposalEvent:
+    island_id: str
+    seed: int
+    restart_index: int
+    learned_linkage: bool
+    parent_hashes: tuple[str, ...]
+    preserved_hashes: tuple[str, ...]
+    generated_hashes: tuple[str, ...]
+    selected_hashes: tuple[str, ...]
+    duration_s: float
+    proposal_cost_s: float
+    proposal_args: Mapping[str, object]
+
+    @property
+    def selected_generated_hashes(self) -> tuple[str, ...]:
+        generated = set(self.generated_hashes)
+        return tuple(candidate_hash for candidate_hash in self.selected_hashes if candidate_hash in generated)
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, object]) -> "ProposalEvent":
+        def hashes(key: str) -> tuple[str, ...]:
+            values = payload[key]
+            if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+                raise ValueError(f"proposal event {key} must be a sequence")
+            return tuple(str(value) for value in values)
+
+        def number(key: str) -> float:
+            value = payload[key]
+            if not isinstance(value, (int, float, str)):
+                raise ValueError(f"proposal event {key} must be numeric")
+            return float(value)
+
+        proposal_args = payload["proposal_args"]
+        if not isinstance(proposal_args, Mapping):
+            raise ValueError("proposal event arguments must be a mapping")
+        return cls(
+            island_id=str(payload["island_id"]),
+            seed=int(number("seed")),
+            restart_index=int(number("restart_index")),
+            learned_linkage=bool(payload["learned_linkage"]),
+            parent_hashes=hashes("parent_hashes"),
+            preserved_hashes=hashes("preserved_hashes"),
+            generated_hashes=hashes("generated_hashes"),
+            selected_hashes=hashes("selected_hashes"),
+            duration_s=number("duration_s"),
+            proposal_cost_s=number("proposal_cost_s"),
+            proposal_args={str(key): value for key, value in proposal_args.items()},
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "island_id": self.island_id,
+            "seed": self.seed,
+            "restart_index": self.restart_index,
+            "learned_linkage": self.learned_linkage,
+            "parent_hashes": list(self.parent_hashes),
+            "preserved_hashes": list(self.preserved_hashes),
+            "generated_hashes": list(self.generated_hashes),
+            "selected_hashes": list(self.selected_hashes),
+            "selected_generated_hashes": list(self.selected_generated_hashes),
+            "duration_s": self.duration_s,
+            "proposal_cost_s": self.proposal_cost_s,
+            "proposal_args": dict(self.proposal_args),
+        }
 
 
 @dataclass(frozen=True)
@@ -29,23 +97,25 @@ class PopulationDiagnostics:
         }
 
 
-def tag_proposals(
+def tag_generated_proposals(
     candidates: Sequence[Candidate],
     *,
+    generated_hashes: set[str],
     island_id: str,
-    parent_hashes: set[str],
-    proposal_duration_s: float,
+    proposal_cost_s: float,
     restart_index: int = 0,
 ) -> list[Candidate]:
-    generated_count = sum(candidate.hash not in parent_hashes for candidate in candidates)
-    proposal_cost_s = proposal_duration_s / max(generated_count, 1)
     tagged = []
     for candidate in candidates:
-        metadata = dict(candidate.proposal_metadata)
-        metadata["island_id"] = island_id
-        metadata["restart_index"] = restart_index
-        if candidate.hash not in parent_hashes:
-            metadata["proposal_cost_s"] = proposal_cost_s
+        if candidate.hash not in generated_hashes:
+            tagged.append(candidate)
+            continue
+        metadata = {
+            **candidate.proposal_metadata,
+            "island_id": island_id,
+            "restart_index": restart_index,
+            "proposal_cost_s": proposal_cost_s,
+        }
         tagged.append(
             Candidate(
                 params=candidate.canonical_params(),
@@ -98,6 +168,19 @@ def population_diagnostics(candidates: Sequence[Candidate], shape: Shape) -> Pop
     )
 
 
+def restart_epoch(
+    counters: dict[str, int],
+    *,
+    scope: str,
+    transition: bool,
+) -> int:
+    current = counters.get(scope, 0)
+    if transition:
+        current += 1
+        counters[scope] = current
+    return current
+
+
 def plateau_detected(
     best_history: Sequence[float],
     *,
@@ -109,6 +192,25 @@ def plateau_detected(
     previous_best = max(best_history[:-patience])
     recent_best = max(best_history[-patience:])
     return recent_best <= previous_best * (1.0 + max(0.0, minimum_improvement_fraction))
+
+
+def estimate_confirmation_reserve_s(
+    finalist_median_times_us: Sequence[float],
+    *,
+    protocol: BenchmarkProtocol,
+    top_k: int,
+    minimum_reserve_s: float,
+    per_finalist_overhead_s: float = 1.0,
+    duration_margin: float = 1.5,
+) -> float:
+    launches = protocol.num_warmups + (
+        protocol.num_benchmarks * protocol.enqueues_per_sync * protocol.syncs_per_benchmark
+    )
+    estimate = 0.0
+    for median_time_us in finalist_median_times_us[: max(0, top_k)]:
+        timed_duration_s = max(0.0, median_time_us) * launches / 1_000_000.0
+        estimate += per_finalist_overhead_s + timed_duration_s * duration_margin
+    return max(minimum_reserve_s, estimate)
 
 
 def estimate_next_round_duration_s(

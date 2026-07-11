@@ -27,21 +27,21 @@ Unknown oracle candidates remain unknown. Simulation must not impute their perfo
 `scripts/run_blind_one_shape.py` runs the current one-shape policy against an empty campaign DB.
 
 The driver provides:
-- a fixed seed and recorded frozen policy.
+- a versioned immutable campaign configuration with strict resume identity.
 - two independently seeded, mechanically covering cold populations.
 - island-local feedback rounds followed by explicit population migration.
 - repeated family-QD feedback rounds with optional low-diversity restarts.
 - adaptive operator allocation and surrogate oversized pools.
 - normal cache-aware compile, validation, probe, and screening execution.
-- cost-aware round admission using robust recent duration per missing pair.
-- a reserved finalist-confirmation budget.
+- cost-aware round admission against a soft campaign deadline, while admitted jobs keep their normal subprocess timeouts.
+- a finalist-confirmation reserve scaled from measured finalist launch cost with a configured minimum floor.
 - per-round proposal lineage and execution summaries.
-- atomic exact-proposal checkpoints and hash-verified `--resume` under the original invocation contract.
+- atomic exact-proposal checkpoints and hash-verified `--resume` only when the complete configuration, binaries, implementation, and environment match.
 - a final campaign summary.
 
-The current policy uses `48` measured cold candidates selected from two complementary `8x` island pools, then requests `24` generated candidates per feedback round. The first six feedback rounds keep parents island-local. Later rounds use the merged archive. Existing parents may also appear in the proposal list, but cache-aware planning measures only missing pairs. Preparation uses eight workers while GPU validation is capped at one worker after concurrent validation exposed a reproducible ROCr/KFD operational failure.
+The current policy uses `48` measured cold candidates selected from two complementary `8x` island pools, then requests `24` generated candidates per feedback round. The first six feedback rounds keep parents island-local. Later rounds use a globally capped merged archive. Proposal results distinguish preserved archive parents, novel generated hashes, and the exact selected set. Only selected novel candidates receive new proposal metadata or cost. Cache-aware planning measures only missing pairs. Preparation uses eight workers while GPU validation is capped at one worker after concurrent validation exposed a reproducible ROCr/KFD operational failure.
 
-The driver uses a staged catastrophic probe: one launch for every validated pair, followed by two more only for provisional survivors, then the two-sample screening protocol. It also stabilizes a bounded set of provisional main-protocol leaders between rounds. Probe math is documented in `docs/noisy_measurements.md`. Stabilization is documented in `docs/search_screening_stabilization.md`. Neither changes TensileLite validity or validation behavior.
+The driver uses a staged catastrophic probe: one launch for every validated pair, followed by two more only for provisional survivors, then the two-sample screening protocol. It also stabilizes a bounded set of provisional main-protocol leaders between rounds. The campaign deadline controls admission of rounds, stabilization groups, and hot finalists. It does not truncate build or runner timeouts after work starts. Probe math is documented in `docs/noisy_measurements.md`. Stabilization is documented in `docs/search_screening_stabilization.md`. Neither changes TensileLite validity or validation behavior.
 
 ## Exact-Hash Replay Oracle
 
@@ -125,9 +125,9 @@ Benchmark mode sets validation extent to zero and relies on prior validation evi
 ## Audit Artifacts
 
 Real campaigns write:
-- `frozen_policy.json`.
+- `campaign_configuration.json`.
 - `campaign.sqlite`.
-- `round_NN/proposals.json` with exact parameters, source, parent hashes, proposal metadata, and proposal-call settings.
+- `round_NN/proposals.json` with exact selected parameters, explicit active/archive hashes, and independent proposal events containing preserved/generated/selected sets.
 - per-round build, validation, probe, and benchmark artifacts.
 - `campaign_progress.json`.
 - `campaign_checkpoint.json` with phase, exact pending hashes, seeds, policy, and elapsed accounting.
@@ -162,13 +162,15 @@ python scripts/simulate_blind_search.py \
 Real campaign:
 
 ```bash
-python scripts/run_blind_one_shape.py \
+timeout --signal=TERM --kill-after=60s 1800s python scripts/run_blind_one_shape.py \
   --output out/blind-seed-1 \
   --shape 8192,8192,1,8192 \
   --seed 1 \
   --time-budget 1200 \
   --runner-bin build/evotensile-structured-runner
 ```
+
+Here `1200s` is the campaign's soft admission budget. The `1800s` outer timeout is intentionally longer so an admitted round or finalist can use its configured subprocess timeout and the driver can checkpoint and clean up. Increase this guard when worst-case build or confirmation time exceeds the default margin.
 
 ## Limitations
 

@@ -269,7 +269,7 @@ def _propose_candidates_for_shapes(
     shapes: list[Shape],
     proposal_shape_id: str | None = None,
 ) -> list[Candidate]:
-    return propose_candidates(
+    proposal = propose_candidates(
         db,
         proposal=args.proposal,
         num_random=args.num_random,
@@ -301,6 +301,7 @@ def _propose_candidates_for_shapes(
         adaptive_donor_selection=args.adaptive_donor_selection,
         cost_aware_operator_credit=args.cost_aware_operator_credit,
     )
+    return list(proposal.selected)
 
 
 def _execute_schedule_from_args(
@@ -610,21 +611,27 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_adaptive_args(parser: argparse.ArgumentParser) -> None:
+    adaptive = AdaptivePolicy()
+    probe = ProbePolicy()
     parser.add_argument("--fixed-sampling", action="store_true", help="Disable probing and adaptive top-ups")
-    parser.add_argument("--adaptive-probe-samples", type=int, default=3)
-    parser.add_argument("--adaptive-probe-initial-samples", type=int, default=1)
-    parser.add_argument("--adaptive-probe-max-slowdown-factor", type=float, default=4.0)
-    parser.add_argument("--adaptive-probe-confidence", type=float, default=0.90)
-    parser.add_argument("--adaptive-probe-noise-floor-pct", type=float, default=5.0)
-    parser.add_argument("--adaptive-probe-min-survivors", type=int, default=8)
+    parser.add_argument("--adaptive-probe-samples", type=int, default=probe.samples)
+    parser.add_argument("--adaptive-probe-initial-samples", type=int, default=probe.initial_samples)
+    parser.add_argument(
+        "--adaptive-probe-max-slowdown-factor",
+        type=float,
+        default=probe.max_slowdown_factor,
+    )
+    parser.add_argument("--adaptive-probe-confidence", type=float, default=probe.confidence)
+    parser.add_argument("--adaptive-probe-noise-floor-pct", type=float, default=probe.noise_floor_pct)
+    parser.add_argument("--adaptive-probe-min-survivors", type=int, default=probe.min_survivors)
     parser.add_argument("--adaptive-max-rounds", type=int, default=4)
-    parser.add_argument("--adaptive-epsilon-pct", type=float, default=2.0)
-    parser.add_argument("--adaptive-confidence", type=float, default=0.90)
-    parser.add_argument("--adaptive-min-samples", type=int, default=20)
-    parser.add_argument("--adaptive-max-samples", type=int, default=80)
-    parser.add_argument("--adaptive-sample-step", type=int, default=10)
-    parser.add_argument("--adaptive-max-k", type=int, default=8)
-    parser.add_argument("--adaptive-min-effect-pct", type=float, default=0.5)
+    parser.add_argument("--adaptive-epsilon-pct", type=float, default=adaptive.epsilon_pct)
+    parser.add_argument("--adaptive-confidence", type=float, default=adaptive.confidence)
+    parser.add_argument("--adaptive-min-samples", type=int, default=adaptive.min_retime_samples)
+    parser.add_argument("--adaptive-max-samples", type=int, default=adaptive.max_retime_samples)
+    parser.add_argument("--adaptive-sample-step", type=int, default=adaptive.sample_step)
+    parser.add_argument("--adaptive-max-k", type=int, default=adaptive.max_k)
+    parser.add_argument("--adaptive-min-effect-pct", type=float, default=adaptive.min_effect_pct)
 
 
 def _add_schedule_args(parser: argparse.ArgumentParser, *, repair: bool = False) -> None:

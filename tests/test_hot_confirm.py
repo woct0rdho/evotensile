@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 from textwrap import dedent
 
@@ -101,6 +102,8 @@ def _runner(path: Path, behavior: str) -> Path:
                 pair = json.loads(next(source))
             if behavior == "timeout-first" and pair["problem_index"] == 0:
                 time.sleep(10)
+            if behavior == "slow":
+                time.sleep(0.1)
             with open(args.output, "w") as output:
                 count = 1 if behavior == "missing" else 2
                 for sample_index in range(count):
@@ -132,7 +135,14 @@ def _runner(path: Path, behavior: str) -> Path:
     return script
 
 
-def _confirm(tmp_path: Path, runner: Path, *, candidate_count: int = 1, timeout: float = 5.0):
+def _confirm(
+    tmp_path: Path,
+    runner: Path,
+    *,
+    candidate_count: int = 1,
+    timeout: float = 5.0,
+    admission_deadline: float | None = None,
+):
     db_path, shape, _ = _prepare_hot_db(tmp_path, candidate_count=candidate_count)
     protocol = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(
         num_warmups=0,
@@ -150,6 +160,7 @@ def _confirm(tmp_path: Path, runner: Path, *, candidate_count: int = 1, timeout:
         validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
         hot_protocol=protocol,
         top_k=candidate_count,
+        admission_deadline=admission_deadline,
         runner_timeout_s=timeout,
     )
     summary = json.loads((tmp_path / "hot" / "summary.json").read_text(encoding="utf-8"))
@@ -180,6 +191,20 @@ def test_hot_confirmation_rejects_malformed_results(tmp_path: Path, behavior: st
 
     assert records == []
     assert reason in summary["failures"][0]["reason"]
+
+
+def test_hot_confirmation_soft_deadline_does_not_clamp_admitted_finalist(tmp_path: Path):
+    records, summary = _confirm(
+        tmp_path,
+        _runner(tmp_path, "slow"),
+        candidate_count=2,
+        timeout=1.0,
+        admission_deadline=time.monotonic() + 0.05,
+    )
+
+    assert len(records) == 1
+    assert records[0]["screen_rank"] == 1
+    assert summary["failures"] == []
 
 
 def test_hot_confirmation_continues_after_timed_out_finalist(tmp_path: Path):

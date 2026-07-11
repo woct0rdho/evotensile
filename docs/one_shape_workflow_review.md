@@ -90,7 +90,7 @@ When `shape_id` is not specified, `_ranked_elites()` asks `rank_evaluations()` f
 
 Transfer selection has a separate multi-target issue. `_nearest_shape_ids()` assigns each source shape its minimum distance to any requested target. If the DB already contains the full requested grid, every exact source shape has distance zero. The default limit then selects the first shapes by lexical shape ID rather than representative or per-target neighbors.
 
-For a 100-shape request, `--transfer-shapes 4` therefore means approximately “four lexically first exact grid shapes,” not “four useful neighbors for each unresolved target.”
+For a 100-shape request, `--transfer-shapes 4` therefore means approximately "four lexically first exact grid shapes," not "four useful neighbors for each unresolved target."
 
 Recommended correction:
 
@@ -125,166 +125,6 @@ Recommended correction:
 - Score marginal improvement against each shape incumbent.
 - Select a candidate set by expected grid regret reduction or coverage, not one averaged scalar.
 - Support shape/cluster-specific models when evidence is sparse or heterogeneous.
-
-## High-Priority One-Shape Workflow Findings
-
-### H1. Merged Proposal Calls Misclassify Archive Parents As Generated Candidates
-
-Affected code:
-
-- `scripts/run_blind_one_shape.py:_proposal_call()`
-- `evotensile/scheduler.py:propose_candidates()`
-- `evotensile/search/campaign_control.py:tag_proposals()`
-
-During isolated rounds, the campaign passes explicit `parent_candidates`, so `_proposal_call()` knows their hashes.
-
-After migration, `_proposal_call()` passes `parents=None`. `propose_candidates()` then automatically loads and preserves family archive leaders, but `_proposal_call()` still supplies an empty parent-hash set to `tag_proposals()`.
-
-Every preserved archive leader is consequently labeled as newly generated and receives:
-
-- the merged `island_id` in the proposal artifact.
-- a proposal-cost share.
-- inclusion in `generated_count`.
-
-The DB keeps the first candidate metadata because registration uses `INSERT OR IGNORE`, so round proposal JSON and DB lineage disagree.
-
-The retained V3 campaign demonstrates the scale of the problem:
-
-```text
-round 7:  candidate_count=75, missing_pairs=21, recorded generated_count=75
-round 29: candidate_count=94, missing_pairs=23, recorded generated_count=94
-round 43: candidate_count=96, missing_pairs=20, recorded generated_count=96
-```
-
-Only about 20-24 candidates required measurement, but proposal cost was divided across 75-96 candidates. Cost-aware operator credit therefore underestimates post-merge proposal cost by roughly the archive expansion factor.
-
-`docs/search_cost_model.md` currently states that preserved parents do not receive new proposal cost, which is not true for merged one-shape calls.
-
-Recommended correction:
-
-- Return a structured proposal result with separate `preserved`, `generated`, and `selected` collections.
-- Persist proposal events independently from candidate identity.
-- Compute proposal cost from genuinely new generated hashes, not inferred external parent lists.
-- Do not retag preserved candidates in round artifacts.
-
-### H2. Population Diagnostics Measure The Carried Archive, Not The Active Population
-
-Affected code:
-
-- `evotensile/scheduler.py:_family_archive_leaders()`
-- `evotensile/scheduler.py:propose_candidates()`
-- `evotensile/search/campaign_control.py:population_diagnostics()`
-- `scripts/run_blind_one_shape.py:_restart_due()`
-
-`_family_archive_leaders()` limits elites per family but does not apply `elite_count` as a total archive cap. All preserved family leaders are returned alongside the generated shortlist.
-
-The campaign passes that complete list to `population_diagnostics()`. After migration, diagnostics therefore measure a growing carried archive plus new children, not an island generation, selected breeding population, or measured-new cohort.
-
-Consequences:
-
-- mean Hamming diversity stays artificially high as historical archive entries accumulate.
-- restart and convergence checks become difficult or impossible to trigger.
-- family-cell and MatrixInstruction counts describe carried history rather than current exploration.
-- the meaning of `elite_count=32` is misleading because it does not cap preserved family elites globally.
-
-The V3 campaign grew from 75 to 96 reported candidates after migration while measuring only about 19-23 new pairs per round. Its final mean Hamming value of 16.79 was used to argue against convergence stopping, but that number is dominated by archive carry-over and is not a valid active-population diversity measurement.
-
-Recommended correction:
-
-- Define explicit sets for breeding parents, generated children, measured-new candidates, active archive, and retained historical archive.
-- Run restart/convergence diagnostics on the intended active set.
-- Keep archive coverage diagnostics separate.
-- Give `elite_count` unambiguous total-cap semantics, or rename it to distinguish global and per-family limits.
-
-### H3. Island Restart Index Increments On Every Post-Restart Round
-
-Affected code:
-
-- `scripts/run_blind_one_shape.py:_propose_round()`
-
-For an isolated island, `restart_index` is computed as the number of prior rounds containing a call for that island with `restart_index > 0`.
-
-After the first real restart, all later normal calls inherit a positive `restart_index`. Each of those rounds is then counted as another restart on the next round. The index increases every round even if no new restart occurs.
-
-This currently corrupts audit metadata rather than candidate parameters, but it makes restart histories and proposal-cost/lineage analysis unreliable.
-
-Recommended correction:
-
-- Persist an explicit restart counter in campaign state.
-- Increment it only when a restart transition is admitted.
-- Add a test covering multiple ordinary rounds after one restart.
-
-### H4. The Frozen Policy Does Not Freeze The Complete Measurement Policy
-
-Affected code:
-
-- `scripts/run_blind_one_shape.py:SEARCH_POLICY`
-- `scripts/run_blind_one_shape.py:main()`
-- `scripts/run_blind_one_shape.py:_load_or_create_campaign()`
-
-The frozen record does not contain all behavior that affects measurements and decisions. The driver constructs these from current code defaults on every invocation:
-
-- `AdaptivePolicy()`.
-- `ProbePolicy()`.
-- stabilization confidence, contender epsilon, and sample step.
-- the screening `BenchmarkProtocol` fields.
-- hot-confirmation protocol fields.
-- early-stop activation.
-- runner/build binary identity and environment.
-
-Resume verifies only seed, shape, and profile before accepting the root. It does not compare the stored screening hash with the currently constructed protocol hash.
-
-There is also a default inconsistency:
-
-- `AdaptivePolicy.confidence` defaults to `0.95`.
-- the general CLI defaults `--adaptive-confidence` to `0.90`.
-- the one-shape driver uses the dataclass default, while documentation primarily describes the CLI default.
-
-Recommended correction:
-
-- Use one versioned immutable campaign configuration dataclass.
-- Persist every proposal, measurement, stabilization, confirmation, deadline, concurrency, and convergence field.
-- Persist binary paths plus stable build/version fingerprints.
-- Reject resume on any behavior-affecting mismatch unless an explicit audited override is requested.
-- Use the same default source for library, CLI, and campaign code.
-
-### H5. Search Deadline Is Advisory During A Schedule Wave
-
-Affected code:
-
-- `scripts/run_blind_one_shape.py:main()`
-- `evotensile/scheduler.py:execute_schedule()`
-
-Round admission estimates whether a complete next round should fit, but `execute_schedule()` receives no campaign deadline or cancellation token. Once admitted, a wave may spend up to the independent build and runner timeouts per batch.
-
-The cold round has no duration guard. A bad build, validator, or probe can consume the confirmation reserve or exceed the total campaign budget before control returns to the campaign loop.
-
-Stabilization and hot confirmation do receive deadlines, but normal build/validation/probe/screening does not.
-
-Recommended correction:
-
-- Pass an absolute deadline into planning and execution.
-- Do not submit work whose conservative timeout cannot fit.
-- Stop submitting new prepare tasks when the deadline approaches.
-- Use bounded preparation waves so the coordinator can regain control.
-- Reserve confirmation based on measured finalist count and per-finalist cost, not only a fixed 60 seconds.
-
-### H7. Benchmark Positive And Negative Evidence Has No Resolved State Model
-
-Affected code:
-
-- `evotensile/database.py:reusable_cache_entry_counts()`
-- `evotensile/scheduler.py:_missing_candidate_indices_by_shape()`
-
-Validation state is now resolved from the latest row under the active validation identity. Benchmark-cache decisions still use any reusable `rejected` or `build_failed` row as a permanent skip, even if later timing succeeded under the same benchmark identity.
-
-This can leave positive timing rankable while scheduling refuses additional samples because an older build or mapping negative also exists.
-
-Recommended correction:
-
-- Define a resolved benchmark-evidence query with explicit precedence and recency.
-- Keep raw append-only evidence for audit, but do not make benchmark-cache policy directly from unqualified counts.
-- Add uniqueness/idempotence keys where repeated ingestion should not multiply evidence.
 
 ## Production-Grid Search Quality And Scaling Findings
 
@@ -366,7 +206,7 @@ Recommended correction:
 
 - Put preparation and validation defaults in the target profile/resource profile.
 - Default gfx1151 validation concurrency to one until contrary evidence exists.
-- Cap prepare workers by measured memory, compiler, and filesystem capacity rather than CPU count alone.
+- Cap prepare workers by measured memory and compiler capacity rather than CPU count alone.
 - Choose batch size from measured throughput and startup cost, not only worker saturation.
 
 ### P2. Cost-Aware Preparation Order Also Becomes Benchmark Order
@@ -455,7 +295,7 @@ If a previously probe-screened candidate is proposed again without main timing, 
 Recommended correction:
 
 - Add a pre-prepare probe-decision cache step for complete compatible probe evidence.
-- Distinguish “screened for this search policy” from static invalidity and allow explicit policy/version-based retry.
+- Distinguish "screened for this search policy" from static invalidity and allow explicit policy/version-based retry.
 
 ### P7. ExtraTrees Uses All CPU Threads Internally
 
@@ -484,19 +324,6 @@ Recommended correction:
 - Resolve all profile-dependent defaults after parsing `--profile`.
 - Use `None` at argparse level and fill values from the selected profile.
 
-### D2. One-Shape And General Adaptive Defaults Differ
-
-- Library `AdaptivePolicy.confidence`: `0.95`.
-- General CLI adaptive confidence: `0.90`.
-- Probe confidence: `0.90`.
-- Stabilization confidence: `0.90`.
-
-The one-shape driver uses the library default, not the CLI default. This is not frozen in campaign policy.
-
-Recommended correction:
-
-- Establish one canonical default table and override explicitly by workflow only when justified and recorded.
-
 ### D3. General Production Defaults Do Not Reflect The Evaluated One-Shape Policy
 
 The general CLI still defaults to:
@@ -514,24 +341,6 @@ Recommended correction:
 - Add versioned named search policies such as `gfx1151-grid-v1`.
 - Keep low-level flags but record the resolved policy in metadata.
 - Do not silently change generic defaults based on one one-shape result.
-
-### D4. Policy Fields Have No Cross-Field Validation
-
-`CampaignPolicy` and `ProposalArgs` are `TypedDict`s. There is no runtime validation that:
-
-```text
-feedback_candidates == feedback_random + feedback_semantic_mutation + feedback_de + feedback_gomea
-island_count > 0
-island_elites <= elite_count
-initial probe samples < total probe samples
-hot reserve < total budget
-```
-
-Some checks exist inside lower-level policy dataclasses, but the complete campaign contract is not validated.
-
-Recommended correction:
-
-- Replace the policy dictionaries with frozen dataclasses and a single validation method.
 
 ### D5. Target-Specific Defaults Leak Into Generic Helpers
 
@@ -560,15 +369,13 @@ Consolidation would reduce semantic drift, especially around validation and fina
 
 ### Monolithic Responsibilities
 
-- `scripts/run_blind_one_shape.py` is 862 lines and contains policy definition, proposal orchestration, checkpoint serialization, resume, deadline accounting, execution, stabilization, diagnostics, and confirmation.
-- `evotensile/scheduler.py` is 1,998 lines and contains proposal generation, transfer, outlier detection, batch planning, compile caching, preparation, validation, probe racing, timing, and adaptive top-ups.
+- `scripts/run_blind_one_shape.py` still combines configuration, proposal orchestration, checkpoint serialization, resume, soft-budget accounting, execution, stabilization, diagnostics, and confirmation.
+- `evotensile/scheduler.py` still combines proposal generation, transfer, outlier detection, batch planning, compile caching, preparation, validation, probe racing, timing, and adaptive top-ups.
 
 The issue is not line count by itself. The current boundaries make it difficult to reuse campaign control for a grid without copying one-shape assumptions.
 
 Recommended extraction:
 
-- versioned campaign configuration.
-- proposal result/event model.
 - evidence snapshot and acquisition interfaces.
 - preparation-wave executor.
 - serialized timing allocator.
@@ -577,8 +384,6 @@ Recommended extraction:
 
 ### Documentation That Overstates Current Behavior
 
-- `docs/search_cost_model.md` says preserved parents do not receive proposal cost. Merged one-shape calls currently do.
-- `docs/blind_campaign_control.md` describes diversity as population diversity without clarifying that post-merge diagnostics include the complete preserved family archive.
 - `docs/database.md` says validation identity includes validator version. It contains a manually incremented protocol version, but not the structured-runner binary, hipBLASLt version, ROCm version, GPU identity, or generated-library identity.
 - `docs/search_algorithms.md` describes nearest-shape transfer without documenting multi-target zero-distance tie behavior.
 - `docs/search_surrogate.md` documents a 24-row threshold without warning that one candidate across 100 shapes activates the model.
@@ -604,30 +409,16 @@ Those sections should be treated as required design work, not optional polish ar
 
 High-value missing tests include:
 
-- Merged proposal accounting separates preserved and generated candidates.
-- Restart indices remain stable across non-restart rounds.
-- Convergence diagnostics use the intended active population.
-- Resume rejects changed measurement/probe/stabilization/confirmation policy.
 - Multi-shape elite selection is incumbent-normalized rather than absolute-time biased.
 - Multi-target transfer covers intended targets/clusters rather than lexical ties.
 - Surrogate activation requires enough unique candidate variation.
 - Specialist candidates can be proposed and measured on eligible shape subsets.
 - Profile-specific defaults resolve from the selected profile.
 - Compile-cache stale-lock recovery.
-- Deadline cancellation and bounded preparation waves.
 
-The current tests are strong around normal scheduler execution, one-shape mechanics, strict hot confirmation, artifact verification, and guarded production export, but contradictory benchmark evidence, restart execution, and multi-shape acquisition receive little or no direct coverage.
+The current tests are strong around normal scheduler execution, one-shape mechanics, proposal accounting, restart state, resolved benchmark evidence, strict resume identity, soft-budget overrun semantics, hot confirmation, artifact verification, and guarded production export. Multi-shape acquisition still receives little or no direct coverage.
 
 ## Recommended Remediation Order
-
-### Phase 2: Repair One-Shape Feedback And Audit Semantics
-
-- Introduce proposal events with explicit preserved/generated sets.
-- Fix merged proposal cost attribution.
-- Separate active-population and archive diagnostics.
-- Fix restart counters.
-- Freeze and enforce the complete campaign configuration.
-- Pass deadlines into bounded schedule waves.
 
 ### Phase 3: Define The Production Grid Objective
 
@@ -641,7 +432,6 @@ The current tests are strong around normal scheduler execution, one-shape mechan
 ### Phase 4: Improve Throughput And Maintainability
 
 - Use profile resource defaults for preparation and validation concurrency.
-- Execute bounded prepare/benchmark waves.
 - Separate preparation order from timing order.
 - Build one evidence snapshot per proposal.
 - Index derived costs.
@@ -650,6 +440,6 @@ The current tests are strong around normal scheduler execution, one-shape mechan
 
 ## Final Recommendation
 
-Keep the current one-shape campaign as an experiment harness, not as the production grid controller. Reuse its validated components—candidate representation, source-backed constraints, final-YAML mapping, structured validation, serial timing, probe protocol separation, and DB ranking—but replace its campaign bookkeeping and scalar one-shape acquisition with explicit proposal events, resolved evidence state, bounded execution waves, and a grid-aware specialist/generalist objective.
+Keep the current one-shape campaign as an experiment harness, not as the production grid controller. Its bookkeeping now uses explicit proposal events, active/archive diagnostics, strict configuration identity, resolved benchmark and validation state, and soft admission budgets with reported overruns. Reuse those validated components together with candidate representation, source-backed constraints, final-YAML mapping, structured validation, serial timing, probe separation, and DB ranking, but replace scalar one-shape acquisition with a grid-aware specialist/generalist objective.
 
-The GridBased updater now defaults to a no-write preview, rejects empty or incomplete profile shape sets, and transactionally stages or replaces all selected variants. A dry-run-by-default audited command can import the retained pre-`BenchmarkRole` timing identity into the current `main` identity without synthesizing validation evidence. The retained 100-shape DB still requires current validation evidence and registered complete artifacts before it is export-ready.
+The GridBased updater defaults to a no-write preview, rejects empty or incomplete profile shape sets, and transactionally stages or replaces all selected variants. The retained 100-shape timing corpus is consolidated under the current benchmark protocol, but still requires current validation evidence and registered complete artifacts before it is export-ready.

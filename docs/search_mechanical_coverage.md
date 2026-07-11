@@ -27,7 +27,7 @@ Tile and dispatch features include:
 - WMMA wave-tile area and wave-group size.
 
 Reduction and resource features include:
-- reduction iterations after `DepthU × GlobalSplitU` partitioning.
+- reduction iterations after `DepthU * GlobalSplitU` partitioning.
 - K fill after rounding to complete reduction iterations.
 - LDS bytes and fraction of the profile limit.
 - proposal-side VALU VGPR lower bound and fraction of the profile limit.
@@ -74,7 +74,7 @@ Token weights are inverse-square-root frequency weights. WMMA wave and macro tok
 For one coverage candidate, the acquisition key is:
 
 ```text
-marginal_uncovered_token_weight × (0.35 + 0.65 × normalized_prior)
+marginal_uncovered_token_weight * (0.35 + 0.65 * normalized_prior)
 ```
 
 The quality multiplier prevents mechanically novel but obviously under-tiled candidates from dominating solely through rare tokens. The selector remains deterministic for a fixed pool and seed.
