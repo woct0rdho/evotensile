@@ -134,7 +134,7 @@ The surrogate is query-causal:
 - it trains only from rows already present in the active DB.
 - unknown candidates remain unknown until measured.
 - candidate order, model seed, diversity fallback, and random fill are deterministic for a fixed search seed and DB snapshot.
-- external control measurements are not imported into production campaign DBs.
+- blind campaign DBs do not import external control measurements. Declared non-blind experiments may import labeled controls and seeds without changing the generic acquisition logic.
 
 The replay infrastructure in `docs/blind_experiment_infrastructure.md` enforces the same exact-query rule for simulated campaigns.
 

@@ -105,4 +105,4 @@ Tests cover feature ranges, the dispatch-efficiency ordering, fixed shortlist si
 
 - The prior does not model full VGPR allocation, occupancy, memory coalescing, instruction scheduling, or code-object size.
 - Token priorities and lane fractions are fixed policy constants and have not received a full multi-seed ablation.
-- Better mechanical coverage does not imply better final performance. Experiment outcomes belong in `docs/blind_one_shape_experiment.md`.
+- Better mechanical coverage does not imply better final performance. Experiment outcomes belong in `docs/experiment_blind_one_shape.md`.

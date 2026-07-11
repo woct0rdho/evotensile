@@ -1,4 +1,4 @@
-# Blind One-Shape Experiment Log
+# Blind One-Shape Experiment
 
 This document records the blind `gfx1151-nt-hhs` search experiments for shape `8192,8192,1,8192`. It is an experiment log, not a subsystem design specification. Reusable search design lives in focused documents under `docs/`. Replay and blindness rules are in `docs/blind_experiment_infrastructure.md`, and the one-shape state machine is in `docs/blind_campaign_control.md`.
 
@@ -34,7 +34,7 @@ All campaigns in this log follow these rules:
 - unknown oracle candidates remain unknown.
 - the external result is checked only as a final threshold.
 
-## Early Blind Baselines
+## Early Baselines
 
 ### Broad Learned-Evolution Campaign
 
@@ -55,7 +55,7 @@ The archive could lose a coarse family after one failed representative, and the 
 
 ### Family-QD V3
 
-The improved blind V3 campaign produced the following result. Its superseded raw artifacts were pruned after the final experiment set was retained.
+The improved V3 campaign produced the following result. Its superseded raw artifacts were pruned after the final experiment set was retained.
 
 Results:
 - `144` candidates.
@@ -87,14 +87,14 @@ The production measurement pipeline remained the normal compile, validation, thr
 
 ## Simulated Policy Selection
 
-Proof-eligible replay used only candidate streams from prior blind campaigns. Unknown hashes were not imputed.
+Proof-eligible replay used only candidate streams from prior campaigns. Unknown hashes were not imputed.
 
 Four neutral policies were compared over three seeds. The most reliable policy used:
 - `24` measured candidates per feedback round.
 - a `256`-candidate visible replay window.
 - surrogate activation at `24` positive evidence rows.
 
-That policy recovered the best available blind finalist in all three replay seeds. The previous `32`-candidate, `128`-window policy missed it in two seeds.
+That policy recovered the best available finalist in all three replay seeds. The previous `32`-candidate, `128`-window policy missed it in two seeds.
 
 Proof-eligible replay topped out at `27.5-29.0 TFLOP/s` hot within the simulated budget and did not meet the target.
 

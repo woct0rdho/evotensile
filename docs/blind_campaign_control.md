@@ -123,7 +123,7 @@ The surrogate is refit from the checkpointed DB, and operator/group/donor credit
 
 The helper defaults are eight rounds, `0.25%` minimum improvement, and mean Hamming distance at most `4.0`. The campaign's restart thresholds are separate policy values.
 
-The current experiment log keeps convergence stopping disabled because observed campaigns made important late improvements while population diversity remained high. Evidence and conclusions belong in `docs/blind_one_shape_experiment.md`.
+The current experiment log keeps convergence stopping disabled because observed campaigns made important late improvements while population diversity remained high. Evidence and conclusions belong in `docs/experiment_blind_one_shape.md`.
 
 ## Replay Relationship
 
