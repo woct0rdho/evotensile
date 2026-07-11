@@ -173,29 +173,45 @@ def load_family_attempt_counts(
     shapes: Sequence[Shape] | None = None,
     profile: str = NT_HHS_PROFILE,
 ) -> dict[str, int]:
-    clauses: list[str] = []
-    params: list[str] = []
+    evaluation_clauses: list[str] = []
+    evaluation_params: list[str] = []
+    validation_clauses: list[str] = []
+    validation_params: list[str] = []
     if problem_type_hash is not None:
-        clauses.append("problem_type_hash = ?")
-        params.append(problem_type_hash)
+        evaluation_clauses.append("problem_type_hash = ?")
+        evaluation_params.append(problem_type_hash)
+        validation_clauses.append("problem_type_hash = ?")
+        validation_params.append(problem_type_hash)
     if benchmark_protocol_hash is not None:
-        clauses.append("benchmark_protocol_hash = ?")
-        params.append(benchmark_protocol_hash)
+        evaluation_clauses.append("benchmark_protocol_hash = ?")
+        evaluation_params.append(benchmark_protocol_hash)
     if shapes:
         placeholders = ",".join("?" for _ in shapes)
-        clauses.append(f"shape_id IN ({placeholders})")
-        params.extend(shape.id for shape in shapes)
-    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        evaluation_clauses.append(f"shape_id IN ({placeholders})")
+        evaluation_params.extend(shape.id for shape in shapes)
+        validation_clauses.append(f"shape_id IN ({placeholders})")
+        validation_params.extend(shape.id for shape in shapes)
+    evaluation_where = "WHERE " + " AND ".join(evaluation_clauses) if evaluation_clauses else ""
+    validation_where = "WHERE " + " AND ".join(validation_clauses) if validation_clauses else ""
     with db.connection() as con:
-        rows = con.execute(
+        evaluation_rows = con.execute(
             f"""
             SELECT DISTINCT candidate_hash
             FROM evaluations
-            {where}
+            {evaluation_where}
             """,
-            params,
+            evaluation_params,
         ).fetchall()
-    candidates = db.get_candidates(sorted(str(row["candidate_hash"]) for row in rows))
+        validation_rows = con.execute(
+            f"""
+            SELECT DISTINCT candidate_hash
+            FROM validations
+            {validation_where}
+            """,
+            validation_params,
+        ).fetchall()
+    candidate_hashes = {str(row["candidate_hash"]) for row in [*evaluation_rows, *validation_rows]}
+    candidates = db.get_candidates(sorted(candidate_hashes))
     return family_descriptor_counts(candidates, profile=profile)
 
 
@@ -367,39 +383,61 @@ def _family_status_counts(
     shape_ids: Sequence[str],
     profile: str,
 ) -> dict[str, dict[str, int]]:
-    clauses: list[str] = []
-    params: list[str] = []
+    evaluation_clauses: list[str] = []
+    evaluation_params: list[str] = []
+    validation_clauses: list[str] = []
+    validation_params: list[str] = []
     if problem_type_hash is not None:
-        clauses.append("problem_type_hash = ?")
-        params.append(problem_type_hash)
+        evaluation_clauses.append("problem_type_hash = ?")
+        evaluation_params.append(problem_type_hash)
+        validation_clauses.append("problem_type_hash = ?")
+        validation_params.append(problem_type_hash)
     if benchmark_protocol_hash is not None:
-        clauses.append("benchmark_protocol_hash = ?")
-        params.append(benchmark_protocol_hash)
+        evaluation_clauses.append("benchmark_protocol_hash = ?")
+        evaluation_params.append(benchmark_protocol_hash)
     if shape_ids:
         placeholders = ",".join("?" for _ in shape_ids)
-        clauses.append(f"shape_id IN ({placeholders})")
-        params.extend(shape_ids)
-    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        evaluation_clauses.append(f"shape_id IN ({placeholders})")
+        evaluation_params.extend(shape_ids)
+        validation_clauses.append(f"shape_id IN ({placeholders})")
+        validation_params.extend(shape_ids)
+    evaluation_where = "WHERE " + " AND ".join(evaluation_clauses) if evaluation_clauses else ""
+    validation_where = "WHERE " + " AND ".join(validation_clauses) if validation_clauses else ""
     with db.connection() as con:
-        rows = con.execute(
+        evaluation_rows = con.execute(
             f"""
             SELECT candidate_hash, status, COUNT(*) AS n
             FROM evaluations
-            {where}
+            {evaluation_where}
             GROUP BY candidate_hash, status
             """,
-            params,
+            evaluation_params,
+        ).fetchall()
+        validation_rows = con.execute(
+            f"""
+            SELECT candidate_hash, status, COUNT(*) AS n
+            FROM validations
+            {validation_where}
+            GROUP BY candidate_hash, status
+            """,
+            validation_params,
         ).fetchall()
 
-    candidate_hashes = sorted({str(row["candidate_hash"]) for row in rows})
+    candidate_hashes = sorted({str(row["candidate_hash"]) for row in [*evaluation_rows, *validation_rows]})
     candidates = {candidate.hash: candidate for candidate in db.get_candidates(candidate_hashes)}
     counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for row in rows:
+    for row in evaluation_rows:
         candidate = candidates.get(str(row["candidate_hash"]))
         if candidate is None:
             continue
         descriptor_key = family_descriptor(candidate, profile=profile).key
         counts[descriptor_key][str(row["status"])] += int(row["n"])
+    for row in validation_rows:
+        candidate = candidates.get(str(row["candidate_hash"]))
+        if candidate is None:
+            continue
+        descriptor_key = family_descriptor(candidate, profile=profile).key
+        counts[descriptor_key][f"validation_{row['status']}"] += int(row["n"])
     return {key: dict(status_counts) for key, status_counts in counts.items()}
 
 

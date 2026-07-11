@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from .adaptive_retime import AdaptivePolicy, ProbePolicy, decide_retime_by_shape, decide_shape_probe, load_timing_stats
+from .artifacts import register_candidate_artifacts
 from .cache import POSITIVE_CACHE_STATUSES
 from .candidate import Candidate, Shape, stable_hash
 from .database import EvaluationInsert, EvaluationSummary, EvoTensileDB
@@ -946,7 +947,7 @@ def _missing_candidate_indices_by_shape(
     ignore_cache: bool = False,
 ) -> dict[int, tuple[tuple[int, int, bool], ...]]:
     counts: dict[tuple[str, str], dict[str, int]] = {}
-    validated: set[tuple[str, str]] = set()
+    validation_states: dict[tuple[str, str], str] = {}
     shape_ids = [shape.id for shape in shapes]
     candidate_hashes = [candidate.hash for candidate in candidates]
     if not ignore_cache:
@@ -956,7 +957,7 @@ def _missing_candidate_indices_by_shape(
             shape_ids=shape_ids,
             candidate_hashes=candidate_hashes,
         )
-        validated = db.validated_cache_entries(
+        validation_states = db.validation_cache_states(
             problem_type_hash=problem_type_hash,
             validation_protocol_hash=validation_protocol_hash,
             shape_ids=shape_ids,
@@ -971,16 +972,17 @@ def _missing_candidate_indices_by_shape(
                 reason.shape_dependent for reason in explain_invalid_nt_hhs(candidate.canonical_params(), shape=shape)
             ):
                 continue
-            status_counts = {} if ignore_cache else counts.get((shape.id, candidate.hash), {})
+            key = (shape.id, candidate.hash)
+            status_counts = {} if ignore_cache else counts.get(key, {})
             negative_count = sum(
                 count for status, count in status_counts.items() if status not in POSITIVE_CACHE_STATUSES
             )
-            if negative_count > 0:
+            if negative_count > 0 or validation_states.get(key) == "failed":
                 continue
             ok_count = sum(status_counts.get(status, 0) for status in POSITIVE_CACHE_STATUSES)
             remaining = max(0, min_samples - ok_count)
             if remaining > 0:
-                missing_items.append((candidate_index, remaining, (shape.id, candidate.hash) not in validated))
+                missing_items.append((candidate_index, remaining, validation_states.get(key) != "passed"))
         if missing_items:
             missing[shape_index] = tuple(missing_items)
     return missing
@@ -1465,6 +1467,21 @@ def _prepare_current_batch(
         errors.append("compiled artifact has no runnable library directory")
     elif runnable:
         assert library_dir is not None
+        try:
+            register_candidate_artifacts(
+                db,
+                problem_type_hash=problem_type_hash,
+                runnable_pairs=runnable,
+                build_run_id=build_result.run_id,
+                build_output_dir=build_dir,
+                library_dir=library_dir,
+                solution_yaml_paths=solution_yamls,
+                manifest_path=manifest_path,
+            )
+        except (OSError, ValueError) as exc:
+            errors.append(f"candidate artifact registration failed: {exc}")
+
+    if runnable and library_dir is not None and not errors:
         if current.requires_validation:
             validation_protocol = protocol.with_overrides(num_benchmarks=1)
 
@@ -1498,7 +1515,6 @@ def _prepare_current_batch(
                     runnable_pairs=runnable,
                     problem_type_hash=problem_type_hash,
                     validation_protocol_hash=validation_protocol_hash,
-                    benchmark_protocol_hash=benchmark_protocol_hash,
                     run_id=validation_result.run_id,
                     runner_returncode=validation_result.returncode,
                 )
@@ -1506,7 +1522,6 @@ def _prepare_current_batch(
                 errors.append(str(exc))
             else:
                 db.insert_validations(outcome.validations)
-                preparation_inserts.extend(outcome.negative_evaluations)
                 validated_pairs = outcome.passed_pairs
         else:
             cached = db.validated_cache_entries(

@@ -6,10 +6,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from evotensile.adaptive_retime import CandidateTimingStats, load_timing_stats
+from evotensile.artifacts import CandidateArtifact, load_candidate_artifacts
 from evotensile.candidate import Shape
 from evotensile.database import EvoTensileDB
 from evotensile.protocol import BenchmarkProtocol
-from evotensile.search.hot_confirm import CandidateArtifact, load_candidate_artifacts
 from evotensile.structured_runner import run_structured_phase, validate_benchmark_samples
 
 
@@ -138,7 +138,6 @@ def stabilize_screening_leaders(
     output_dir: str | Path,
     runner_bin: str | Path,
     policy: ScreeningStabilizationPolicy | None = None,
-    architecture: str = "gfx1151",
     deadline: float | None = None,
     runner_timeout_s: float = 300.0,
 ) -> ScreeningStabilizationResult:
@@ -167,7 +166,12 @@ def stabilize_screening_leaders(
         shape_ids=[shape.id],
         candidate_hashes=candidate_hashes,
     )
-    artifacts = load_candidate_artifacts(db.path, architecture=architecture)
+    artifacts = load_candidate_artifacts(
+        db,
+        problem_type_hash=problem_type_hash,
+        shape_ids=[shape.id],
+        candidate_hashes=candidate_hashes,
+    )
     grouped: dict[tuple[Path, int], list[tuple[ScreeningTopupRequest, CandidateArtifact]]] = {}
     skipped: list[str] = []
     for request in requests:

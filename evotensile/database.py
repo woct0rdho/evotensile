@@ -10,8 +10,6 @@ from .cache import POSITIVE_CACHE_STATUSES, REUSABLE_CACHE_STATUSES, CacheKey
 from .candidate import Candidate, Shape
 from .metrics import gflops_from_us
 
-VALIDATION_PASS_TOKENS = ("PASSED", "OK", "VALID")
-
 
 def validation_token(value: str | None) -> str:
     return (value or "").strip().split(maxsplit=1)[0].upper()
@@ -50,6 +48,42 @@ class ValidationInsert:
     validation_protocol_hash: str
     detail: str | None = None
     solution_index: int | None = None
+
+
+@dataclass(frozen=True)
+class CandidateArtifactInsert:
+    problem_type_hash: str
+    shape_id: str
+    candidate_hash: str
+    problem_index: int
+    requested_solution_index: int
+    library_solution_index: int
+    manifest_solution_index: int | None
+    build_run_id: str
+    build_output_dir: str
+    library_dir: str
+    solution_yaml_paths_json: str
+    manifest_path: str | None
+    code_object_identity: str
+
+
+@dataclass(frozen=True)
+class CandidateArtifactRecord:
+    artifact_id: int
+    problem_type_hash: str
+    shape_id: str
+    candidate_hash: str
+    problem_index: int
+    requested_solution_index: int
+    library_solution_index: int
+    manifest_solution_index: int | None
+    build_run_id: str
+    build_output_dir: str
+    library_dir: str
+    solution_yaml_paths_json: str
+    manifest_path: str | None
+    code_object_identity: str
+    created_at: float
 
 
 @dataclass
@@ -137,6 +171,30 @@ CREATE TABLE IF NOT EXISTS validations (
 
 CREATE INDEX IF NOT EXISTS idx_validations_cache_key
   ON validations(problem_type_hash, validation_protocol_hash, shape_id, candidate_hash);
+
+CREATE TABLE IF NOT EXISTS candidate_artifacts (
+  artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  problem_type_hash TEXT NOT NULL,
+  shape_id TEXT NOT NULL,
+  candidate_hash TEXT NOT NULL,
+  problem_index INTEGER NOT NULL,
+  requested_solution_index INTEGER NOT NULL,
+  library_solution_index INTEGER NOT NULL,
+  manifest_solution_index INTEGER,
+  build_run_id TEXT NOT NULL,
+  build_output_dir TEXT NOT NULL,
+  library_dir TEXT NOT NULL,
+  solution_yaml_paths_json TEXT NOT NULL,
+  manifest_path TEXT,
+  code_object_identity TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  UNIQUE(problem_type_hash, shape_id, candidate_hash, library_solution_index,
+         library_dir, code_object_identity)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_artifacts_pair
+  ON candidate_artifacts(problem_type_hash, shape_id, candidate_hash, created_at DESC);
+
 """
 
 
@@ -177,24 +235,6 @@ class EvoTensileDB:
                     candidate.to_json(),
                     candidate.source,
                     json.dumps(list(candidate.parent_hashes)),
-                    time.time(),
-                ),
-            )
-
-    def upsert_shape(self, shape: Shape) -> None:
-        with self.connection() as con:
-            con.execute(
-                """
-                INSERT OR IGNORE INTO shapes
-                  (shape_id, m, n, batch, k, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    shape.id,
-                    shape.m,
-                    shape.n,
-                    shape.batch,
-                    shape.k,
                     time.time(),
                 ),
             )
@@ -390,6 +430,85 @@ class EvoTensileDB:
                 ],
             )
 
+    def insert_candidate_artifacts(self, artifacts: list[CandidateArtifactInsert]) -> None:
+        if not artifacts:
+            return
+        now = time.time()
+        with self.connection() as con:
+            con.executemany(
+                """
+                INSERT INTO candidate_artifacts
+                  (problem_type_hash, shape_id, candidate_hash, problem_index,
+                   requested_solution_index, library_solution_index, manifest_solution_index,
+                   build_run_id, build_output_dir, library_dir, solution_yaml_paths_json,
+                   manifest_path, code_object_identity, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(problem_type_hash, shape_id, candidate_hash, library_solution_index,
+                            library_dir, code_object_identity)
+                DO UPDATE SET
+                  problem_index = excluded.problem_index,
+                  requested_solution_index = excluded.requested_solution_index,
+                  manifest_solution_index = excluded.manifest_solution_index,
+                  build_run_id = excluded.build_run_id,
+                  build_output_dir = excluded.build_output_dir,
+                  solution_yaml_paths_json = excluded.solution_yaml_paths_json,
+                  manifest_path = excluded.manifest_path,
+                  created_at = excluded.created_at
+                """,
+                [
+                    (
+                        artifact.problem_type_hash,
+                        artifact.shape_id,
+                        artifact.candidate_hash,
+                        artifact.problem_index,
+                        artifact.requested_solution_index,
+                        artifact.library_solution_index,
+                        artifact.manifest_solution_index,
+                        artifact.build_run_id,
+                        artifact.build_output_dir,
+                        artifact.library_dir,
+                        artifact.solution_yaml_paths_json,
+                        artifact.manifest_path,
+                        artifact.code_object_identity,
+                        now,
+                    )
+                    for artifact in artifacts
+                ],
+            )
+
+    def candidate_artifact_records(
+        self,
+        *,
+        problem_type_hash: str,
+        shape_ids: list[str] | None = None,
+        candidate_hashes: list[str] | None = None,
+    ) -> list[CandidateArtifactRecord]:
+        clauses = ["problem_type_hash = ?"]
+        params: list[str] = [problem_type_hash]
+        if shape_ids is not None:
+            if not shape_ids:
+                return []
+            placeholders = ",".join("?" for _ in shape_ids)
+            clauses.append(f"shape_id IN ({placeholders})")
+            params.extend(shape_ids)
+        if candidate_hashes is not None:
+            if not candidate_hashes:
+                return []
+            placeholders = ",".join("?" for _ in candidate_hashes)
+            clauses.append(f"candidate_hash IN ({placeholders})")
+            params.extend(candidate_hashes)
+        with self.connection() as con:
+            rows = con.execute(
+                f"""
+                SELECT *
+                FROM candidate_artifacts
+                WHERE {" AND ".join(clauses)}
+                ORDER BY created_at DESC, artifact_id DESC
+                """,
+                params,
+            ).fetchall()
+        return [CandidateArtifactRecord(**dict(row)) for row in rows]
+
     def cached_evaluation_count(
         self,
         *,
@@ -506,6 +625,40 @@ class EvoTensileDB:
             counts.setdefault(key, {})[row["status"]] = int(row["n"])
         return counts
 
+    def validation_cache_states(
+        self,
+        *,
+        problem_type_hash: str,
+        validation_protocol_hash: str,
+        shape_ids: list[str],
+        candidate_hashes: list[str],
+    ) -> dict[tuple[str, str], str]:
+        if not shape_ids or not candidate_hashes:
+            return {}
+        shape_placeholders = ",".join("?" for _ in shape_ids)
+        candidate_placeholders = ",".join("?" for _ in candidate_hashes)
+        with self.connection() as con:
+            rows = con.execute(
+                f"""
+                SELECT shape_id, candidate_hash, status
+                FROM (
+                  SELECT shape_id, candidate_hash, status,
+                         ROW_NUMBER() OVER (
+                           PARTITION BY shape_id, candidate_hash
+                           ORDER BY created_at DESC, validation_id DESC
+                         ) AS evidence_rank
+                  FROM validations
+                  WHERE problem_type_hash = ?
+                    AND validation_protocol_hash = ?
+                    AND shape_id IN ({shape_placeholders})
+                    AND candidate_hash IN ({candidate_placeholders})
+                )
+                WHERE evidence_rank = 1
+                """,
+                (problem_type_hash, validation_protocol_hash, *shape_ids, *candidate_hashes),
+            ).fetchall()
+        return {(row["shape_id"], row["candidate_hash"]): row["status"] for row in rows}
+
     def validated_cache_entries(
         self,
         *,
@@ -514,24 +667,13 @@ class EvoTensileDB:
         shape_ids: list[str],
         candidate_hashes: list[str],
     ) -> set[tuple[str, str]]:
-        if not shape_ids or not candidate_hashes:
-            return set()
-        shape_placeholders = ",".join("?" for _ in shape_ids)
-        candidate_placeholders = ",".join("?" for _ in candidate_hashes)
-        with self.connection() as con:
-            rows = con.execute(
-                f"""
-                SELECT DISTINCT shape_id, candidate_hash
-                FROM validations
-                WHERE problem_type_hash = ?
-                  AND validation_protocol_hash = ?
-                  AND shape_id IN ({shape_placeholders})
-                  AND candidate_hash IN ({candidate_placeholders})
-                  AND status = 'passed'
-                """,
-                (problem_type_hash, validation_protocol_hash, *shape_ids, *candidate_hashes),
-            ).fetchall()
-        return {(row["shape_id"], row["candidate_hash"]) for row in rows}
+        states = self.validation_cache_states(
+            problem_type_hash=problem_type_hash,
+            validation_protocol_hash=validation_protocol_hash,
+            shape_ids=shape_ids,
+            candidate_hashes=candidate_hashes,
+        )
+        return {key for key, status in states.items() if status == "passed"}
 
     def reusable_cache_entries(
         self,
@@ -673,5 +815,5 @@ class EvoTensileDB:
         with self.connection() as con:
             return {
                 table: con.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
-                for table in ["candidates", "shapes", "runs", "evaluations", "validations"]
+                for table in ["candidates", "shapes", "runs", "evaluations", "validations", "candidate_artifacts"]
             }

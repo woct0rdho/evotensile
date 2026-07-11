@@ -1,4 +1,3 @@
-import math
 import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -161,9 +160,3 @@ def split_budget(total: int, parts: int) -> list[int]:
         raise ValueError("parts must be positive")
     base, remainder = divmod(max(0, total), parts)
     return [base + int(index < remainder) for index in range(parts)]
-
-
-def scaled_count(value: int, numerator: int, denominator: int) -> int:
-    if value <= 0 or numerator <= 0:
-        return 0
-    return max(1, math.floor(value * numerator / denominator))

@@ -139,10 +139,6 @@ class BenchmarkProtocol:
         return stable_hash(self.validation_identity_parameters(), prefix="vproto_")[:23]
 
 
-def benchmark_protocol_hash(protocol: BenchmarkProtocol) -> str:
-    return protocol.protocol_hash()
-
-
 def _format_global_value(value: Any) -> str:
     if isinstance(value, bool):
         return "True" if value else "False"

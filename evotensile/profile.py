@@ -42,7 +42,6 @@ class TargetProfile:
     default_runner_bin: str = "./build/evotensile-structured-runner"
     default_build_timeout_s: float | None = 1800.0
     default_runner_timeout_s: float | None = 600.0
-    structured_runner_build_command: tuple[str, ...] = ("scripts/build_structured_runner.sh",)
 
     @property
     def problem_type_hash(self) -> str:

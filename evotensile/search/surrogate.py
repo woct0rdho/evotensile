@@ -14,7 +14,6 @@ from evotensile.search.mechanics import candidate_shape_mechanics, select_coveri
 from evotensile.search_space import _valu_vgpr_lower_bound, macro_tile
 
 DEFAULT_SURROGATE_MIN_EVIDENCE = 24
-DEFAULT_SURROGATE_POOL_MULTIPLIER = 1
 
 
 @dataclass(frozen=True)

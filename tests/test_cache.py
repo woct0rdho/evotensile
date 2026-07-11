@@ -1,6 +1,6 @@
 from textwrap import dedent
 
-from evotensile.cache import CacheKey, benchmark_protocol_hash
+from evotensile.cache import CacheKey
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL, global_parameter_items
@@ -23,12 +23,12 @@ def test_string_global_parameters_are_quoted_for_tensilelite_cli():
 
 
 def test_protocol_hash_ignores_sampling_budget_and_validation_execution():
-    base = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL)
-    more_samples = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=120))
-    gpu_only_topup = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_elements_to_validate=0))
-    cpu_validation = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(validation_backend="cpu"))
-    changed_warmups = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=5))
-    probe = benchmark_protocol_hash(DEFAULT_BENCHMARK_PROTOCOL.with_overrides(role="probe"))
+    base = DEFAULT_BENCHMARK_PROTOCOL.protocol_hash()
+    more_samples = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=120).protocol_hash()
+    gpu_only_topup = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_elements_to_validate=0).protocol_hash()
+    cpu_validation = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(validation_backend="cpu").protocol_hash()
+    changed_warmups = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_warmups=5).protocol_hash()
+    probe = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(role="probe").protocol_hash()
     assert base == more_samples
     assert base == gpu_only_topup
     assert base == cpu_validation

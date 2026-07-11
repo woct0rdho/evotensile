@@ -1,16 +1,15 @@
 import csv
 import json
-import sqlite3
-import subprocess
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
+from evotensile.artifacts import load_candidate_artifacts
 from evotensile.database import EvoTensileDB
 from evotensile.metrics import gflops_from_us
+from evotensile.protocol import BenchmarkProtocol
 from evotensile.shapes import shape_from_id
-from evotensile.structured_runner import RunnablePair
+from evotensile.structured_runner import run_structured_phase, validate_benchmark_samples
 
 
 class HotConfirmationRecord(TypedDict):
@@ -27,57 +26,20 @@ class HotConfirmationRecord(TypedDict):
     command: list[str]
 
 
-@dataclass(frozen=True)
-class CandidateArtifact:
-    raw_pair: dict[str, object]
-    runnable_pair: RunnablePair
-    library_dir: Path
+class HotConfirmationFailure(TypedDict):
+    screen_rank: int
+    candidate_hash: str
+    returncode: int
+    timed_out: bool
+    reason: str
 
 
-def load_candidate_artifacts(db_path: str | Path, *, architecture: str) -> dict[tuple[str, str], CandidateArtifact]:
-    found: dict[tuple[str, str], CandidateArtifact] = {}
-    with sqlite3.connect(db_path) as connection:
-        rows = connection.execute(
-            "SELECT metadata_json FROM runs WHERE metadata_json IS NOT NULL ORDER BY timestamp"
-        ).fetchall()
-    for (metadata_json,) in rows:
-        metadata = json.loads(metadata_json)
-        command = metadata.get("command") or []
-        build_output_dir = metadata.get("build_output_dir")
-        if "--pairs" not in command:
-            continue
-        pairs_path = Path(command[command.index("--pairs") + 1])
-        if not pairs_path.exists():
-            continue
-        if "--library-dir" in command:
-            library_dirs = [Path(command[command.index("--library-dir") + 1])]
-        elif build_output_dir:
-            library_dirs = sorted(Path(build_output_dir).glob(f"1_BenchmarkProblems/**/source/library/{architecture}"))
-        else:
-            library_dirs = []
-        if not library_dirs or not library_dirs[0].exists():
-            continue
-        for line in pairs_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            pair = json.loads(line)
-            shape_id = str(pair["shape_id"])
-            candidate_hash = str(pair["candidate_hash"])
-            manifest_solution_index = pair.get("manifest_solution_index")
-            runnable = RunnablePair(
-                shape_id=shape_id,
-                candidate_hash=candidate_hash,
-                problem_index=int(pair["problem_index"]),
-                requested_solution_index=int(pair["requested_solution_index"]),
-                library_solution_index=int(pair["library_solution_index"]),
-                manifest_solution_index=(None if manifest_solution_index is None else int(manifest_solution_index)),
-            )
-            found[(shape_id, candidate_hash)] = CandidateArtifact(
-                raw_pair=pair,
-                runnable_pair=runnable,
-                library_dir=library_dirs[0],
-            )
-    return found
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return (ordered[midpoint - 1] + ordered[midpoint]) / 2.0
 
 
 def hot_confirm_topk(
@@ -89,7 +51,7 @@ def hot_confirm_topk(
     problem_type_hash: str,
     screening_protocol_hash: str,
     validation_protocol_hash: str,
-    architecture: str = "gfx1151",
+    hot_protocol: BenchmarkProtocol,
     top_k: int = 8,
     deadline: float | None = None,
     runner_timeout_s: float = 300.0,
@@ -112,102 +74,106 @@ def hot_confirm_topk(
         candidate_hashes=hashes,
     )
     hashes = [candidate_hash for candidate_hash in hashes if (shape_id, candidate_hash) in validated]
-    artifacts = load_candidate_artifacts(db_path, architecture=architecture)
+    artifacts = load_candidate_artifacts(
+        db,
+        problem_type_hash=problem_type_hash,
+        shape_ids=[shape_id],
+        candidate_hashes=hashes,
+    )
     shape = shape_from_id(shape_id)
     records: list[HotConfirmationRecord] = []
+    failures: list[HotConfirmationFailure] = []
     for screen_rank, candidate_hash in enumerate(hashes, 1):
         if deadline is not None and time.monotonic() >= deadline:
             break
         artifact = artifacts.get((shape_id, candidate_hash))
         if artifact is None:
+            failures.append(
+                {
+                    "screen_rank": screen_rank,
+                    "candidate_hash": candidate_hash,
+                    "returncode": 0,
+                    "timed_out": False,
+                    "reason": "registered screening artifact is unavailable",
+                }
+            )
             continue
-        library_dir = artifact.library_dir
-        hot_pair = dict(artifact.raw_pair)
-        hot_pair.update(
-            {
-                "num_warmups": 20,
-                "num_benchmarks": 10,
-                "enqueues_per_sync": 10,
-                "syncs_per_benchmark": 1,
-                "num_elements_to_validate": 0,
-            }
-        )
         candidate_dir = output / f"rank_{screen_rank:02d}_{candidate_hash}"
-        candidate_dir.mkdir(exist_ok=True)
-        pairs_path = candidate_dir / "pairs.jsonl"
-        results_path = candidate_dir / "results.jsonl"
-        stdout_path = candidate_dir / "stdout.log"
-        stderr_path = candidate_dir / "stderr.log"
-        pairs_path.write_text(json.dumps(hot_pair, sort_keys=True) + "\n", encoding="utf-8")
-        command = [
-            str(runner_bin),
-            "--mode",
-            "benchmark",
-            "--pairs",
-            str(pairs_path),
-            "--output",
-            str(results_path),
-            "--validation-backend",
-            "hipblaslt",
-            "--library-dir",
-            str(library_dir),
-        ]
         timeout = runner_timeout_s
         if deadline is not None:
             timeout = min(timeout, max(1.0, deadline - time.monotonic()))
-        start = time.perf_counter()
-        with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
-            try:
-                process = subprocess.run(
-                    command,
-                    stdout=stdout,
-                    stderr=stderr,
-                    text=True,
-                    check=False,
-                    timeout=timeout,
-                )
-            except subprocess.TimeoutExpired:
-                break
-        duration = time.perf_counter() - start
-        if not results_path.exists():
-            continue
-        rows = [json.loads(line) for line in results_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-        positive_rows = [row for row in rows if row.get("status") == "ok"]
-        times = sorted(float(row["time_us"]) for row in positive_rows)
-        gflops = sorted(
-            float(row["gflops"]) if row.get("gflops") is not None else gflops_from_us(shape, float(row["time_us"]))
-            for row in positive_rows
+        run_output = run_structured_phase(
+            mode="benchmark",
+            run_dir=candidate_dir,
+            pairs=[artifact.runnable_pair],
+            shapes=[shape],
+            protocol=hot_protocol,
+            runner_bin=runner_bin,
+            library_dir=artifact.library_dir,
+            timeout_s=timeout,
         )
-        if process.returncode != 0 or len(times) != 10:
+        if run_output.timed_out:
+            failures.append(
+                {
+                    "screen_rank": screen_rank,
+                    "candidate_hash": candidate_hash,
+                    "returncode": run_output.returncode,
+                    "timed_out": True,
+                    "reason": f"hot confirmation timed out after {timeout} seconds",
+                }
+            )
             continue
+        try:
+            inserts = validate_benchmark_samples(
+                run_output.samples,
+                runnable_pairs=[artifact.runnable_pair],
+                protocol=hot_protocol,
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=hot_protocol.protocol_hash(),
+                run_id=run_output.run_id,
+                runner_returncode=run_output.returncode,
+            )
+            if len(inserts) != hot_protocol.num_benchmarks or any(insert.status != "ok" for insert in inserts):
+                raise ValueError("hot confirmation did not return a complete positive sample set")
+            times = [float(insert.time_us) for insert in inserts if insert.time_us is not None]
+        except (TypeError, ValueError) as exc:
+            failures.append(
+                {
+                    "screen_rank": screen_rank,
+                    "candidate_hash": candidate_hash,
+                    "returncode": run_output.returncode,
+                    "timed_out": False,
+                    "reason": str(exc),
+                }
+            )
+            continue
+        gflops = [gflops_from_us(shape, time_us) for time_us in times]
         records.append(
             {
                 "screen_rank": screen_rank,
                 "candidate_hash": candidate_hash,
-                "returncode": process.returncode,
-                "duration_s": duration,
+                "returncode": run_output.returncode,
+                "duration_s": run_output.duration_s,
                 "samples": len(times),
-                "median_time_us": (times[4] + times[5]) / 2.0,
+                "median_time_us": _median(times),
                 "best_time_us": min(times),
-                "median_gflops": (gflops[4] + gflops[5]) / 2.0,
+                "median_gflops": _median(gflops),
                 "best_gflops": max(gflops),
-                "library_dir": str(library_dir),
-                "command": command,
+                "library_dir": str(artifact.library_dir),
+                "command": run_output.command,
             }
         )
     records.sort(key=lambda record: (record["median_time_us"], record["candidate_hash"]))
     payload = {
         "protocol": {
-            "num_warmups": 20,
-            "num_benchmarks": 10,
-            "enqueues_per_sync": 10,
-            "syncs_per_benchmark": 1,
-            "num_elements_to_validate": 0,
-            "validation_backend": "hipblaslt",
+            **hot_protocol.global_parameters(),
+            **hot_protocol.runner_parameters(),
+            "benchmark_protocol_hash": hot_protocol.protocol_hash(),
             "validation_disabled_by_num_elements": True,
             "validation_reused_from_screening_db": True,
         },
         "ranked": records,
+        "failures": failures,
     }
     (output / "summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     with (output / "ranked.csv").open("w", newline="", encoding="utf-8") as handle:

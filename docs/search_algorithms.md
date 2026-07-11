@@ -136,11 +136,12 @@ Imported hipBLASLt baselines are normal DB candidates. Once imported, they can b
 
 ## Cache-Aware Planning
 
-The scheduler avoids repeating known work with reusable cache status:
-- Positive status: `ok`.
-- Reusable negative statuses: `rejected`, `validation_fail`, and `build_failed`.
+The scheduler avoids repeating known work with separate timing and correctness state:
+- Positive benchmark status: `ok`.
+- Reusable benchmark negatives: `rejected` and `build_failed`.
+- Latest compatible validation state: `passed` or `failed` under the validation-protocol hash.
 - Positive sample counts determine whether more timing samples are needed.
-- Negative reusable rows skip the pair entirely for the same problem/protocol/shape/candidate key.
+- Reusable benchmark negatives or a latest compatible validation failure skip the pair. A different validation identity requests fresh correctness verification.
 
 `plan_batches()` first chunks candidates and shapes, then builds exact rectangular batches only for missing observations. Shapes that have the same missing candidate subset and same required sample count are grouped together.
 
