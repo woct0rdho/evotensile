@@ -188,7 +188,7 @@ def test_scheduler_surrogate_multiplier_preserves_cold_measurement_budget(tmp_pa
         surrogate_pool_multiplier=4,
         covering_cold_start=True,
         seed=20260710,
-    )
+    ).selected
 
     assert len(proposed) == 16
     assert {candidate.source for candidate in proposed} == {"random"}

@@ -138,7 +138,7 @@ def stabilize_screening_leaders(
     output_dir: str | Path,
     runner_bin: str | Path,
     policy: ScreeningStabilizationPolicy | None = None,
-    deadline: float | None = None,
+    admission_deadline: float | None = None,
     runner_timeout_s: float = 300.0,
 ) -> ScreeningStabilizationResult:
     started = time.monotonic()
@@ -192,7 +192,7 @@ def stabilize_screening_leaders(
     for group_index, ((library_dir, remaining), items) in enumerate(
         sorted(grouped.items(), key=lambda item: (-item[0][1], str(item[0][0])))
     ):
-        if deadline is not None and time.monotonic() >= deadline:
+        if admission_deadline is not None and time.monotonic() >= admission_deadline:
             skipped.extend(request.candidate_hash for request, _ in items)
             continue
         pairs = [artifact.runnable_pair for _, artifact in items]
@@ -200,9 +200,6 @@ def stabilize_screening_leaders(
             num_benchmarks=remaining,
             num_elements_to_validate=0,
         )
-        timeout = runner_timeout_s
-        if deadline is not None:
-            timeout = min(timeout, max(1.0, deadline - time.monotonic()))
         output = run_structured_phase(
             mode="benchmark",
             run_dir=output_root / f"group_{group_index:02d}",
@@ -211,7 +208,7 @@ def stabilize_screening_leaders(
             protocol=run_protocol,
             runner_bin=runner_bin,
             library_dir=library_dir,
-            timeout_s=timeout,
+            timeout_s=runner_timeout_s,
         )
         run_count += 1
         db.insert_run(

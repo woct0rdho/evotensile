@@ -76,6 +76,103 @@ def test_db_cache_key_lookup(tmp_path):
     assert db.cache_summary() == {"ok": 1}
 
 
+def test_positive_benchmark_evidence_supersedes_reusable_negatives(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
+    db.init()
+    candidate = sample_candidates(1)[0]
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    key = CacheKey(p_hash, b_hash, shape.id, candidate.hash)
+    db.register_candidates([candidate])
+    db.register_shapes([shape])
+
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+        run_id="rejected",
+        status="rejected",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+        run_id="timed",
+        status="ok",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        time_us=123.0,
+        validation="PASSED prior_validation",
+    )
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+        run_id="later_build",
+        status="build_failed",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+
+    state = db.benchmark_evidence_states(
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        shape_ids=[shape.id],
+        candidate_hashes=[candidate.hash],
+    )[(shape.id, candidate.hash)]
+    assert state.ok_samples == 1
+    assert state.resolved_status == "ok"
+    assert not state.reusable_negative
+    assert db.has_reusable_cache_entry(key)
+    assert not db.has_reusable_cache_entry(key, min_ok_samples=2)
+    assert len(db.rank_evaluations()) == 1
+
+
+def test_latest_reusable_negative_resolves_negative_only_state(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
+    db.init()
+    candidate = sample_candidates(1)[0]
+    shape = pilot_100_shapes()[0]
+    for run_id, status in (("first", "rejected"), ("second", "build_failed")):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id=run_id,
+            status=status,
+            problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+            benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        )
+
+    state = db.benchmark_evidence_states(
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        shape_ids=[shape.id],
+        candidate_hashes=[candidate.hash],
+    )[(shape.id, candidate.hash)]
+    assert state.ok_samples == 0
+    assert state.resolved_status == "build_failed"
+    assert state.reusable_negative
+    assert state.latest_negative_eval_id is not None
+
+
+def test_reusable_negative_insertion_is_idempotent(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "cache.sqlite")
+    db.init()
+    candidate = sample_candidates(1)[0]
+    shape = pilot_100_shapes()[0]
+    for _ in range(2):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="same_run",
+            status="rejected",
+            problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+            benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        )
+
+    assert db.cache_summary() == {"rejected": 1}
+
+
 def test_run_tensilelite_use_cache_emits_cli_flag(tmp_path):
     fake_tensile = tmp_path / "fake_tensile.py"
     fake_tensile.write_text(

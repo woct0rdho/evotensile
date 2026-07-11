@@ -156,6 +156,7 @@ def _fake_build_tensile(path: Path) -> Path:
             #!/usr/bin/env python3
             import os
             import sys
+            import time
             from pathlib import Path
 
             import yaml
@@ -166,6 +167,7 @@ def _fake_build_tensile(path: Path) -> Path:
                     events.write("compile_start\\n")
             config_path, out = Path(sys.argv[1]), Path(sys.argv[2])
             out.mkdir(parents=True, exist_ok=True)
+            time.sleep(float(os.environ.get("EVOTENSILE_TEST_BUILD_SLEEP_S", "0")))
             if "--build-only" not in sys.argv:
                 sys.exit(9)
             config = yaml.safe_load(config_path.read_text())

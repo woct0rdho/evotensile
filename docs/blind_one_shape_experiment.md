@@ -96,7 +96,7 @@ Four neutral policies were compared over three seeds. The most reliable policy u
 
 That policy recovered the best available blind finalist in all three replay seeds. The previous `32`-candidate, `128`-window policy missed it in two seeds.
 
-Proof-eligible replay topped out at `27.5–29.0 TFLOP/s` hot within the simulated budget and did not meet the target.
+Proof-eligible replay topped out at `27.5-29.0 TFLOP/s` hot within the simulated budget and did not meet the target.
 
 A separate directed/control pool diagnostic met the threshold quickly, but it was recorded with `proof_eligible=false`. It showed that the selector could recognize a strong candidate if visible. It did not show that blind search could generate one.
 
@@ -187,7 +187,7 @@ These mechanisms were evaluated as one combined campaign policy. The run was not
 
 Implementation and simulation preflight completed on `2026-07-10`. Before the real campaign series, focused correctness coverage and the complete repository test suite passed.
 
-Exact-hash replay was rerun with staged-probe accounting over seeds `20260710–20260712` and equal `1200s` budgets. The matched baseline and new policy recovered the same historical `44.331 TFLOP/s` hot finalist. Median simulated time to first exceed `40 TFLOP/s` screening improved from `168.47s` to `114.05s`, a `32.3%` reduction. The staged probe allowed a median of `984` queried candidates instead of the former `960`, although new-policy seed `20260711` regressed to `172.71s`. Replay therefore supports the timing-allocation change but not automatic early stopping or a claim of better unseen solution quality.
+Exact-hash replay was rerun with staged-probe accounting over seeds `20260710-20260712` and equal `1200s` budgets. The matched baseline and new policy recovered the same historical `44.331 TFLOP/s` hot finalist. Median simulated time to first exceed `40 TFLOP/s` screening improved from `168.47s` to `114.05s`, a `32.3%` reduction. The staged probe allowed a median of `984` queried candidates instead of the former `960`, although new-policy seed `20260711` regressed to `172.71s`. Replay therefore supports the timing-allocation change but not automatic early stopping or a claim of better unseen solution quality.
 
 ### Attempt 1: Concurrent Validation Failure
 
@@ -197,9 +197,9 @@ After termination, even a singleton from a previously successful library could n
 
 ### Attempt 2: Catastrophic Probe Tail
 
-`out/blind_one_shape_next_v2_20260710_seed20260713/` confirmed the validation fix: all six serialized validation batches completed in about `2–28s`, at most one validator and one benchmark runner were active, and the loader failure did not recur.
+`out/blind_one_shape_next_v2_20260710_seed20260713/` confirmed the validation fix: all six serialized validation batches completed in about `2-28s`, at most one validator and one benchmark runner were active, and the loader failure did not recur.
 
-This attempt was stopped after about `135s` before round zero completed. The exact-MI cold selector had chosen two `16x16` workgroups requiring about `8.7–9.0s` per launch. Their six launches consumed about `53s` of one `55.0s` probe batch. The next policy revision removed exact MI identities from coverage, added the soft dispatch-efficiency prior, and staged the probe so the slow tail received one launch before screening.
+This attempt was stopped after about `135s` before round zero completed. The exact-MI cold selector had chosen two `16x16` workgroups requiring about `8.7-9.0s` per launch. Their six launches consumed about `53s` of one `55.0s` probe batch. The next policy revision removed exact MI identities from coverage, added the soft dispatch-efficiency prior, and staged the probe so the slow tail received one launch before screening.
 
 For the same seed, the revised cold pool increased mechanical-token coverage from `226` to `236`, retained `42` rather than `44` distinct MatrixInstruction values, removed all five single-instruction workgroups, reduced median CU rounds from `740` to `276`, and raised median macro-tile area from `4608` to `12288`.
 

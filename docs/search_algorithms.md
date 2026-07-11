@@ -136,12 +136,11 @@ Imported hipBLASLt baselines are normal DB candidates. Once imported, they can b
 
 ## Cache-Aware Planning
 
-The scheduler avoids repeating known work with separate timing and correctness state:
-- Positive benchmark status: `ok`.
-- Reusable benchmark negatives: `rejected` and `build_failed`.
-- Latest compatible validation state: `passed` or `failed` under the validation-protocol hash.
-- Positive sample counts determine whether more timing samples are needed.
-- Reusable benchmark negatives or a latest compatible validation failure skip the pair. A different validation identity requests fresh correctness verification.
+The scheduler avoids repeating known work with resolved timing and correctness state:
+- Valid positive benchmark samples have precedence over every reusable benchmark negative and determine whether more samples are needed.
+- When no positive timing exists, the latest `rejected` or `build_failed` row is the reusable benchmark-negative state.
+- Latest compatible validation state is `passed` or `failed` under the validation-protocol hash.
+- A resolved benchmark negative or latest compatible validation failure skips the pair. A different validation identity requests fresh correctness verification.
 
 `plan_batches()` first chunks candidates and shapes, then builds exact rectangular batches only for missing observations. Shapes that have the same missing candidate subset and same required sample count are grouped together.
 
@@ -158,7 +157,7 @@ The default candidate batch size is chosen by a throughput heuristic that keeps 
 
 ## Adaptive Sampling
 
-Adaptive sampling is enabled by default. After parallel compilation and one-time validation, every pair receives one probe launch. Candidates confidently slower than the shape reference by more than the default `4×` factor stop there. Provisional survivors receive two additional launches to reach the `3×1` probe target. Survivors then receive the main `--num-benchmarks` budget and existing confidence-based top-ups. Probe, main, and adaptive rounds reuse the same prepared artifacts and never recompile or revalidate.
+Adaptive sampling is enabled by default. After parallel compilation and one-time validation, every pair receives one probe launch. Candidates confidently slower than the shape reference by more than the default `4*` factor stop there. Provisional survivors receive two additional launches to reach the `3*1` probe target. Survivors then receive the main `--num-benchmarks` budget and existing confidence-based top-ups. Probe, main, and adaptive rounds reuse the same prepared artifacts and never recompile or revalidate.
 
 Probe timing has a distinct protocol identity, so it cannot enter production ranking, family archives, transfer, or learned linkage. `--fixed-sampling` disables both probe racing and adaptive top-ups.
 

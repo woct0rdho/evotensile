@@ -15,7 +15,6 @@ from typing import TypeVar
 
 from .adaptive_retime import AdaptivePolicy, ProbePolicy, decide_retime_by_shape, decide_shape_probe, load_timing_stats
 from .artifacts import register_candidate_artifacts
-from .cache import POSITIVE_CACHE_STATUSES
 from .candidate import Candidate, Shape, stable_hash
 from .database import EvaluationInsert, EvaluationSummary, EvoTensileDB
 from .manifest import write_manifest
@@ -63,6 +62,13 @@ from .structured_runner import (
 )
 from .tensilelite_diagnostics import attribution_inserts_from_diagnostics, run_tensilelite_diagnostics
 from .yaml_writer import write_tensilelite_yaml
+
+
+@dataclass(frozen=True)
+class ProposalResult:
+    preserved: tuple[Candidate, ...]
+    generated: tuple[Candidate, ...]
+    selected: tuple[Candidate, ...]
 
 
 @dataclass(frozen=True)
@@ -602,7 +608,7 @@ def _family_archive_leaders(
         benchmark_protocol_hash=benchmark_protocol_hash,
         shapes=archive_shapes,
         min_samples=1,
-        limit=None,
+        limit=elite_count,
         elites_per_family=min(DEFAULT_FAMILY_ELITES_PER_CELL, elite_count),
     )
     return _dedupe_candidates([entry.leader for entry in entries])
@@ -642,8 +648,8 @@ def propose_candidates(
     cost_aware_operator_credit: bool = False,
     parent_candidates: Sequence[Candidate] | None = None,
     cold_start_precovered_tokens: set[str] | None = None,
-) -> list[Candidate]:
-    """Build candidates from random proposals and/or cached/imported elites."""
+) -> ProposalResult:
+    """Build and classify preserved, generated, and selected candidates."""
     if proposal not in PROPOSAL_MODES:
         raise ValueError(f"unknown proposal mode: {proposal}")
     pool_multiplier = max(1, surrogate_pool_multiplier)
@@ -859,30 +865,38 @@ def propose_candidates(
         )
 
     deduped = _dedupe_candidates(candidates)
-    if pool_multiplier <= 1:
-        return deduped
-    preserved_hashes = (
+    intentional_preserved_hashes = (
         {candidate.hash for candidate in [*transfer_elites, *family_leaders, *supplied_parents]}
         if proposal == "family-qd"
         else {candidate.hash for candidate in [*transfer_elites, *supplied_parents]}
     )
+    known_hashes = {candidate.hash for candidate in db.get_candidates([candidate.hash for candidate in deduped])}
+    preserved_hashes = intentional_preserved_hashes | known_hashes
     preserved = [candidate for candidate in deduped if candidate.hash in preserved_hashes]
     generated = [candidate for candidate in deduped if candidate.hash not in preserved_hashes]
-    variation_budget = local_count + de_count + gomea_count if elites else 0
-    selection_count = num_random + variation_budget
-    selected = select_surrogate_pool(
-        generated,
-        db=db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-        shapes=target_shapes or [],
-        count=selection_count,
-        seed=seed + 4001,
-        min_evidence=surrogate_min_evidence,
-        covering_cold_start=covering_cold_start,
-        cold_start_precovered_tokens=cold_start_precovered_tokens,
+    if pool_multiplier <= 1:
+        selected = deduped
+    else:
+        variation_budget = local_count + de_count + gomea_count if elites else 0
+        selection_count = num_random + variation_budget
+        selected_generated = select_surrogate_pool(
+            generated,
+            db=db,
+            problem_type_hash=problem_type_hash,
+            benchmark_protocol_hash=benchmark_protocol_hash,
+            shapes=target_shapes or [],
+            count=selection_count,
+            seed=seed + 4001,
+            min_evidence=surrogate_min_evidence,
+            covering_cold_start=covering_cold_start,
+            cold_start_precovered_tokens=cold_start_precovered_tokens,
+        )
+        selected = _dedupe_candidates([*preserved, *selected_generated])
+    return ProposalResult(
+        preserved=tuple(preserved),
+        generated=tuple(generated),
+        selected=tuple(selected),
     )
-    return _dedupe_candidates([*preserved, *selected])
 
 
 def _chunks(items: list[T], size: int) -> list[list[T]]:
@@ -907,7 +921,7 @@ def _record_shape_rule_rejections(
     problem_type_hash: str,
     benchmark_protocol_hash: str,
 ) -> int:
-    counts = db.reusable_cache_entry_counts(
+    states = db.benchmark_evidence_states(
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         shape_ids=[shape.id for shape in shapes],
@@ -916,7 +930,7 @@ def _record_shape_rule_rejections(
     evaluations: list[EvaluationInsert] = []
     for shape in shapes:
         for candidate in candidates:
-            if counts.get((shape.id, candidate.hash)):
+            if (shape.id, candidate.hash) in states:
                 continue
             if any(
                 reason.shape_dependent for reason in explain_invalid_nt_hhs(candidate.canonical_params(), shape=shape)
@@ -946,12 +960,12 @@ def _missing_candidate_indices_by_shape(
     min_samples: int,
     ignore_cache: bool = False,
 ) -> dict[int, tuple[tuple[int, int, bool], ...]]:
-    counts: dict[tuple[str, str], dict[str, int]] = {}
+    benchmark_states = {}
     validation_states: dict[tuple[str, str], str] = {}
     shape_ids = [shape.id for shape in shapes]
     candidate_hashes = [candidate.hash for candidate in candidates]
     if not ignore_cache:
-        counts = db.reusable_cache_entry_counts(
+        benchmark_states = db.benchmark_evidence_states(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
             shape_ids=shape_ids,
@@ -973,13 +987,12 @@ def _missing_candidate_indices_by_shape(
             ):
                 continue
             key = (shape.id, candidate.hash)
-            status_counts = {} if ignore_cache else counts.get(key, {})
-            negative_count = sum(
-                count for status, count in status_counts.items() if status not in POSITIVE_CACHE_STATUSES
-            )
-            if negative_count > 0 or validation_states.get(key) == "failed":
+            benchmark_state = None if ignore_cache else benchmark_states.get(key)
+            if (benchmark_state is not None and benchmark_state.reusable_negative) or validation_states.get(
+                key
+            ) == "failed":
                 continue
-            ok_count = sum(status_counts.get(status, 0) for status in POSITIVE_CACHE_STATUSES)
+            ok_count = 0 if benchmark_state is None else benchmark_state.ok_samples
             remaining = max(0, min_samples - ok_count)
             if remaining > 0:
                 missing_items.append((candidate_index, remaining, validation_states.get(key) != "passed"))
@@ -1820,7 +1833,7 @@ def execute_schedule(
     for item in prepared:
         if not item.validated_pairs:
             continue
-        counts = db.reusable_cache_entry_counts(
+        states = db.benchmark_evidence_states(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=probe_protocol_hash,
             shape_ids=[shape.id for shape in item.planned.shapes],
@@ -1828,7 +1841,8 @@ def execute_schedule(
         )
         initial_pairs_by_remaining: dict[int, list[RunnablePair]] = {}
         for pair in item.validated_pairs:
-            current_samples = counts.get((pair.shape_id, pair.candidate_hash), {}).get("ok", 0)
+            state = states.get((pair.shape_id, pair.candidate_hash))
+            current_samples = 0 if state is None else state.ok_samples
             remaining = probe_policy.initial_samples - current_samples
             if remaining > 0:
                 initial_pairs_by_remaining.setdefault(remaining, []).append(pair)
@@ -1870,7 +1884,7 @@ def execute_schedule(
         ]
         if not topup_pairs:
             continue
-        counts = db.reusable_cache_entry_counts(
+        states = db.benchmark_evidence_states(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=probe_protocol_hash,
             shape_ids=[shape.id for shape in item.planned.shapes],
@@ -1878,7 +1892,8 @@ def execute_schedule(
         )
         topup_pairs_by_remaining: dict[int, list[RunnablePair]] = {}
         for pair in topup_pairs:
-            current_samples = counts.get((pair.shape_id, pair.candidate_hash), {}).get("ok", 0)
+            state = states.get((pair.shape_id, pair.candidate_hash))
+            current_samples = 0 if state is None else state.ok_samples
             remaining = probe_policy.samples - current_samples
             if remaining > 0:
                 topup_pairs_by_remaining.setdefault(remaining, []).append(pair)
@@ -1953,7 +1968,7 @@ def execute_schedule(
         )
         requests: dict[tuple[int, int], tuple[PreparedBatch, list[RunnablePair]]] = {}
         for target_samples, group_shapes, group_candidates in groups:
-            counts = db.reusable_cache_entry_counts(
+            states = db.benchmark_evidence_states(
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
                 shape_ids=[shape.id for shape in group_shapes],
@@ -1964,7 +1979,8 @@ def execute_schedule(
                     owner = pair_owner.get((shape.id, candidate.hash))
                     if owner is None:
                         continue
-                    current_samples = counts.get((shape.id, candidate.hash), {}).get("ok", 0)
+                    state = states.get((shape.id, candidate.hash))
+                    current_samples = 0 if state is None else state.ok_samples
                     remaining = target_samples - current_samples
                     if remaining <= 0:
                         continue

@@ -42,9 +42,9 @@ The parallel prepare queue performs, for every batch:
 
 `--prepare-workers` controls this queue and defaults to available CPU cores. `--compile-threads` controls CPU threads inside one TensileLite build and defaults to `1`. `--validation-workers` optionally caps concurrent structured validation processes without reducing compilation parallelism.
 
-Compilation, diagnostics, CPU validation, and GPU validation may overlap when no validation cap is configured. The blind one-shape campaign uses one GPU validation worker because concurrent large-library validation destabilized ROCr/KFD on the integrated gfx1151 system. After all prepare futures finish, the worker pool is shut down. No timing starts until every prepare subprocess has exited.
+Compilation, diagnostics, CPU validation, and GPU validation may overlap when no validation cap is configured. The blind one-shape campaign uses one GPU validation worker because concurrent large-library validation destabilized ROCr/KFD on the integrated gfx1151 system. After all preparation futures finish, the worker pool is shut down. No timing starts until every prepare subprocess has exited.
 
-Timeouts kill the complete subprocess process group before a prepare future completes. Compiler descendants therefore cannot survive the phase barrier.
+Build, diagnostic, validation, and benchmark subprocesses use their configured operational timeouts. Campaign soft deadlines do not clamp those timeouts after a job starts. A timeout kills the complete subprocess process group before the future completes, so compiler descendants cannot survive the phase barrier.
 
 ## Serial Benchmark Queue
 
@@ -134,7 +134,7 @@ Each pair row contains exact shape identity, candidate identity, mapped solution
 - Emits exactly `NumBenchmarks` finite positive samples per pair.
 - Emits `NO_CHECK` to make accidental combined validation detectable.
 
-Python validates pair identity, solution index, row count, sample indices, mode-specific timing fields, and return-code consistency before insertion.
+Python validates pair identity, solution index, row count, sample indices, mode-specific timing fields, and return-code consistency before insertion. Probe, main, and adaptive launches use the configured runner timeout. Campaign control decides whether to admit the enclosing schedule before it starts.
 
 ## Correctness Identity
 

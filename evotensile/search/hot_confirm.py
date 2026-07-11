@@ -53,7 +53,7 @@ def hot_confirm_topk(
     validation_protocol_hash: str,
     hot_protocol: BenchmarkProtocol,
     top_k: int = 8,
-    deadline: float | None = None,
+    admission_deadline: float | None = None,
     runner_timeout_s: float = 300.0,
 ) -> list[HotConfirmationRecord]:
     output = Path(output_dir)
@@ -84,7 +84,7 @@ def hot_confirm_topk(
     records: list[HotConfirmationRecord] = []
     failures: list[HotConfirmationFailure] = []
     for screen_rank, candidate_hash in enumerate(hashes, 1):
-        if deadline is not None and time.monotonic() >= deadline:
+        if admission_deadline is not None and time.monotonic() >= admission_deadline:
             break
         artifact = artifacts.get((shape_id, candidate_hash))
         if artifact is None:
@@ -99,9 +99,6 @@ def hot_confirm_topk(
             )
             continue
         candidate_dir = output / f"rank_{screen_rank:02d}_{candidate_hash}"
-        timeout = runner_timeout_s
-        if deadline is not None:
-            timeout = min(timeout, max(1.0, deadline - time.monotonic()))
         run_output = run_structured_phase(
             mode="benchmark",
             run_dir=candidate_dir,
@@ -110,7 +107,7 @@ def hot_confirm_topk(
             protocol=hot_protocol,
             runner_bin=runner_bin,
             library_dir=artifact.library_dir,
-            timeout_s=timeout,
+            timeout_s=runner_timeout_s,
         )
         if run_output.timed_out:
             failures.append(
@@ -119,7 +116,7 @@ def hot_confirm_topk(
                     "candidate_hash": candidate_hash,
                     "returncode": run_output.returncode,
                     "timed_out": True,
-                    "reason": f"hot confirmation timed out after {timeout} seconds",
+                    "reason": f"hot confirmation timed out after {runner_timeout_s} seconds",
                 }
             )
             continue

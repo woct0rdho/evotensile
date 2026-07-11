@@ -60,7 +60,7 @@ solution_index INTEGER
 created_at REAL NOT NULL
 ```
 
-Each successful timing sample is one `status='ok'` row with finite positive `time_us`. Negative build, mapping, validation, or runner outcomes also live here, usually without timing.
+Each successful timing sample is one `status='ok'` row with finite positive `time_us`. Negative build, mapping, or runner outcomes also live here, usually without timing. Correctness outcomes live only in `validations`.
 
 Benchmark-only timing rows use `validation='PASSED prior_validation'`: the benchmark subprocess performed no validation, but the scheduler admitted the pair only after compatible correctness evidence.
 
@@ -116,7 +116,7 @@ Important statuses:
 - `build_failed_unattributed` / `build_timeout_unattributed`: mixed-build failure without candidate attribution. Audit-only.
 - `unmapped`: planned pair absent from manifest or mapping. Audit/debug evidence.
 
-Only reusable statuses skip future work.
+Identical reusable negatives are idempotent by problem/protocol/pair/run/status/solution identity. Other audit rows remain append-only.
 
 ## Validation Semantics
 
@@ -128,13 +128,12 @@ There is no trusted no-validation path. Benchmark mode is allowed only for pairs
 
 ## Cache Lookup
 
-`reusable_cache_entry_counts()` counts timing and reusable build/mapping negatives under one problem/benchmark protocol. `_missing_candidate_indices_by_shape()` combines:
-- Existing timing sample count.
-- Reusable benchmark-cache negative evidence.
-- Latest compatible correctness state from `validations`.
-- Shape-dependent source-backed invalidity.
+`benchmark_evidence_states()` resolves one benchmark state per pair under the active problem and benchmark protocol:
+- Valid finite `ok` samples have durable precedence over every reusable negative, regardless of insertion order.
+- Without positive timing, the latest `rejected` or `build_failed` row by `(created_at, eval_id)` is the reusable negative state.
+- Audit-only statuses do not control planning.
 
-A pair may therefore require more timing while not requiring validation.
+`_missing_candidate_indices_by_shape()` combines the resolved positive sample count or negative state with latest compatible correctness state and shape-dependent source-backed invalidity. A proven timed pair can therefore receive additional samples even when older or newer build/mapping failures remain in raw audit history.
 
 ## Ranking
 

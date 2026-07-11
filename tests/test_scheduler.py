@@ -288,6 +288,59 @@ def test_validation_failure_is_scoped_to_validation_protocol(tmp_path: Path):
     assert cpu_batches[0].requires_validation
 
 
+def test_positive_timing_allows_topup_despite_older_or_newer_negative(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidate = sample_candidates(1)[0]
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    v_hash = DEFAULT_PROFILE.default_protocol.validation_protocol_hash()
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+        run_id="old_rejection",
+        status="rejected",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+        run_id="timing",
+        status="ok",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        time_us=1.0,
+        validation="PASSED prior_validation",
+    )
+    db.insert_evaluation(
+        shape_id=shape.id,
+        candidate_hash=candidate.hash,
+        run_id="new_build_failure",
+        status="build_failed",
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+    )
+    _record_validation(db, shape, candidate.hash, "PASSED")
+
+    batches = plan_batches(
+        db,
+        shapes=[shape],
+        candidates=[candidate],
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        validation_protocol_hash=v_hash,
+        min_samples=2,
+        candidate_batch_size=1,
+        shape_batch_size=1,
+    )
+
+    assert len(batches) == 1
+    assert batches[0].samples_per_pair == 1
+    assert not batches[0].requires_validation
+
+
 def test_latest_validation_result_resolves_pass_fail_conflicts(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -406,7 +459,7 @@ def test_local_proposal_mutates_cached_elites(tmp_path: Path):
         local_count=1,
         elite_count=1,
         seed=7,
-    )
+    ).selected
 
     mutations = [candidate for candidate in proposed if candidate.source == "mutation"]
     assert len(mutations) == 1
@@ -444,7 +497,7 @@ def test_exact_shape_transfer_seeds_cached_winner(tmp_path: Path):
         transfer_per_shape=1,
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
-    )
+    ).selected
 
     transfer = [candidate for candidate in proposed if candidate.source == "transfer"]
     assert [candidate.hash for candidate in transfer] == [candidates[1].hash]
@@ -483,7 +536,7 @@ def test_nearest_shape_transfer_seeds_cached_winners(tmp_path: Path):
         transfer_per_shape=1,
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
-    )
+    ).selected
 
     transfer = [candidate for candidate in proposed if candidate.source == "transfer"]
     assert [candidate.hash for candidate in transfer] == [candidates[1].hash]
@@ -703,7 +756,7 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
         transfer_per_shape=1,
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
-    )
+    ).selected
 
     assert all(candidate.source != "transfer" for candidate in proposed)
     assert {candidates[0].hash} & {parent for candidate in proposed for parent in candidate.parent_hashes}
@@ -740,7 +793,7 @@ def test_gomea_proposal_uses_learned_linkage_by_default_when_evidence_exists(tmp
         benchmark_protocol_hash=b_hash,
         linkage_min_samples=3,
         linkage_truncation_tau=1.0,
-    )
+    ).selected
 
     assert proposed
     assert all(candidate.source == "gomea" for candidate in proposed)
@@ -778,7 +831,7 @@ def test_gomea_proposal_accepts_learned_linkage_from_db_evidence(tmp_path: Path)
         learned_linkage=True,
         linkage_min_samples=3,
         linkage_truncation_tau=1.0,
-    )
+    ).selected
 
     assert proposed
     assert all(candidate.source == "gomea" for candidate in proposed)
@@ -817,7 +870,7 @@ def test_evolutionary_proposal_uses_cached_elites(tmp_path: Path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         seed=7,
-    )
+    ).selected
 
     sources = {candidate.source for candidate in proposed}
     assert {"random", "mutation", "de", "gomea"} & sources == {"random", "mutation", "de", "gomea"}
@@ -828,7 +881,7 @@ def test_random_proposal_does_not_include_fixed_controls(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
 
-    proposed = propose_candidates(db, proposal="seed-random", num_random=12, seed=1151)
+    proposed = propose_candidates(db, proposal="seed-random", num_random=12, seed=1151).selected
 
     assert {candidate.source for candidate in proposed} == {"random"}
     assert REFERENCE_CANDIDATE.hash not in {candidate.hash for candidate in proposed}
@@ -839,7 +892,7 @@ def test_random_proposals_respect_target_shape_rules(tmp_path: Path):
     db.init()
     shape = Shape(m=8192, n=8192, batch=1, k=8192)
 
-    proposed = propose_candidates(db, proposal="random", num_random=16, seed=20260701, target_shapes=[shape])
+    proposed = propose_candidates(db, proposal="random", num_random=16, seed=20260701, target_shapes=[shape]).selected
 
     assert len(proposed) == 16
     assert all(cheap_constraints(candidate.canonical_params(), shape=shape) for candidate in proposed)
@@ -857,9 +910,9 @@ def test_non_random_proposals_return_empty_without_evidence(tmp_path: Path):
             de_count=64,
             gomea_count=64,
             seed=1151,
-        )
+        ).selected
 
-        assert proposed == []
+        assert proposed == ()
 
 
 def test_mixed_random_proposals_do_not_use_random_as_evolution_parents(tmp_path: Path):
@@ -875,7 +928,7 @@ def test_mixed_random_proposals_do_not_use_random_as_evolution_parents(tmp_path:
             de_count=64,
             gomea_count=64,
             seed=1151,
-        )
+        ).selected
 
         assert {candidate.source for candidate in proposed} == {"random"}
 
@@ -894,7 +947,7 @@ def test_family_qd_cold_start_uses_balanced_random_family_coverage(tmp_path: Pat
         gomea_count=12,
         target_shapes=[shape],
         seed=819200,
-    )
+    ).selected
 
     assert {candidate.source for candidate in proposed} == {"random"}
     assert len(proposed) == 16
@@ -934,7 +987,7 @@ def test_family_qd_proposal_preserves_family_archive_leaders(tmp_path: Path):
         benchmark_protocol_hash=b_hash,
         target_shapes=[shape],
         seed=1151,
-    )
+    ).selected
 
     proposed_hashes = {candidate.hash for candidate in proposed}
     assert candidates[0].hash in proposed_hashes
@@ -979,7 +1032,7 @@ def test_family_qd_adaptive_operators_use_separate_semantic_arms(tmp_path: Path)
         micro_exhaustive_neighborhoods=True,
         adaptive_donor_selection=True,
         seed=20260711,
-    )
+    ).selected
 
     parent_hashes = {candidate.hash for candidate in candidates}
     generated_sources = {candidate.source for candidate in proposed if candidate.hash not in parent_hashes}
