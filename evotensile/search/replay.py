@@ -17,7 +17,7 @@ from evotensile.metrics import gflops_from_us
 from evotensile.profile import TargetProfile
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.search.campaign_control import convergence_detected, population_diagnostics, split_budget
-from evotensile.search.evidence import load_proposal_evidence_snapshot
+from evotensile.search.evidence import ProposalEvidenceSnapshot, load_proposal_evidence_snapshot
 from evotensile.search.screening_stabilize import ScreeningStabilizationPolicy, plan_screening_stabilization
 from evotensile.search.surrogate import select_surrogate_pool
 
@@ -30,6 +30,358 @@ class OracleRecord:
     hot_gflops: float | None = None
     order: float = 0.0
     source_artifact: str = ""
+
+
+@dataclass(frozen=True)
+class ReplayPairQuery:
+    shape_id: str
+    candidate_hash: str
+    record: OracleRecord | None
+    first_query: bool
+
+    @property
+    def known(self) -> bool:
+        return self.record is not None
+
+
+@dataclass(frozen=True)
+class ReplayShapeState:
+    shape_id: str
+    queried_pairs: int
+    known_pairs: int
+    unknown_pairs: int
+    successful_pairs: int
+    incumbent_hash: str | None
+    incumbent_gflops: float | None
+
+    @property
+    def resolved(self) -> bool:
+        return self.incumbent_hash is not None
+
+
+class ExactOracleReplayState:
+    def __init__(
+        self,
+        *,
+        db: EvoTensileDB,
+        shapes: Sequence[Shape],
+        oracle: Mapping[tuple[str, str], OracleRecord],
+        profile: TargetProfile,
+        screening_protocol: BenchmarkProtocol = CAMPAIGN_SCREENING_PROTOCOL,
+        source_ref: str = "multi_shape_exact_oracle",
+    ) -> None:
+        self.db = db
+        self.profile = profile
+        self.screening_protocol = screening_protocol
+        self.source_ref = source_ref
+        self._shapes = {shape.id: shape for shape in shapes}
+        if not self._shapes:
+            raise ValueError("replay state requires at least one shape")
+        if len(self._shapes) != len(shapes):
+            raise ValueError("replay shapes must have unique shape IDs")
+        self._oracle = dict(oracle)
+        self._candidates: dict[str, Candidate] = {}
+        for (shape_id, candidate_hash), record in self._oracle.items():
+            if shape_id not in self._shapes:
+                raise ValueError(f"oracle pair references an unregistered shape: {shape_id}")
+            if candidate_hash != record.candidate.hash:
+                raise ValueError(
+                    f"oracle candidate hash mismatch for {shape_id}: expected {candidate_hash}, "
+                    f"got {record.candidate.hash}"
+                )
+            self._register_candidate_identity(record.candidate)
+        self._queried_pairs: set[tuple[str, str]] = set()
+        self._unknown_pairs: set[tuple[str, str]] = set()
+        self._disclosed_pairs: set[tuple[str, str]] = set()
+        self._query_order: list[tuple[str, str]] = []
+        self._prepared_candidates: set[str] = set()
+        self._preparation_time_s = 0.0
+        self._pair_time_s = 0.0
+        self._pair_times_s: dict[tuple[str, str], float] = defaultdict(float)
+        self.db.init()
+        self.db.register_shapes(list(self._shapes.values()))
+
+    def _register_candidate_identity(self, candidate: Candidate) -> None:
+        existing = self._candidates.get(candidate.hash)
+        if existing is not None and existing.canonical_params() != candidate.canonical_params():
+            raise ValueError(f"conflicting candidate parameters for hash {candidate.hash}")
+        self._candidates.setdefault(candidate.hash, candidate)
+
+    def _pair_key(self, shape: Shape, candidate_hash: str) -> tuple[str, str]:
+        registered = self._shapes.get(shape.id)
+        if registered is None or registered != shape:
+            raise ValueError(f"shape is not registered in replay state: {shape.id}")
+        return shape.id, candidate_hash
+
+    @property
+    def candidate_catalog(self) -> dict[str, Candidate]:
+        return dict(self._candidates)
+
+    @property
+    def queried_pairs(self) -> frozenset[tuple[str, str]]:
+        return frozenset(self._queried_pairs)
+
+    @property
+    def unknown_pairs(self) -> frozenset[tuple[str, str]]:
+        return frozenset(self._unknown_pairs)
+
+    @property
+    def disclosed_pairs(self) -> frozenset[tuple[str, str]]:
+        return frozenset(self._disclosed_pairs)
+
+    @property
+    def query_order(self) -> tuple[tuple[str, str], ...]:
+        return tuple(self._query_order)
+
+    @property
+    def prepared_candidate_hashes(self) -> frozenset[str]:
+        return frozenset(self._prepared_candidates)
+
+    @property
+    def preparation_time_s(self) -> float:
+        return self._preparation_time_s
+
+    @property
+    def pair_time_s(self) -> float:
+        return self._pair_time_s
+
+    @property
+    def simulated_time_s(self) -> float:
+        return self._preparation_time_s + self._pair_time_s
+
+    def preparation_cost(
+        self,
+        candidates: Sequence[Candidate],
+        *,
+        workers: int,
+        seconds_per_candidate: float,
+    ) -> float:
+        if workers <= 0:
+            raise ValueError("replay preparation workers must be positive")
+        if not math.isfinite(seconds_per_candidate) or seconds_per_candidate < 0.0:
+            raise ValueError("replay preparation seconds must be finite and nonnegative")
+        new_hashes = {candidate.hash for candidate in candidates} - self._prepared_candidates
+        return math.ceil(len(new_hashes) / workers) * seconds_per_candidate
+
+    def prepare_candidates(
+        self,
+        candidates: Sequence[Candidate],
+        *,
+        workers: int,
+        seconds_per_candidate: float,
+    ) -> float:
+        duration_s = self.preparation_cost(
+            candidates,
+            workers=workers,
+            seconds_per_candidate=seconds_per_candidate,
+        )
+        unique = {candidate.hash: candidate for candidate in candidates}
+        for candidate in unique.values():
+            self._register_candidate_identity(candidate)
+        new_candidates = [
+            candidate for candidate_hash, candidate in unique.items() if candidate_hash not in self._prepared_candidates
+        ]
+        if not new_candidates:
+            return 0.0
+        self.db.register_candidates(new_candidates)
+        self._prepared_candidates.update(candidate.hash for candidate in new_candidates)
+        self._preparation_time_s += duration_s
+        return duration_s
+
+    def query_pair(
+        self,
+        shape: Shape,
+        candidate: Candidate,
+        *,
+        disclose: bool = True,
+        samples: int | None = None,
+    ) -> ReplayPairQuery:
+        self._register_candidate_identity(candidate)
+        key = self._pair_key(shape, candidate.hash)
+        first_query = key not in self._queried_pairs
+        if first_query:
+            self.db.register_candidates([candidate])
+            self._queried_pairs.add(key)
+            self._query_order.append(key)
+            if key not in self._oracle:
+                self._unknown_pairs.add(key)
+        if disclose and key not in self._disclosed_pairs:
+            self.disclose_pair(shape, candidate.hash, samples=samples)
+        return ReplayPairQuery(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            record=self._oracle.get(key),
+            first_query=first_query,
+        )
+
+    def disclose_pair(self, shape: Shape, candidate_hash: str, *, samples: int | None = None) -> bool:
+        if samples is not None and samples <= 0:
+            raise ValueError("replay screening samples must be positive")
+        key = self._pair_key(shape, candidate_hash)
+        if key not in self._queried_pairs:
+            raise ValueError(f"oracle evidence cannot be disclosed before exact query: {shape.id}/{candidate_hash}")
+        if key in self._disclosed_pairs:
+            return False
+        record = self._oracle.get(key)
+        if record is None:
+            return False
+        if record.screening_gflops is not None and record.screening_gflops > 0.0:
+            _insert_screening_evidence(
+                self.db,
+                shape=shape,
+                record=record,
+                profile=self.profile,
+                screening_protocol=self.screening_protocol,
+                source_ref=self.source_ref,
+                samples=samples,
+            )
+        elif record.status in {"validation_fail", "validation_failed", "failed_validation"}:
+            self.db.insert_validations(
+                [
+                    ValidationInsert(
+                        shape_id=shape.id,
+                        candidate_hash=candidate_hash,
+                        run_id=self.source_ref,
+                        status="failed",
+                        problem_type_hash=self.profile.problem_type_hash,
+                        validation_protocol_hash=self.screening_protocol.validation_protocol_hash(),
+                        source_kind="replay",
+                        detail=f"exact oracle status: {record.status}",
+                    )
+                ]
+            )
+        elif record.status not in {"ok", "unknown"}:
+            self.db.insert_benchmark_events(
+                [
+                    BenchmarkEventInsert(
+                        shape_id=shape.id,
+                        candidate_hash=candidate_hash,
+                        run_id=self.source_ref,
+                        status=record.status,
+                        problem_type_hash=self.profile.problem_type_hash,
+                        benchmark_protocol_hash=self.profile.benchmark_protocol_hash(self.screening_protocol),
+                        source_kind="replay",
+                    )
+                ]
+            )
+        self._disclosed_pairs.add(key)
+        return True
+
+    def add_screening_samples(self, shape: Shape, candidate_hash: str, *, samples: int) -> None:
+        if samples <= 0:
+            raise ValueError("replay screening top-up samples must be positive")
+        key = self._pair_key(shape, candidate_hash)
+        if key not in self._queried_pairs:
+            raise ValueError(f"oracle evidence cannot be disclosed before exact query: {shape.id}/{candidate_hash}")
+        record = self._oracle.get(key)
+        if record is None or record.screening_gflops is None or record.screening_gflops <= 0.0:
+            raise ValueError(f"exact oracle pair has no positive screening evidence: {shape.id}/{candidate_hash}")
+        _insert_screening_evidence(
+            self.db,
+            shape=shape,
+            record=record,
+            profile=self.profile,
+            screening_protocol=self.screening_protocol,
+            source_ref=self.source_ref,
+            samples=samples,
+        )
+        self._disclosed_pairs.add(key)
+
+    def record_pair_time(self, shape: Shape, candidate_hash: str, duration_s: float) -> None:
+        if not math.isfinite(duration_s) or duration_s < 0.0:
+            raise ValueError("replay pair time must be finite and nonnegative")
+        key = self._pair_key(shape, candidate_hash)
+        if key not in self._queried_pairs:
+            raise ValueError(f"pair time cannot be charged before exact query: {shape.id}/{candidate_hash}")
+        self._pair_times_s[key] += duration_s
+        self._pair_time_s += duration_s
+
+    def pair_time(self, shape: Shape, candidate_hash: str) -> float:
+        return self._pair_times_s.get(self._pair_key(shape, candidate_hash), 0.0)
+
+    def shape_state(self, shape: Shape) -> ReplayShapeState:
+        self._pair_key(shape, "")
+        queried = [key for key in self._queried_pairs if key[0] == shape.id]
+        known = [key for key in queried if key in self._oracle]
+        successful = [
+            key
+            for key in known
+            if key in self._disclosed_pairs
+            and self._oracle[key].screening_gflops is not None
+            and (self._oracle[key].screening_gflops or 0.0) > 0.0
+        ]
+        incumbent_hash = None
+        incumbent_gflops = None
+        if successful:
+            incumbent_key = max(successful, key=lambda key: self._oracle[key].screening_gflops or 0.0)
+            incumbent_hash = incumbent_key[1]
+            incumbent_gflops = self._oracle[incumbent_key].screening_gflops
+        return ReplayShapeState(
+            shape_id=shape.id,
+            queried_pairs=len(queried),
+            known_pairs=len(known),
+            unknown_pairs=len([key for key in queried if key in self._unknown_pairs]),
+            successful_pairs=len(successful),
+            incumbent_hash=incumbent_hash,
+            incumbent_gflops=incumbent_gflops,
+        )
+
+    def queried_shape_ids(self, candidate_hash: str, *, successful_only: bool = False) -> tuple[str, ...]:
+        shape_ids = []
+        for shape_id, queried_hash in self._query_order:
+            if queried_hash != candidate_hash or shape_id in shape_ids:
+                continue
+            record = self._oracle.get((shape_id, candidate_hash))
+            if successful_only and (
+                (shape_id, candidate_hash) not in self._disclosed_pairs
+                or record is None
+                or record.screening_gflops is None
+                or record.screening_gflops <= 0.0
+            ):
+                continue
+            shape_ids.append(shape_id)
+        return tuple(shape_ids)
+
+    def evidence_snapshot(self, *, shapes: Sequence[Shape] | None = None) -> ProposalEvidenceSnapshot:
+        selected_shapes = list(self._shapes.values()) if shapes is None else list(shapes)
+        for shape in selected_shapes:
+            self._pair_key(shape, "")
+        return load_proposal_evidence_snapshot(
+            self.db,
+            problem_type_hash=self.profile.problem_type_hash,
+            benchmark_protocol_hash=self.profile.benchmark_protocol_hash(self.screening_protocol),
+            shapes=selected_shapes,
+        )
+
+    def summary(self) -> dict[str, object]:
+        shape_states = [self.shape_state(shape) for shape in self._shapes.values()]
+        return {
+            "shapes": len(self._shapes),
+            "oracle_pairs": len(self._oracle),
+            "catalog_candidates": len(self._candidates),
+            "queried_pairs": len(self._queried_pairs),
+            "known_pairs": len(self._queried_pairs - self._unknown_pairs),
+            "unknown_pairs": len(self._unknown_pairs),
+            "disclosed_pairs": len(self._disclosed_pairs),
+            "prepared_candidates": len(self._prepared_candidates),
+            "preparation_time_s": self._preparation_time_s,
+            "pair_time_s": self._pair_time_s,
+            "simulated_time_s": self.simulated_time_s,
+            "unresolved_shape_ids": [state.shape_id for state in shape_states if not state.resolved],
+            "shape_states": [
+                {
+                    "shape_id": state.shape_id,
+                    "queried_pairs": state.queried_pairs,
+                    "known_pairs": state.known_pairs,
+                    "unknown_pairs": state.unknown_pairs,
+                    "successful_pairs": state.successful_pairs,
+                    "incumbent_hash": state.incumbent_hash,
+                    "incumbent_gflops": state.incumbent_gflops,
+                    "resolved": state.resolved,
+                }
+                for state in shape_states
+            ],
+        }
 
 
 @dataclass(frozen=True)
@@ -89,61 +441,82 @@ class ReplayResult:
         }
 
 
-def load_db_oracle(
+def load_db_oracle_matrix(
     path: str | Path,
     *,
-    shape: Shape,
+    shapes: Sequence[Shape],
     benchmark_protocol_hash: str | None = None,
-) -> list[OracleRecord]:
+) -> dict[tuple[str, str], OracleRecord]:
+    shapes_by_id = {shape.id: shape for shape in shapes}
+    if len(shapes_by_id) != len(shapes):
+        raise ValueError("oracle shapes must have unique shape IDs")
+    if not shapes_by_id:
+        return {}
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
+    shape_placeholders = ",".join("?" for _ in shapes_by_id)
     protocol_clause = "AND bp.benchmark_protocol_hash = ?" if benchmark_protocol_hash is not None else ""
-    params: list[str] = [shape.id]
+    params = list(shapes_by_id)
     if benchmark_protocol_hash is not None:
         params.append(benchmark_protocol_hash)
     rows = con.execute(
         f"""
-        SELECT c.params_json, c.created_at, c.candidate_hash, be.status, bs.time_us
+        SELECT s.shape_id, c.params_json, c.created_at, c.candidate_hash, be.status, bs.time_us
         FROM benchmark_events AS be
         LEFT JOIN benchmark_samples AS bs USING (event_id)
         JOIN candidates AS c USING (candidate_id)
         JOIN shapes AS s USING (shape_key)
         JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
         JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
-        WHERE s.shape_id = ? {protocol_clause}
-        ORDER BY c.created_at, be.event_id, bs.sample_index
+        WHERE s.shape_id IN ({shape_placeholders}) {protocol_clause}
+        ORDER BY c.created_at, s.shape_id, be.event_id, bs.sample_index
         """,
         params,
     ).fetchall()
-    grouped: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    con.close()
+    grouped: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
     payloads: dict[str, str] = {}
     order: dict[str, float] = {}
     for row in rows:
         candidate_hash = str(row["candidate_hash"])
-        grouped[candidate_hash].append(row)
+        key = str(row["shape_id"]), candidate_hash
+        grouped[key].append(row)
         payloads[candidate_hash] = str(row["params_json"])
         order[candidate_hash] = float(row["created_at"])
-    records = []
-    for candidate_hash, candidate_rows in grouped.items():
+    records: dict[tuple[str, str], OracleRecord] = {}
+    for key in sorted(grouped, key=lambda item: (order[item[1]], item[0], item[1])):
+        shape_id, candidate_hash = key
+        candidate_rows = grouped[key]
         times = [float(row["time_us"]) for row in candidate_rows if row["status"] == "ok" and row["time_us"]]
         if times:
-            screening_gflops = gflops_from_us(shape, statistics.median(times))
+            screening_gflops = gflops_from_us(shapes_by_id[shape_id], statistics.median(times))
             status = "ok"
         else:
             screening_gflops = None
             statuses = [str(row["status"]) for row in candidate_rows]
             status = statuses[-1]
-        records.append(
-            OracleRecord(
-                candidate=Candidate(params=dict(json.loads(payloads[candidate_hash])), source="historical_replay"),
-                status=status,
-                screening_gflops=screening_gflops,
-                order=order[candidate_hash],
-                source_artifact=str(path),
-            )
+        records[key] = OracleRecord(
+            candidate=Candidate(params=dict(json.loads(payloads[candidate_hash])), source="historical_replay"),
+            status=status,
+            screening_gflops=screening_gflops,
+            order=order[candidate_hash],
+            source_artifact=str(path),
         )
-    con.close()
     return records
+
+
+def load_db_oracle(
+    path: str | Path,
+    *,
+    shape: Shape,
+    benchmark_protocol_hash: str | None = None,
+) -> list[OracleRecord]:
+    matrix = load_db_oracle_matrix(
+        path,
+        shapes=[shape],
+        benchmark_protocol_hash=benchmark_protocol_hash,
+    )
+    return list(matrix.values())
 
 
 def load_csv_oracle(path: str | Path, *, order_offset: float = 0.0) -> list[OracleRecord]:
@@ -358,9 +731,15 @@ def simulate_candidate_stream(
             Path(directory) / "replay.sqlite",
             environment_compatibility_tag=profile.environment_compatibility_tag,
         )
-        db.init()
-        db.register_shapes([shape])
         replay_source_ref = f"simulated_stream_seed_{seed}"
+        state = ExactOracleReplayState(
+            db=db,
+            shapes=[shape],
+            oracle={(shape.id, candidate_hash): record for candidate_hash, record in oracle.items()},
+            profile=profile,
+            screening_protocol=cost.screening_protocol,
+            source_ref=replay_source_ref,
+        )
         pending: dict[str, Candidate] = {}
         stream_index = 0
         queried: set[str] = set()
@@ -390,20 +769,27 @@ def simulate_candidate_stream(
                 island_count=island_count,
                 isolated=round_index <= island_isolation_rounds,
             )
-            preparation_cost = (
-                math.ceil(len(selected) / max(1, cost.prepare_workers)) * cost.prepare_seconds_per_candidate
+            preparation_cost = state.preparation_cost(
+                selected,
+                workers=max(1, cost.prepare_workers),
+                seconds_per_candidate=cost.prepare_seconds_per_candidate,
             )
             if result.simulated_time_s + preparation_cost > search_time_limit:
                 result.stop_reason = "insufficient_prepare_budget"
                 break
-            result.simulated_time_s += preparation_cost
+            state.prepare_candidates(
+                selected,
+                workers=max(1, cost.prepare_workers),
+                seconds_per_candidate=cost.prepare_seconds_per_candidate,
+            )
+            result.simulated_time_s = state.simulated_time_s
             known_ok = []
             for candidate in selected:
                 pending.pop(candidate.hash, None)
                 queried.add(candidate.hash)
                 result.queried.append(candidate.hash)
-                db.register_candidates([candidate])
-                record = oracle.get(candidate.hash)
+                query = state.query_pair(shape, candidate, disclose=False)
+                record = query.record
                 if record is None:
                     result.unknown.append(candidate.hash)
                     continue
@@ -416,7 +802,8 @@ def simulate_candidate_stream(
                     if result.simulated_time_s + initial_probe_cost > search_time_limit:
                         budget_exhausted = True
                         break
-                    result.simulated_time_s += initial_probe_cost
+                    state.record_pair_time(shape, record.candidate.hash, initial_probe_cost)
+                    result.simulated_time_s = state.simulated_time_s
                     known_ok.append(record)
             if known_ok:
                 reference = max(
@@ -448,7 +835,8 @@ def simulate_candidate_stream(
                     if result.simulated_time_s + additional_probe_cost > search_time_limit:
                         budget_exhausted = True
                         break
-                    result.simulated_time_s += additional_probe_cost
+                    state.record_pair_time(shape, record.candidate.hash, additional_probe_cost)
+                    result.simulated_time_s = state.simulated_time_s
                     survivors.append(record)
                 for record in survivors:
                     if record.screening_gflops is None:
@@ -457,16 +845,10 @@ def simulate_candidate_stream(
                     if result.simulated_time_s + screening_cost > search_time_limit:
                         budget_exhausted = True
                         break
-                    result.simulated_time_s += screening_cost
+                    state.record_pair_time(shape, record.candidate.hash, screening_cost)
+                    result.simulated_time_s = state.simulated_time_s
                     result.screening_survivors.append(record.candidate.hash)
-                    _insert_screening_evidence(
-                        db,
-                        shape=shape,
-                        record=record,
-                        profile=profile,
-                        screening_protocol=cost.screening_protocol,
-                        source_ref=replay_source_ref,
-                    )
+                    state.disclose_pair(shape, record.candidate.hash)
                     if incumbent_gflops is None or record.screening_gflops > incumbent_gflops:
                         incumbent_gflops = record.screening_gflops
                         result.best_screening_hash = record.candidate.hash
@@ -500,14 +882,11 @@ def simulate_candidate_stream(
                     ) * launch_seconds
                     if result.simulated_time_s + topup_cost > search_time_limit:
                         continue
-                    result.simulated_time_s += topup_cost
-                    _insert_screening_evidence(
-                        db,
-                        shape=shape,
-                        record=record,
-                        profile=profile,
-                        screening_protocol=cost.screening_protocol,
-                        source_ref=replay_source_ref,
+                    state.record_pair_time(shape, record.candidate.hash, topup_cost)
+                    result.simulated_time_s = state.simulated_time_s
+                    state.add_screening_samples(
+                        shape,
+                        record.candidate.hash,
                         samples=request.remaining_samples,
                     )
                     stabilized_candidates += 1
@@ -561,7 +940,8 @@ def simulate_candidate_stream(
             hot_cost = cost.hot_launches * _launch_seconds(shape, record.hot_gflops)
             if result.simulated_time_s + hot_cost > cost.time_budget_s:
                 break
-            result.simulated_time_s += hot_cost
+            state.record_pair_time(shape, candidate_hash, hot_cost)
+            result.simulated_time_s = state.simulated_time_s
             if result.best_hot_gflops is None or record.hot_gflops > result.best_hot_gflops:
                 result.best_hot_hash = candidate_hash
                 result.best_hot_gflops = record.hot_gflops
