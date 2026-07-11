@@ -1,13 +1,13 @@
 import random
 
-from evotensile.candidate import Candidate
+from evotensile.candidate import Candidate, Shape
 from evotensile.search.encoding import (
     PARAM_NAMES,
     candidate_to_genome,
     dedupe_candidates,
     genome_to_candidate,
 )
-from evotensile.search_space import DOMAINS
+from evotensile.search_space import DOMAINS, eligible_for_shape_scope
 
 
 def _mutate_gene(
@@ -38,6 +38,7 @@ def differential_evolution_candidates(
     crossover_rate: float = 0.8,
     random_gene_rate: float = 0.1,
     exclude: set[str] | None = None,
+    target_shapes: list[Shape] | None = None,
 ) -> list[Candidate]:
     """Generate categorical-DE candidates from parent configs.
 
@@ -78,7 +79,9 @@ def differential_evolution_candidates(
         )
         parent_hashes = tuple(pool[idx].hash for idx in (target_idx, a_idx, b_idx, c_idx) if idx < len(pool))
         try:
-            out.append(genome_to_candidate(child, source="de", parents=parent_hashes))
+            candidate = genome_to_candidate(child, source="de", parents=parent_hashes)
         except ValueError:
             continue
+        if eligible_for_shape_scope(candidate.canonical_params(), target_shapes):
+            out.append(candidate)
     return dedupe_candidates(out, exclude=exclude)[:count]

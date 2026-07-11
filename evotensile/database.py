@@ -104,6 +104,21 @@ class BenchmarkEvidenceState:
 
 
 @dataclass(frozen=True)
+class ProposalOccurrence:
+    proposal_id: int
+    problem_type_hash: str
+    benchmark_protocol_hash: str
+    candidate_hash: str
+    source: str
+    parent_hashes: tuple[str, ...]
+    proposal_metadata: dict[str, object]
+    scope_kind: str
+    scope_shape_ids: tuple[str, ...]
+    selected: bool
+    created_at: float
+
+
+@dataclass(frozen=True)
 class EvaluationSummary:
     shape_id: str
     candidate_hash: str
@@ -124,6 +139,23 @@ CREATE TABLE IF NOT EXISTS candidates (
   parent_hashes TEXT NOT NULL,
   created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS proposal_occurrences (
+  proposal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  problem_type_hash TEXT NOT NULL,
+  benchmark_protocol_hash TEXT NOT NULL,
+  candidate_hash TEXT NOT NULL,
+  source TEXT NOT NULL,
+  parent_hashes_json TEXT NOT NULL,
+  proposal_metadata_json TEXT NOT NULL,
+  scope_kind TEXT NOT NULL,
+  scope_shape_ids_json TEXT NOT NULL,
+  selected INTEGER NOT NULL,
+  created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposal_occurrences_credit
+  ON proposal_occurrences(problem_type_hash, benchmark_protocol_hash, candidate_hash, created_at);
 
 CREATE TABLE IF NOT EXISTS shapes (
   shape_id TEXT PRIMARY KEY,
@@ -272,6 +304,101 @@ class EvoTensileDB:
                     for candidate in candidates
                 ],
             )
+
+    def record_proposal_occurrences(
+        self,
+        candidates: list[Candidate],
+        *,
+        problem_type_hash: str,
+        benchmark_protocol_hash: str,
+        scope_kind: str,
+        scope_shape_ids: tuple[str, ...],
+        selected_candidates: list[Candidate],
+    ) -> None:
+        if not candidates:
+            return
+        now = time.time()
+        selected_by_hash = {candidate.hash: candidate for candidate in selected_candidates}
+        selected_hashes: set[str] = set()
+        rows = []
+        for candidate in candidates:
+            selected_candidate = selected_by_hash.get(candidate.hash)
+            selected_metadata = {} if selected_candidate is None else dict(selected_candidate.proposal_metadata)
+            selected_metadata.pop("proposal_scope_kind", None)
+            selected_metadata.pop("proposal_scope_shape_ids", None)
+            selected = bool(
+                selected_candidate is not None
+                and candidate.hash not in selected_hashes
+                and candidate.source == selected_candidate.source
+                and candidate.parent_hashes == selected_candidate.parent_hashes
+                and candidate.proposal_metadata == selected_metadata
+            )
+            if selected:
+                selected_hashes.add(candidate.hash)
+            rows.append(
+                (
+                    problem_type_hash,
+                    benchmark_protocol_hash,
+                    candidate.hash,
+                    candidate.source,
+                    json.dumps(list(candidate.parent_hashes)),
+                    json.dumps(candidate.proposal_metadata, sort_keys=True),
+                    scope_kind,
+                    json.dumps(list(scope_shape_ids)),
+                    int(selected),
+                    now,
+                )
+            )
+        with self.connection() as con:
+            con.executemany(
+                """
+                INSERT INTO proposal_occurrences
+                  (problem_type_hash, benchmark_protocol_hash, candidate_hash, source,
+                   parent_hashes_json, proposal_metadata_json, scope_kind,
+                   scope_shape_ids_json, selected, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+    def proposal_occurrences(
+        self,
+        *,
+        problem_type_hash: str,
+        benchmark_protocol_hash: str,
+        selected_only: bool = True,
+    ) -> list[ProposalOccurrence]:
+        selected_clause = "AND selected = 1" if selected_only else ""
+        with self.connection() as con:
+            rows = con.execute(
+                f"""
+                SELECT proposal_id, problem_type_hash, benchmark_protocol_hash,
+                       candidate_hash, source, parent_hashes_json,
+                       proposal_metadata_json, scope_kind, scope_shape_ids_json,
+                       selected, created_at
+                FROM proposal_occurrences
+                WHERE problem_type_hash = ? AND benchmark_protocol_hash = ?
+                {selected_clause}
+                ORDER BY proposal_id
+                """,
+                (problem_type_hash, benchmark_protocol_hash),
+            ).fetchall()
+        return [
+            ProposalOccurrence(
+                proposal_id=int(row["proposal_id"]),
+                problem_type_hash=str(row["problem_type_hash"]),
+                benchmark_protocol_hash=str(row["benchmark_protocol_hash"]),
+                candidate_hash=str(row["candidate_hash"]),
+                source=str(row["source"]),
+                parent_hashes=tuple(json.loads(row["parent_hashes_json"])),
+                proposal_metadata=dict(json.loads(row["proposal_metadata_json"])),
+                scope_kind=str(row["scope_kind"]),
+                scope_shape_ids=tuple(json.loads(row["scope_shape_ids_json"])),
+                selected=bool(row["selected"]),
+                created_at=float(row["created_at"]),
+            )
+            for row in rows
+        ]
 
     def register_shapes(self, shapes: list[Shape]) -> None:
         if not shapes:
@@ -757,6 +884,34 @@ class EvoTensileDB:
             candidate_hashes=candidate_hashes,
         )
         return {key for key, state in states.items() if state.ok_samples >= min_ok_samples or state.reusable_negative}
+
+    def latest_positive_evaluation_times(
+        self,
+        *,
+        problem_type_hash: str,
+        benchmark_protocol_hash: str,
+    ) -> dict[tuple[str, str], float]:
+        with self.connection() as con:
+            rows = con.execute(
+                """
+                SELECT shape_id, candidate_hash, MAX(created_at) AS latest_created_at
+                FROM evaluations
+                WHERE problem_type_hash = ?
+                  AND benchmark_protocol_hash = ?
+                  AND status = 'ok'
+                  AND time_us IS NOT NULL
+                  AND time_us > 0
+                  AND UPPER(CASE
+                    WHEN INSTR(TRIM(COALESCE(validation, '')), ' ') = 0
+                    THEN TRIM(COALESCE(validation, ''))
+                    ELSE SUBSTR(TRIM(COALESCE(validation, '')), 1,
+                                INSTR(TRIM(COALESCE(validation, '')), ' ') - 1)
+                  END) IN ('PASSED', 'OK', 'VALID')
+                GROUP BY shape_id, candidate_hash
+                """,
+                (problem_type_hash, benchmark_protocol_hash),
+            ).fetchall()
+        return {(str(row["shape_id"]), str(row["candidate_hash"])): float(row["latest_created_at"]) for row in rows}
 
     def rank_evaluations(
         self,

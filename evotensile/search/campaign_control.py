@@ -16,6 +16,8 @@ class ProposalEvent:
     seed: int
     restart_index: int
     learned_linkage: bool
+    scope_kind: str
+    scope_shape_ids: tuple[str, ...]
     parent_hashes: tuple[str, ...]
     preserved_hashes: tuple[str, ...]
     generated_hashes: tuple[str, ...]
@@ -51,6 +53,8 @@ class ProposalEvent:
             seed=int(number("seed")),
             restart_index=int(number("restart_index")),
             learned_linkage=bool(payload["learned_linkage"]),
+            scope_kind=str(payload["scope_kind"]),
+            scope_shape_ids=hashes("scope_shape_ids"),
             parent_hashes=hashes("parent_hashes"),
             preserved_hashes=hashes("preserved_hashes"),
             generated_hashes=hashes("generated_hashes"),
@@ -66,6 +70,8 @@ class ProposalEvent:
             "seed": self.seed,
             "restart_index": self.restart_index,
             "learned_linkage": self.learned_linkage,
+            "scope_kind": self.scope_kind,
+            "scope_shape_ids": list(self.scope_shape_ids),
             "parent_hashes": list(self.parent_hashes),
             "preserved_hashes": list(self.preserved_hashes),
             "generated_hashes": list(self.generated_hashes),

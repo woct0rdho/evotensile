@@ -34,7 +34,19 @@ This separation lets timing budgets change without repeating correctness while s
 
 Stores canonical candidate JSON, source, parent hashes, proposal metadata, and creation time under a stable candidate hash. The hash depends only on canonical parameters. Island identity, semantic group, donor mode, requested transitions, changed genes, restart index, and proposal-cost metadata do not fragment cache identity.
 
-Candidate registration uses `INSERT OR IGNORE`, so the first registered source/lineage/metadata for a parameter hash remains the DB-level candidate record. Later proposal appearances of the same hash remain auditable in per-round proposal artifacts but do not overwrite candidate-level credit identity.
+Candidate registration uses `INSERT OR IGNORE`, so the first registered source/lineage/metadata for a parameter hash remains the DB-level candidate record. Adaptive credit does not use that first-registration lineage. Later proposal appearances are stored separately in `proposal_occurrences`.
+
+### proposal_occurrences
+
+Stores every proposal appearance independently of candidate identity:
+
+- active problem and benchmark protocol hashes.
+- candidate hash, occurrence source, parent hashes, and proposal metadata.
+- explicit global/shape/cluster/shape-set scope and shape IDs.
+- whether the occurrence survived shortlisting.
+- occurrence timestamp.
+
+Rows are append-only. The latest compatible selected occurrence becomes one operator-credit trial only when compatible child timing was queried after it. Repeated occurrences cannot claim the same current measurement. Unselected oversized-pool proposals and cache-only reproposals remain auditable but receive no reward. This lets a parameter hash first registered by one source later receive attribution under a different operator without overwriting the candidate row.
 
 ### shapes
 
@@ -139,7 +151,7 @@ There is no trusted no-validation path. Benchmark mode is allowed only for pairs
 
 `rank_evaluations()` groups `status='ok'` timing rows by `(shape_id, candidate_hash)` and computes sample count, median/best time, and median/best GFLOP/s. Validation-only rows cannot enter ranking because they are stored separately and have no timing.
 
-Ranking feeds CLI reports, proposal elites, transfer seeds, learned linkage, outlier repair, family archives, and final GridBased updates.
+Ranking feeds CLI reports, transfer seeds, learned linkage, outlier repair, family archives, and final GridBased updates. One-shape proposal elites consume the shape-local ranking directly. Multi-shape proposal parents derive specialist and coverage-aware generalist lanes from shape-local incumbent-normalized regret. They do not treat the globally sorted pair rows as a candidate ranking.
 
 ## Phase Metadata
 

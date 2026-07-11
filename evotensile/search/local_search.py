@@ -4,16 +4,25 @@ from typing import Any
 
 from evotensile.candidate import Candidate, Shape
 from evotensile.search.semantics import semantic_group_key, semantic_group_names
-from evotensile.search_space import DOMAINS, cheap_constraints, make_candidate, repair_linked_overrides
+from evotensile.search_space import DOMAINS, eligible_for_shape_scope, make_candidate, repair_linked_overrides
 
 
-def mutate_candidate(candidate: Candidate, *, seed: int | None = None, mutation_rate: float = 0.25) -> Candidate:
+def mutate_candidate(
+    candidate: Candidate,
+    *,
+    seed: int | None = None,
+    mutation_rate: float = 0.25,
+    target_shapes: Sequence[Shape] | None = None,
+) -> Candidate:
     """Simple categorical mutation around an existing candidate."""
     rng = random.Random(seed)
     params: dict[str, Any] = dict(candidate.canonical_params())
     for name, values in DOMAINS.items():
         if rng.random() < mutation_rate:
             params[name] = rng.choice(values)
+    params = repair_linked_overrides(params)
+    if not eligible_for_shape_scope(params, target_shapes):
+        raise ValueError("mutated candidate has no eligible shape in proposal scope")
     return make_candidate(params, source="mutation", parents=[candidate.hash])
 
 
@@ -23,6 +32,7 @@ def mutate_elites(
     count: int,
     seed: int = 1,
     mutation_rate: float = 0.25,
+    target_shapes: Sequence[Shape] | None = None,
     max_attempts: int | None = None,
 ) -> list[Candidate]:
     rng = random.Random(seed)
@@ -33,7 +43,12 @@ def mutate_elites(
         attempts += 1
         parent = rng.choice(elites)
         try:
-            child = mutate_candidate(parent, seed=rng.randrange(1 << 30), mutation_rate=mutation_rate)
+            child = mutate_candidate(
+                parent,
+                seed=rng.randrange(1 << 30),
+                mutation_rate=mutation_rate,
+                target_shapes=target_shapes,
+            )
         except ValueError:
             continue
         out[child.hash] = child
@@ -97,7 +112,7 @@ def semantic_mutation_candidates(
                 requested_transitions[name] = {"from": params.get(name), "to": selected}
                 params[name] = selected
         params = repair_linked_overrides(params)
-        if target_shapes and not all(cheap_constraints(params, shape=shape) for shape in target_shapes):
+        if not eligible_for_shape_scope(params, target_shapes):
             continue
         try:
             child = make_candidate(

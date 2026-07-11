@@ -196,6 +196,8 @@ def test_merged_proposal_separates_archive_and_novel_candidates(tmp_path: Path):
     event = proposal.events[0]
     assert set(event.preserved_hashes) == {candidate.hash for candidate in proposal.archive}
     assert set(event.selected_generated_hashes) == {candidate.hash for candidate in proposal.active}
+    assert event.scope_kind == "shape"
+    assert event.scope_shape_ids == (shape.id,)
     assert len(event.generated_hashes) == 2
     assert event.proposal_cost_s > 0.0
 

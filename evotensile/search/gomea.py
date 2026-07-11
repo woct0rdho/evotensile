@@ -20,7 +20,7 @@ from evotensile.search_space import (
     DOMAINS,
     NT_HHS_RANDOM_VALU_VGPR_HEADROOM,
     _valu_vgpr_lower_bound,
-    cheap_constraints,
+    eligible_for_shape_scope,
     explain_invalid_nt_hhs,
     make_candidate,
     repair_linked_overrides,
@@ -254,7 +254,7 @@ def _genome_with_group(base: tuple[int, ...], donor: tuple[int, ...], group: tup
 def _gomea_candidate_ok(params: dict[str, object], *, target_shapes: Sequence[Shape] | None = None) -> bool:
     if explain_invalid_nt_hhs(params):
         return False
-    if target_shapes and not all(cheap_constraints(params, shape=shape) for shape in target_shapes):
+    if not eligible_for_shape_scope(params, target_shapes):
         return False
     return _valu_vgpr_lower_bound(params) <= NT_HHS_RANDOM_VALU_VGPR_HEADROOM
 

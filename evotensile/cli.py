@@ -39,6 +39,7 @@ from .scheduler import (
 )
 from .search.coverage import candidate_coverage
 from .search.family import family_descriptor_counts, load_family_archive
+from .search.grid_evidence import GRID_OBJECTIVES, GridObjective
 from .search.learned_linkage import learn_linkage_models_from_db
 from .search.random_search import initial_random_batch
 from .search_space import DOMAINS, MATRIX_INSTRUCTIONS, macro_tile
@@ -278,6 +279,7 @@ def _propose_candidates_for_shapes(
         benchmark_protocol_hash=protocol_hash,
         shape_id=proposal_shape_id,
         target_shapes=shapes,
+        scope_kind=args.proposal_scope,
         transfer_shape_count=args.transfer_shapes,
         transfer_per_shape=args.transfer_per_shape,
         elite_count=args.elite_count,
@@ -399,6 +401,7 @@ def _family_metadata(
         benchmark_protocol_hash=context.protocol_hash,
         shapes=shapes,
         min_samples=1,
+        objective=GridObjective.GENERALIST if len(shapes) > 1 else GridObjective.SPECIALIST,
         profile=context.profile.name,
         limit=16,
     )
@@ -430,6 +433,8 @@ def _schedule_metadata_common(
         "runner_protocol": context.protocol.runner_parameters(),
         "validation_backend": context.protocol.validation_backend,
         "proposal": args.proposal,
+        "proposal_scope": args.proposal_scope or ("shape" if len(shapes) == 1 else "shape-set"),
+        "proposal_scope_shape_ids": [shape.id for shape in shapes],
         "adaptive_operators": args.adaptive_operators,
         "surrogate_pool_multiplier": args.surrogate_pool_multiplier,
         "surrogate_min_evidence": args.surrogate_min_evidence,
@@ -477,6 +482,12 @@ def _schedule_metadata_common(
 
 def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False) -> None:
     parser.add_argument("--proposal", choices=PROPOSAL_MODES, default=DEFAULT_PROPOSAL)
+    parser.add_argument(
+        "--proposal-scope",
+        choices=("shape", "cluster", "shape-set"),
+        default=None,
+        help="Label the declared proposal shape scope; inferred from shape count when omitted",
+    )
     if not repair:
         parser.add_argument("--proposal-shape-id", default=None, help="Limit cached elite selection to one shape id")
     parser.add_argument(
@@ -511,7 +522,7 @@ def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False)
         "--surrogate-min-evidence",
         type=int,
         default=24,
-        help="Validation-passed timing rows required before fitting the proposal surrogate",
+        help="Unique varied candidates required per shape before fitting its proposal surrogate",
     )
     parser.add_argument(
         "--covering-cold-start",
@@ -696,6 +707,7 @@ def cmd_summarize_families(args: argparse.Namespace) -> int:
         benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
         shapes=shapes,
         min_samples=args.min_samples,
+        objective=args.archive_objective,
         profile=profile.name,
         limit=args.limit,
     )
@@ -1064,6 +1076,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_protocol_args(cmd)
     cmd.add_argument("--min-samples", type=int, default=1)
     cmd.add_argument("--limit", type=int, default=20)
+    cmd.add_argument("--archive-objective", choices=GRID_OBJECTIVES, default=GridObjective.SPECIALIST)
     cmd.set_defaults(func=cmd_summarize_families)
 
     cmd = sub.add_parser("rank-evals", help="Rank only validation-passed cached evaluations")

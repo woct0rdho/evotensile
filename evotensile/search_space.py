@@ -892,6 +892,11 @@ def cheap_constraints(params: dict[str, Any], *, shape: Shape | None = None) -> 
     return not explain_invalid_nt_hhs(params, shape=shape)
 
 
+def eligible_for_shape_scope(params: dict[str, Any], shapes: Sequence[Shape] | None) -> bool:
+    """Return whether a globally valid candidate has at least one eligible pair in the scope."""
+    return not shapes or any(cheap_constraints(params, shape=shape) for shape in shapes)
+
+
 def defaulted_params(overrides: dict[str, Any]) -> dict[str, Any]:
     params = dict(FIXED_PARAMS)
     for name, values in DOMAINS.items():
@@ -927,12 +932,9 @@ def _random_domain_overrides(rng: random.Random) -> dict[str, Any]:
     return {name: rng.choice(values) for name, values in DOMAINS.items()}
 
 
-def _random_tlds0_direct_overrides(
-    rng: random.Random, *, target_shapes: Sequence[Shape] | None = None
-) -> dict[str, Any]:
+def _random_tlds0_direct_overrides(rng: random.Random) -> dict[str, Any]:
     params = defaulted_params(_random_domain_overrides(rng))
     params["TransposeLDS"] = 0
-    params["GlobalSplitU"] = 1 if target_shapes else rng.choice(DOMAINS["GlobalSplitU"])
     params = _repair_linked_params(params, rng=rng)
     if _valu_vgpr_lower_bound(params) > NT_HHS_RANDOM_VALU_VGPR_HEADROOM:
         _repair_random_valu_vgpr_headroom(params, rng=rng)
@@ -940,13 +942,10 @@ def _random_tlds0_direct_overrides(
     return _repair_linked_params(params, rng=rng)
 
 
-def _random_tlds2_direct_overrides(
-    rng: random.Random, *, target_shapes: Sequence[Shape] | None = None
-) -> dict[str, Any]:
+def _random_tlds2_direct_overrides(rng: random.Random) -> dict[str, Any]:
     params = defaulted_params(_random_domain_overrides(rng))
     params["MatrixInstruction"] = rng.choice(_RANDOM_TLDS2_HEADROOM_MATRIX_INSTRUCTIONS)
     params["DepthU"] = rng.choice(DOMAINS["DepthU"])
-    params["GlobalSplitU"] = 1 if target_shapes else rng.choice(DOMAINS["GlobalSplitU"])
     _apply_tlds2_required_params(params)
     params["1LDSBuffer"] = 1
     params["ClusterLocalRead"] = rng.choice(DOMAINS["ClusterLocalRead"])
@@ -978,20 +977,14 @@ def random_candidate(
     for _ in range(1000):
         try:
             if transpose_lds == 0:
-                params = _random_tlds0_direct_overrides(rng, target_shapes=target_shapes)
+                params = _random_tlds0_direct_overrides(rng)
             elif transpose_lds == 2:
-                params = _random_tlds2_direct_overrides(rng, target_shapes=target_shapes)
+                params = _random_tlds2_direct_overrides(rng)
             else:
                 branch = rng.choice((0, 2))
-                params = (
-                    _random_tlds0_direct_overrides(rng, target_shapes=target_shapes)
-                    if branch == 0
-                    else _random_tlds2_direct_overrides(rng, target_shapes=target_shapes)
-                )
+                params = _random_tlds0_direct_overrides(rng) if branch == 0 else _random_tlds2_direct_overrides(rng)
             candidate = make_candidate(params, source=source)
-            if target_shapes and not all(
-                cheap_constraints(candidate.canonical_params(), shape=shape) for shape in target_shapes
-            ):
+            if not eligible_for_shape_scope(candidate.canonical_params(), target_shapes):
                 continue
             return candidate
         except ValueError:

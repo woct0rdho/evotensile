@@ -83,11 +83,15 @@ def test_load_candidate_evidence_uses_shape_local_ranks_and_positive_rows(tmp_pa
     )
     scored = evidence_to_scored_genomes(evidence)
 
-    assert [item.candidate.hash for item in evidence] == [candidates[0].hash, candidates[1].hash]
-    assert evidence[0].aggregate_score == 0.0
+    assert [item.candidate.hash for item in evidence] == [candidates[1].hash, candidates[0].hash]
+    assert evidence[0].aggregate_score == 0.5
+    assert evidence[0].coverage_fraction == 1.0
+    assert evidence[0].unresolved_shape_count == 0
     assert evidence[1].aggregate_score == 0.5
-    assert scored[0].candidate_hash == candidates[0].hash
-    assert scored[0].samples == 1
+    assert evidence[1].coverage_fraction == 0.5
+    assert evidence[1].unresolved_shape_count == 1
+    assert scored[0].candidate_hash == candidates[1].hash
+    assert scored[0].samples == 2
 
 
 def test_minimum_evidence_for_truncation_satisfies_selected_sample_floor():

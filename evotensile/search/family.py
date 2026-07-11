@@ -8,12 +8,13 @@ from typing import Any
 from ..candidate import Candidate, Shape
 from ..database import EvaluationSummary, EvoTensileDB
 from ..search.encoding import candidate_to_genome, hamming_distance
+from ..search.grid_evidence import CandidateGridScore, GridObjective, candidate_grid_scores
 from ..search_space import (
     DOMAINS,
     MATRIX_INSTRUCTIONS,
     NT_HHS_RANDOM_VALU_VGPR_HEADROOM,
     _valu_vgpr_lower_bound,
-    cheap_constraints,
+    eligible_for_shape_scope,
     macro_tile,
     make_candidate,
     random_candidate,
@@ -50,7 +51,12 @@ class FamilyDescriptor:
 class FamilyArchiveEntry:
     descriptor: FamilyDescriptor
     leader: Candidate
+    objective: str
     aggregate_score: float
+    specialist_score: float
+    generalist_score: float
+    coverage_fraction: float
+    unresolved_shape_count: int
     samples: int
     shape_count: int
     observed_candidate_count: int
@@ -66,7 +72,12 @@ class FamilyArchiveEntry:
         return {
             "descriptor": self.descriptor.as_dict(),
             "leader_candidate_hash": self.leader_candidate_hash,
+            "objective": self.objective,
             "aggregate_score": self.aggregate_score,
+            "specialist_score": self.specialist_score,
+            "generalist_score": self.generalist_score,
+            "coverage_fraction": self.coverage_fraction,
+            "unresolved_shape_count": self.unresolved_shape_count,
             "samples": self.samples,
             "shape_count": self.shape_count,
             "observed_candidate_count": self.observed_candidate_count,
@@ -142,12 +153,11 @@ def _target_tile_aspect(shapes: Sequence[Shape] | None) -> str:
     return "balanced"
 
 
-def nt_hhs_family_cells(*, target_shapes: Sequence[Shape] | None = None) -> list[FamilyDescriptor]:
+def nt_hhs_family_cells() -> list[FamilyDescriptor]:
     tile_cells = {
         (_tile_area_log2(macro_tile0, macro_tile1), _tile_aspect(macro_tile0, macro_tile1))
         for macro_tile0, macro_tile1 in (macro_tile(instruction) for instruction in MATRIX_INSTRUCTIONS)
     }
-    global_split_u_values = (1,) if target_shapes else tuple(int(value) for value in DOMAINS["GlobalSplitU"])
     return [
         FamilyDescriptor(
             profile=NT_HHS_PROFILE,
@@ -161,7 +171,7 @@ def nt_hhs_family_cells(*, target_shapes: Sequence[Shape] | None = None) -> list
         )
         for area, aspect in sorted(tile_cells)
         for transpose_lds in (0, 2)
-        for global_split_u in global_split_u_values
+        for global_split_u in DOMAINS["GlobalSplitU"]
     ]
 
 
@@ -243,7 +253,7 @@ def _candidate_for_family(
         params = repair_linked_overrides(params)
         if _valu_vgpr_lower_bound(params) > NT_HHS_RANDOM_VALU_VGPR_HEADROOM:
             continue
-        if target_shapes and not all(cheap_constraints(params, shape=shape) for shape in target_shapes):
+        if not eligible_for_shape_scope(params, target_shapes):
             continue
         try:
             candidate = make_candidate(params, source="random")
@@ -271,7 +281,7 @@ def family_stratified_random_candidates(
         raise ValueError(f"unsupported family descriptor profile: {profile}")
 
     rng = random.Random(seed)
-    cells = nt_hhs_family_cells(target_shapes=target_shapes)
+    cells = nt_hhs_family_cells()
     counts = load_family_attempt_counts(
         db,
         problem_type_hash=problem_type_hash,
@@ -288,6 +298,7 @@ def family_stratified_random_candidates(
             benchmark_protocol_hash=benchmark_protocol_hash,
             shapes=target_shapes,
             min_samples=1,
+            objective=GridObjective.SPECIALIST,
             profile=profile,
             limit=None,
         )
@@ -333,15 +344,6 @@ def family_stratified_random_candidates(
     if len(out) < count:
         raise RuntimeError(f"failed to generate {count} family-stratified candidates; generated {len(out)}")
     return list(out.values())
-
-
-def _rank_percentiles(summaries: Sequence[EvaluationSummary]) -> dict[str, float]:
-    ordered = [summary for summary in summaries if summary.median_gflops is not None and summary.median_gflops > 0.0]
-    if not ordered:
-        return {}
-    ordered.sort(key=lambda summary: (summary.median_gflops or 0.0, -(summary.median_time_us or 0.0)), reverse=True)
-    denominator = max(len(ordered) - 1, 1)
-    return {summary.candidate_hash: rank / denominator for rank, summary in enumerate(ordered)}
 
 
 def _archive_shape_ids(
@@ -443,25 +445,42 @@ def _family_status_counts(
 
 @dataclass(frozen=True)
 class _FamilyCandidateScore:
-    candidate_hash: str
+    grid_score: CandidateGridScore
     aggregate_score: float
-    samples: int
-    shape_count: int
+
+    @property
+    def candidate_hash(self) -> str:
+        return self.grid_score.candidate_hash
+
+    @property
+    def samples(self) -> int:
+        return self.grid_score.samples
+
+    @property
+    def shape_count(self) -> int:
+        return self.grid_score.shape_count
 
 
 def _select_diverse_family_scores(
     scores: Sequence[_FamilyCandidateScore],
     *,
     candidates: Mapping[str, Candidate],
+    objective: str,
     count: int,
     score_slack: float,
 ) -> list[tuple[_FamilyCandidateScore, int]]:
     if count <= 0 or not scores:
         return []
-    remaining = sorted(
-        scores,
-        key=lambda item: (item.aggregate_score, -item.samples, -item.shape_count, item.candidate_hash),
-    )
+
+    def quality_key(item: _FamilyCandidateScore) -> tuple[float, int, int, str]:
+        coverage_tie = (
+            item.shape_count
+            if objective in {GridObjective.SPECIALIST, GridObjective.UNCERTAINTY}
+            else -item.shape_count
+        )
+        return (item.aggregate_score, coverage_tie, -item.samples, item.candidate_hash)
+
+    remaining = sorted(scores, key=quality_key)
     selected: list[tuple[_FamilyCandidateScore, int]] = [(remaining.pop(0), 0)]
     quality_limit = selected[0][0].aggregate_score + max(0.0, score_slack)
     while remaining and len(selected) < count:
@@ -474,7 +493,7 @@ def _select_diverse_family_scores(
                 hamming_distance(genome, candidate_to_genome(candidates[selected_hash]))
                 for selected_hash in selected_hashes
             )
-            return (-novelty, item.aggregate_score, -item.samples, -item.shape_count, item.candidate_hash)
+            return (-novelty, *quality_key(item))
 
         chosen = min(eligible, key=selection_key)
         chosen_genome = candidate_to_genome(candidates[chosen.candidate_hash])
@@ -494,11 +513,19 @@ def load_family_archive(
     benchmark_protocol_hash: str | None = None,
     shapes: Sequence[Shape] | None = None,
     min_samples: int = 1,
+    objective: str,
     profile: str = NT_HHS_PROFILE,
     limit: int | None = None,
     elites_per_family: int = 1,
     diversity_score_slack: float = DEFAULT_FAMILY_DIVERSITY_SCORE_SLACK,
 ) -> list[FamilyArchiveEntry]:
+    if objective not in {
+        GridObjective.SPECIALIST,
+        GridObjective.GENERALIST,
+        GridObjective.COVERAGE,
+        GridObjective.UNCERTAINTY,
+    }:
+        raise ValueError(f"unknown family archive objective: {objective}")
     shape_ids = _archive_shape_ids(
         db,
         problem_type_hash=problem_type_hash,
@@ -530,34 +557,30 @@ def load_family_archive(
         profile=profile,
     )
 
-    candidate_scores: dict[str, dict[str, list[tuple[str, float, int]]]] = defaultdict(lambda: defaultdict(list))
+    grid_scores = candidate_grid_scores(summaries_by_shape, target_shape_ids=shape_ids)
+    candidate_scores: dict[str, dict[str, CandidateGridScore]] = defaultdict(dict)
     family_descriptors: dict[str, FamilyDescriptor] = {}
-    for shape_id, summaries in summaries_by_shape.items():
-        percentiles = _rank_percentiles(summaries)
-        for summary in summaries:
-            candidate = candidates.get(summary.candidate_hash)
-            percentile = percentiles.get(summary.candidate_hash)
-            if candidate is None or percentile is None:
-                continue
-            descriptor = family_descriptor(candidate, profile=profile)
-            family_descriptors[descriptor.key] = descriptor
-            candidate_scores[descriptor.key][candidate.hash].append((shape_id, percentile, summary.samples))
+    for candidate_hash, grid_score in grid_scores.items():
+        candidate = candidates.get(candidate_hash)
+        if candidate is None:
+            continue
+        descriptor = family_descriptor(candidate, profile=profile)
+        family_descriptors[descriptor.key] = descriptor
+        candidate_scores[descriptor.key][candidate_hash] = grid_score
 
     entries: list[FamilyArchiveEntry] = []
     for descriptor_key, scores_by_candidate in candidate_scores.items():
-        family_scores = []
-        for candidate_hash, items in scores_by_candidate.items():
-            family_scores.append(
-                _FamilyCandidateScore(
-                    candidate_hash=candidate_hash,
-                    aggregate_score=sum(score for _, score, _ in items) / len(items),
-                    samples=sum(samples for _, _, samples in items),
-                    shape_count=len({shape_id for shape_id, _, _ in items}),
-                )
+        family_scores = [
+            _FamilyCandidateScore(
+                grid_score=grid_score,
+                aggregate_score=grid_score.objective_score(objective),
             )
+            for grid_score in scores_by_candidate.values()
+        ]
         selected = _select_diverse_family_scores(
             family_scores,
             candidates=candidates,
+            objective=objective,
             count=elites_per_family,
             score_slack=diversity_score_slack,
         )
@@ -566,7 +589,12 @@ def load_family_archive(
                 FamilyArchiveEntry(
                     descriptor=family_descriptors[descriptor_key],
                     leader=candidates[score.candidate_hash],
+                    objective=objective,
                     aggregate_score=score.aggregate_score,
+                    specialist_score=score.grid_score.specialist_score,
+                    generalist_score=score.grid_score.generalist_score,
+                    coverage_fraction=score.grid_score.coverage_fraction,
+                    unresolved_shape_count=score.grid_score.unresolved_shape_count,
                     samples=score.samples,
                     shape_count=score.shape_count,
                     observed_candidate_count=len(scores_by_candidate),

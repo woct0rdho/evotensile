@@ -9,6 +9,7 @@ from evotensile.search.family import (
     family_stratified_random_candidates,
     load_family_archive,
 )
+from evotensile.search.grid_evidence import GRID_OBJECTIVES, GridObjective
 from evotensile.search_space import DOMAINS, make_candidate
 from evotensile.shapes import pilot_100_shapes
 from tests.helpers import REFERENCE_CANDIDATE, sample_candidates
@@ -155,6 +156,7 @@ def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         shapes=shapes,
+        objective=GridObjective.GENERALIST,
     )
 
     assert archive
@@ -164,6 +166,55 @@ def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
     assert archive[0].shape_count == 2
     assert archive[0].status_counts["ok"] >= 2
     assert archive[0].status_counts["validation_failed"] == 1
+
+
+def test_family_archive_objectives_distinguish_sparse_specialists_and_broad_generalists(tmp_path):
+    db = EvoTensileDB.connect(tmp_path / "families.sqlite")
+    db.init()
+    shapes = pilot_100_shapes()[:2]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    specialist_params = REFERENCE_CANDIDATE.canonical_params()
+    specialist_params["StaggerU"] = 0
+    generalist_params = REFERENCE_CANDIDATE.canonical_params()
+    generalist_params["StaggerU"] = 8
+    specialist = make_candidate(specialist_params, source="archive-test")
+    generalist = make_candidate(generalist_params, source="archive-test")
+    db.register_candidates([specialist, generalist])
+    db.register_shapes(shapes)
+    for shape, candidate, time_us in (
+        (shapes[0], specialist, 1.0),
+        (shapes[0], generalist, 2.0),
+        (shapes[1], generalist, 1.0),
+    ):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=time_us,
+            validation="PASSED",
+        )
+
+    leaders = {
+        objective: load_family_archive(
+            db,
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            shapes=shapes,
+            objective=objective,
+        )[0]
+        for objective in GRID_OBJECTIVES
+    }
+
+    assert leaders[GridObjective.SPECIALIST].leader_candidate_hash == specialist.hash
+    assert leaders[GridObjective.GENERALIST].leader_candidate_hash == generalist.hash
+    assert leaders[GridObjective.COVERAGE].leader_candidate_hash == generalist.hash
+    assert leaders[GridObjective.UNCERTAINTY].leader_candidate_hash == specialist.hash
+    assert leaders[GridObjective.GENERALIST].coverage_fraction == 1.0
+    assert leaders[GridObjective.UNCERTAINTY].unresolved_shape_count == 1
 
 
 def test_load_family_archive_keeps_diverse_quality_bounded_elites_per_family(tmp_path):
@@ -197,6 +248,7 @@ def test_load_family_archive_keeps_diverse_quality_bounded_elites_per_family(tmp
         problem_type_hash=p_hash,
         benchmark_protocol_hash=b_hash,
         shapes=[shape],
+        objective=GridObjective.SPECIALIST,
         elites_per_family=3,
     )
 
@@ -247,6 +299,7 @@ def test_load_family_archive_filters_protocol_and_min_samples(tmp_path):
         benchmark_protocol_hash=b_hash,
         shapes=[shape],
         min_samples=2,
+        objective=GridObjective.SPECIALIST,
     )
 
     assert archive == []
