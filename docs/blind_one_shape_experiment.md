@@ -191,13 +191,13 @@ Exact-hash replay was rerun with staged-probe accounting over seeds `20260710-20
 
 ### Attempt 1: Concurrent Validation Failure
 
-`out/blind_one_shape_next_20260710_seed20260713/` was stopped during cold validation after six concurrent validators destabilized ROCr/KFD module loading. Before timing, `48` candidates were registered, `11` validation pairs passed, `3` failed, and `2` were rejected. Two validation batches completed in about `17s`. Four concurrent batches remained active beyond `220s`.
+The historical, subsequently pruned attempt `out/blind_one_shape_next_20260710_seed20260713/` was stopped during cold validation after six concurrent validators destabilized ROCr/KFD module loading. Before timing, `48` candidates were registered, `11` validation pairs passed, `3` failed, and `2` were rejected. Two validation batches completed in about `17s`. Four concurrent batches remained active beyond `220s`.
 
 After termination, even a singleton from a previously successful library could not validate within `30s`. A reboot restored that exact validation to `0.70s`, confirming transient loader state rather than candidate invalidity. The next policy revision retained eight preparation workers but capped validation workers at one.
 
 ### Attempt 2: Catastrophic Probe Tail
 
-`out/blind_one_shape_next_v2_20260710_seed20260713/` confirmed the validation fix: all six serialized validation batches completed in about `2-28s`, at most one validator and one benchmark runner were active, and the loader failure did not recur.
+The historical, subsequently pruned attempt `out/blind_one_shape_next_v2_20260710_seed20260713/` confirmed the validation fix: all six serialized validation batches completed in about `2-28s`, at most one validator and one benchmark runner were active, and the loader failure did not recur.
 
 This attempt was stopped after about `135s` before round zero completed. The exact-MI cold selector had chosen two `16x16` workgroups requiring about `8.7-9.0s` per launch. Their six launches consumed about `53s` of one `55.0s` probe batch. The next policy revision removed exact MI identities from coverage, added the soft dispatch-efficiency prior, and staged the probe so the slow tail received one launch before screening.
 
@@ -228,24 +228,28 @@ No ablation, prior, seed, linkage priority, or neighborhood order uses the exter
 
 ## Artifacts
 
-Primary real campaigns:
-- `out/blind_one_shape_20min_adaptive_20260710_seed20260710/`
-- `out/blind_one_shape_20min_adaptive_20260710_seed20260711/`
-- `out/blind_one_shape_20min_adaptive_20260710_seed20260712/`
+### Retained Current Artifacts
 
-Best campaign:
-- `out/blind_one_shape_20min_adaptive_20260710_seed20260711/campaign_summary.json`
-- `out/blind_one_shape_20min_adaptive_20260710_seed20260711/hot_loop_top8/summary.json`
-
-Aggregate operator and utilization analysis:
-- `out/blind_one_shape_20min_adaptive_analysis.jsonl`
-
-Follow-up campaign and analysis:
+Completed follow-up campaign and analysis:
 - `out/blind_one_shape_next_v3_20260710_seed20260713/campaign_summary.json`
 - `out/blind_one_shape_next_v3_20260710_seed20260713/hot_loop_top8/summary.json`
 - `out/blind_one_shape_next_v3_analysis.json`
+
+Current replay evidence:
+- `out/blind_one_shape_next_replay/baseline.json`
+- `out/blind_one_shape_next_replay/new_policy.json`
+- `out/blind_one_shape_next_replay/comparison.json`
+- `out/blind_one_shape_next_replay/baseline_staged_probe.json`
+- `out/blind_one_shape_next_replay/new_policy_staged_probe.json`
 - `out/blind_one_shape_next_replay/comparison_staged_probe.json`
 
-Unsuccessful diagnostic summaries:
-- `out/blind_one_shape_next_20260710_seed20260713/aborted_summary.json`
-- `out/blind_one_shape_next_v2_20260710_seed20260713/aborted_summary.json`
+The completed campaign directory also retains its campaign database, checkpoints, round proposal records, logs, compile cache, candidate artifacts, and hot-confirmation outputs. The top-level control, campaign, and monitor logs remain beside it in `out/`.
+
+### Historical Pruned Artifacts
+
+The chronological results above remain authoritative experiment records, but their raw artifact paths are intentionally unavailable after output consolidation:
+- prior real campaigns `out/blind_one_shape_20min_adaptive_20260710_seed20260710/`, `out/blind_one_shape_20min_adaptive_20260710_seed20260711/`, and `out/blind_one_shape_20min_adaptive_20260710_seed20260712/`.
+- aggregate prior analysis `out/blind_one_shape_20min_adaptive_analysis.jsonl`.
+- failed-attempt directories `out/blind_one_shape_next_20260710_seed20260713/` and `out/blind_one_shape_next_v2_20260710_seed20260713/`, including their former `aborted_summary.json` files.
+
+These paths are historical identifiers, not retained-artifact links. Their reported measurements are preserved in this document. No current workflow should depend on the pruned files.

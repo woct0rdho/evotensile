@@ -195,4 +195,4 @@ SyncsPerBenchmark=1
 
 `hot_confirm_topk()` reuses generated libraries and prior compatible validation evidence. It does not recompile or revalidate finalists. Confirmation rows are reported separately from broad screening so expensive launches are reserved for a small candidate set.
 
-The blind one-shape campaign can stabilize provisional leaders between search rounds before they influence the next proposal call. Confidence selection, duration/sample targets, artifact reuse, ingestion, and limitations are documented in `docs/search_screening_stabilization.md`. Blind experiment procedures and time-budget accounting are documented in `docs/blind_experiment_infrastructure.md`.
+The blind one-shape campaign can stabilize provisional leaders between search rounds before they influence the next proposal call. Confidence selection, independent sample/launch/timer/uncertainty targets, grid queues, artifact reuse, ingestion, and limitations are documented in `docs/search_screening_stabilization.md`. Blind experiment procedures and time-budget accounting are documented in `docs/blind_experiment_infrastructure.md`.

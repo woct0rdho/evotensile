@@ -189,7 +189,7 @@ The implemented search stack is cache-aware random/evolutionary/family-QD genera
 
 Not currently implemented:
 - family-level measurement bandits.
-- family-leader-specific fidelity stages beyond one-shape global leader stabilization.
+- family-leader-specific fidelity stages beyond per-shape grid stabilization queues.
 - automatic family descriptor splitting or merging.
 - general CLI-managed multi-island search beyond the blind one-shape campaign driver.
 - LFBO or a persistent cross-campaign surrogate.

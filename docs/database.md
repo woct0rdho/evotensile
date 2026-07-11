@@ -24,7 +24,7 @@ shape_id
 candidate_hash
 ```
 
-This separation lets timing budgets change without repeating correctness while still invalidating correctness evidence when backend, extent, initialization, or validator version changes.
+This separation lets timing budgets change without repeating correctness while still invalidating correctness evidence when the declared validation backend, extent, initialization, or manually maintained validation-protocol schema version changes. The hash does not fingerprint the structured-runner binary, hipBLASLt or ROCm version, GPU identity, or generated-library contents. Incompatible hardware, software, or generated-code environments require a separate DB evidence namespace and fresh validation. An equivalent artifact rebuild does not. Frozen campaign configuration records binary and implementation fingerprints for campaign resume identity, while `candidate_artifacts` independently verifies the exact library contents used for later execution.
 
 ## Tables
 
@@ -136,7 +136,7 @@ Identical reusable negatives are idempotent by problem/protocol/pair/run/status/
 
 `validation_cache_states()` selects the latest row by `(created_at, validation_id)` for each pair under the active validation-protocol hash. `validated_cache_entries()` returns only pairs whose latest compatible state is `passed`.
 
-A latest `failed` state suppresses the pair only for that exact validation identity. Changing backend, extent, initialization, or protocol version produces a different hash and requires fresh validation. A later pass supersedes an earlier failure. A later failure supersedes an earlier pass.
+A latest `failed` state suppresses the pair only for that exact validation identity. Changing a hashed backend, extent, initialization, or validation-protocol schema field produces a different hash and requires fresh validation. Software, GPU, and generated-library content changes do not alter this hash automatically. Use a separate DB namespace and fresh validation when those changes can alter generated or executed code. A later pass supersedes an earlier failure, and a later failure supersedes an earlier pass.
 
 There is no trusted no-validation path. Benchmark mode is allowed only for pairs already represented in the prepared validation-passed set or compatible cached validation evidence.
 

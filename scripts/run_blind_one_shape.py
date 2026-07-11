@@ -1021,7 +1021,7 @@ def main() -> int:
         if configuration.leader_stabilization and time.monotonic() < search_admission_deadline:
             stabilization = stabilize_screening_leaders(
                 db,
-                shape=shape,
+                shapes=[shape],
                 problem_type_hash=profile.problem_type_hash,
                 screening_protocol=protocol,
                 validation_protocol_hash=protocol.validation_protocol_hash(),
