@@ -151,7 +151,7 @@ python3 scripts/update_hipblaslt_gridbased_logic.py \
   --output-dir out/gridbased-logic-staged
 ```
 
-After reviewing the staged YAML, use `--write-source` to transactionally replace the selected checked-in files. The updater rolls back all selected variants if any replacement fails. `--allow-partial` is an explicit development-only escape hatch. Normal production export requires exactly the profile shape set and rejects empty, duplicate, missing, or extra mappings.
+After reviewing the staged YAML, use `--write-source` to overwrite the selected checked-in files. `--allow-partial` is an explicit development-only escape hatch. Normal production export requires exactly the profile shape set and rejects empty, duplicate, missing, or extra mappings.
 
 The updater writes TensileLite-style YAML formatting, retargets solution names, trims generated solution dictionaries to the key schema/order used by existing checked-in GridBased YAMLs, strips benchmark-only embedded `ProblemType`, and applies target-specific build-valid normalizations.
 

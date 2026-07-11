@@ -206,8 +206,6 @@ Recommended correction:
 
 - Put preparation and validation defaults in the target profile/resource profile.
 - Default gfx1151 validation concurrency to one until contrary evidence exists.
-- Cap prepare workers by measured memory and compiler capacity rather than CPU count alone.
-- Choose batch size from measured throughput and startup cost, not only worker saturation.
 
 ### P2. Cost-Aware Preparation Order Also Becomes Benchmark Order
 
@@ -442,4 +440,4 @@ The current tests are strong around normal scheduler execution, one-shape mechan
 
 Keep the current one-shape campaign as an experiment harness, not as the production grid controller. Its bookkeeping now uses explicit proposal events, active/archive diagnostics, strict configuration identity, resolved benchmark and validation state, and soft admission budgets with reported overruns. Reuse those validated components together with candidate representation, source-backed constraints, final-YAML mapping, structured validation, serial timing, probe separation, and DB ranking, but replace scalar one-shape acquisition with a grid-aware specialist/generalist objective.
 
-The GridBased updater defaults to a no-write preview, rejects empty or incomplete profile shape sets, and transactionally stages or replaces all selected variants. The retained 100-shape timing corpus is consolidated under the current benchmark protocol, but still requires current validation evidence and registered complete artifacts before it is export-ready.
+The GridBased updater defaults to a no-write preview and rejects empty or incomplete profile shape sets. The retained 100-shape timing corpus is consolidated under the current benchmark protocol, but still requires current validation evidence and registered complete artifacts before it is export-ready.

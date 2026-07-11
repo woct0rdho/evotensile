@@ -3,8 +3,6 @@
 import argparse
 import copy
 import json
-import os
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -85,40 +83,6 @@ def _with_problem_header_bool_style(text: str) -> str:
 def _render_yaml(data: Any) -> str:
     text = yaml.safe_dump(data, default_flow_style=None, sort_keys=False)
     return _with_problem_header_bool_style(text)
-
-
-def _write_files_transactionally(rendered_files: dict[Path, str]) -> None:
-    transaction_id = uuid.uuid4().hex
-    staged: dict[Path, Path] = {}
-    backups: dict[Path, Path] = {}
-    committed: set[Path] = set()
-    try:
-        for path, text in rendered_files.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            staged_path = path.with_name(f".{path.name}.{transaction_id}.tmp")
-            staged_path.write_text(text, encoding="utf-8")
-            staged[path] = staged_path
-        for path in rendered_files:
-            if path.exists():
-                backup_path = path.with_name(f".{path.name}.{transaction_id}.bak")
-                os.replace(path, backup_path)
-                backups[path] = backup_path
-        for path, staged_path in staged.items():
-            os.replace(staged_path, path)
-            committed.add(path)
-    except Exception:
-        for path in reversed(list(rendered_files)):
-            if path in committed and path.exists():
-                path.unlink()
-            backup_path = backups.get(path)
-            if backup_path is not None and backup_path.exists():
-                os.replace(backup_path, path)
-        raise
-    finally:
-        for staged_path in staged.values():
-            staged_path.unlink(missing_ok=True)
-        for backup_path in backups.values():
-            backup_path.unlink(missing_ok=True)
 
 
 def _protocol_from_args(args: argparse.Namespace, profile: TargetProfile) -> BenchmarkProtocol:
@@ -452,7 +416,9 @@ def update_logic_files(
         }
 
     if destination_dir is not None:
-        _write_files_transactionally(rendered_files)
+        for output_path, text in rendered_files.items():
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(text, encoding="utf-8")
 
     return {
         "db": str(db_path),
