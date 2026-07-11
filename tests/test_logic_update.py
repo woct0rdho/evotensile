@@ -1,4 +1,3 @@
-import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,7 +13,6 @@ from scripts.update_hipblaslt_gridbased_logic import (
     VARIANTS,
     Winner,
     _validate_winner_shape_set,
-    _write_files_transactionally,
     update_logic_files,
 )
 from tests.helpers import REFERENCE_CANDIDATE
@@ -53,39 +51,6 @@ def test_logic_update_rejects_duplicate_and_extra_shapes():
             profile=profile,
             allow_partial=True,
         )
-
-
-def test_transactional_logic_write_restores_all_files_on_failure(tmp_path: Path, monkeypatch):
-    first = tmp_path / "first.yaml"
-    second = tmp_path / "second.yaml"
-    first.write_text("old first\n", encoding="utf-8")
-    second.write_text("old second\n", encoding="utf-8")
-    real_replace = os.replace
-
-    def fail_second_commit(source, destination):
-        source_path = Path(source)
-        destination_path = Path(destination)
-        if source_path.suffix == ".tmp" and destination_path == second:
-            raise OSError("injected commit failure")
-        real_replace(source, destination)
-
-    monkeypatch.setattr(os, "replace", fail_second_commit)
-    with pytest.raises(OSError, match="injected commit failure"):
-        _write_files_transactionally({first: "new first\n", second: "new second\n"})
-
-    assert first.read_text(encoding="utf-8") == "old first\n"
-    assert second.read_text(encoding="utf-8") == "old second\n"
-    assert sorted(path.name for path in tmp_path.iterdir()) == ["first.yaml", "second.yaml"]
-
-
-def test_transactional_logic_write_commits_complete_set(tmp_path: Path):
-    first = tmp_path / "first.yaml"
-    second = tmp_path / "nested" / "second.yaml"
-
-    _write_files_transactionally({first: "new first\n", second: "new second\n"})
-
-    assert first.read_text(encoding="utf-8") == "new first\n"
-    assert second.read_text(encoding="utf-8") == "new second\n"
 
 
 def _artifact_solution():
@@ -207,7 +172,7 @@ def test_logic_export_requires_complete_registered_artifact(tmp_path: Path):
         )
 
 
-def test_logic_export_uses_registered_artifact_and_stages_complete_output(tmp_path: Path):
+def test_logic_export_uses_registered_artifact_and_writes_output(tmp_path: Path):
     db_path, profile, logic_dir = _logic_export_fixture(tmp_path, validation=True, artifact=True)
     destination = tmp_path / "staged"
 

@@ -19,7 +19,7 @@ Implemented and working:
 - Optional cost-aware operator credit and longest-predicted-work-first preparation ordering.
 - A deterministic blind one-shape campaign harness with two isolated cold islands, later migration, exact-proposal checkpoints, and opt-in convergence stopping.
 - `repair-outliers` neighbor-seeded second-stage search.
-- DB-driven hipBLASLt GridBased YAML preview/staging helper for HHS/HHS+AuxH/BBS/BBS+AuxB variants, requiring complete-profile shape coverage, current validation, and complete registered artifacts before transactional source replacement.
+- DB-driven hipBLASLt GridBased YAML preview/output helper for HHS/HHS+AuxH/BBS/BBS+AuxB variants, requiring complete-profile shape coverage, current validation, and complete registered artifacts before explicit source overwrite.
 - Installed-library verification helper using `hipblaslt-bench --verify`.
 
 Current default workflow:
@@ -27,7 +27,7 @@ Current default workflow:
 - Run `schedule-batches` with the target profile and structured runner.
 - Let adaptive sampling top up plausible finalists.
 - Run `repair-outliers` before final GridBased update when expanding or retuning a grid.
-- Preview and stage complete hipBLASLt GridBased logic from the DB, review it, then explicitly request transactional source replacement.
+- Preview and write complete hipBLASLt GridBased logic from the DB, review it, then explicitly request source overwrite.
 - Rebuild/install hipBLASLt and validate performance/correctness.
 
 ## Recent Project Log
