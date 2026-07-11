@@ -66,7 +66,7 @@ Separating the identities allows the scheduler to learn whether local refinement
 
 ## Credit Evidence
 
-`load_operator_credits()` reads selected append-only proposal occurrences and ranked timing evidence for the active problem, benchmark protocol, and target shapes. Candidate registration remains first-writer-owned, but credit never reads source, parents, or metadata from the candidate row. A later operator appearance of an existing parameter hash is therefore independently attributable.
+`load_operator_credit_views()` consumes the one immutable proposal evidence snapshot for the active problem, benchmark protocol, and target shapes. It computes queried child outcomes once, then derives whole-operator, semantic-group, and donor-mode credit from that shared outcome set. Candidate registration remains first-writer-owned, but credit never reads source, parents, or metadata from the candidate row. A later operator appearance of an existing parameter hash is therefore independently attributable.
 
 A proposal occurrence contributes one event-level trial only when:
 - its occurrence source is one of the adaptive arms.
@@ -141,7 +141,7 @@ Observed child improvement is noisy, especially with two-sample screening. Opera
 Current limitations:
 - credit uses current DB medians without temporal decay.
 - success is binary for allocation even though cumulative log speedup is recorded.
-- cost attribution divides shared run duration between candidates and is not exact per-candidate profiling.
+- indexed cost attribution divides shared run duration between candidates and is not exact per-candidate profiling.
 - credit aggregates selected target-shape outcomes at event level but is not yet conditioned by family or search phase.
 - screening evidence remains noisy even when the blind campaign stabilizes provisional global leaders.
 

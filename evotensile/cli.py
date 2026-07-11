@@ -7,30 +7,17 @@ from pathlib import Path
 from .adaptive_retime import AdaptivePolicy, ProbePolicy
 from .candidate import Candidate, Shape
 from .database import EvoTensileDB
-from .profile import DEFAULT_PROFILE, PROFILES, TargetProfile, get_profile
+from .profile import PROFILES, TargetProfile, get_profile
 from .protocol import BenchmarkProtocol
 from .runner import DEFAULT_TENSILELITE_BIN
 from .scheduler import (
     DEFAULT_COMPILE_THREADS,
-    DEFAULT_CROSSOVER_RATE,
-    DEFAULT_DE_COUNT,
-    DEFAULT_ELITE_COUNT,
-    DEFAULT_GOMEA_COUNT,
-    DEFAULT_LEARNED_LINKAGE_ENABLED,
     DEFAULT_LINKAGE_MAX_CLUSTERS,
     DEFAULT_LINKAGE_MIN_SAMPLES,
     DEFAULT_LINKAGE_ORDINAL_BINS,
     DEFAULT_LINKAGE_TRUNCATION_TAU,
-    DEFAULT_LOCAL_COUNT,
-    DEFAULT_MUTATION_RATE,
-    DEFAULT_NUM_RANDOM,
-    DEFAULT_PROPOSAL,
-    DEFAULT_RANDOM_GENE_RATE,
-    DEFAULT_TRANSFER_PER_SHAPE,
-    DEFAULT_TRANSFER_SHAPES,
     PROPOSAL_MODES,
     ScheduleResult,
-    default_prepare_workers,
     detect_underperforming_shapes,
     execute_schedule,
     production_candidate_batch_size,
@@ -38,12 +25,15 @@ from .scheduler import (
     repair_seed_candidates,
 )
 from .search.coverage import candidate_coverage
+from .search.evidence import load_proposal_evidence_snapshot
 from .search.family import family_descriptor_counts, load_family_archive
 from .search.grid_evidence import GRID_OBJECTIVES, GridObjective
-from .search.learned_linkage import learn_linkage_models_from_db
+from .search.learned_linkage import learn_linkage_models_from_snapshot
 from .search.random_search import initial_random_batch
+from .search_policy import SEARCH_POLICIES, SearchPolicy, get_search_policy
 from .search_space import DOMAINS, MATRIX_INSTRUCTIONS, macro_tile
 from .shapes import parse_shape
+from .utils import dedupe_candidates
 
 
 def _profile(args: argparse.Namespace) -> TargetProfile:
@@ -95,13 +85,6 @@ def _timing_policies(args: argparse.Namespace) -> tuple[AdaptivePolicy | None, P
     )
 
 
-def _dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
-    by_hash: dict[str, Candidate] = {}
-    for candidate in candidates:
-        by_hash.setdefault(candidate.hash, candidate)
-    return list(by_hash.values())
-
-
 def _timeout_arg(value: float | None, default: float | None) -> float | None:
     if value is None:
         return default
@@ -110,16 +93,75 @@ def _timeout_arg(value: float | None, default: float | None) -> float | None:
     return value
 
 
+def _resolve_search_policy(args: argparse.Namespace, profile: TargetProfile) -> SearchPolicy | None:
+    policy = get_search_policy(
+        getattr(args, "search_policy", None),
+        target_profile_name=profile.name,
+    )
+    if policy is None:
+        return None
+    for name, value in policy.settings().items():
+        if hasattr(args, name) and getattr(args, name) is None:
+            setattr(args, name, value)
+    return policy
+
+
+def _resolve_profile_defaults(args: argparse.Namespace, profile: TargetProfile) -> None:
+    _resolve_search_policy(args, profile)
+    defaults = {
+        "num_random": profile.default_num_random,
+        "proposal": profile.default_proposal,
+        "transfer_shapes": profile.default_transfer_shapes,
+        "transfer_per_shape": profile.default_transfer_per_shape,
+        "elite_count": profile.default_elite_count,
+        "local_count": profile.default_local_count,
+        "de_count": profile.default_de_count,
+        "gomea_count": profile.default_gomea_count,
+        "mutation_rate": profile.default_mutation_rate,
+        "crossover_rate": profile.default_crossover_rate,
+        "random_gene_rate": profile.default_random_gene_rate,
+        "shape_batch_size": profile.default_shape_batch_size,
+        "prepare_workers": profile.default_prepare_workers,
+        "prepare_wave_batches": profile.default_prepare_wave_batches,
+        "validation_workers": profile.default_validation_workers,
+        "surrogate_jobs": profile.default_surrogate_jobs,
+        "surrogate_pool_multiplier": 1,
+        "adaptive_operators": False,
+        "adaptive_group_credit": False,
+        "micro_exhaustive_neighborhoods": False,
+        "adaptive_donor_selection": False,
+        "cost_aware_operator_credit": False,
+        "covering_cold_start": False,
+        "cost_aware_scheduling": False,
+    }
+    for name, value in defaults.items():
+        if hasattr(args, name) and getattr(args, name) is None:
+            setattr(args, name, value)
+
+
+def _resolved_profile(args: argparse.Namespace) -> TargetProfile:
+    profile = _profile(args)
+    _resolve_profile_defaults(args, profile)
+    return profile
+
+
 def _candidates(args: argparse.Namespace):
+    _resolve_profile_defaults(args, _profile(args))
     return initial_random_batch(args.num_random, seed=args.seed)
 
 
 def _add_profile_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile", choices=sorted(PROFILES), default=None, help="Target profile")
+    parser.add_argument(
+        "--search-policy",
+        choices=sorted(SEARCH_POLICIES),
+        default=None,
+        help="Versioned search-mechanism defaults; explicit flags override policy settings",
+    )
 
 
 def _add_candidate_shape_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--num-random", type=int, default=DEFAULT_NUM_RANDOM)
+    parser.add_argument("--num-random", type=int, default=None)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--limit-shapes", type=int, default=None)
     parser.add_argument("--shapes", nargs="*")
@@ -201,14 +243,17 @@ def _resolve_candidate_batch_size(
     )
 
 
-def _validate_schedule_args(args: argparse.Namespace) -> None:
-    _profile(args)
+def _validate_schedule_args(args: argparse.Namespace) -> TargetProfile:
+    profile = _resolved_profile(args)
     if args.candidate_batch_size is not None and args.candidate_batch_size <= 0:
         raise ValueError("--candidate-batch-size must be positive")
     positive_ints = (
         "shape_batch_size",
         "min_samples",
         "prepare_workers",
+        "prepare_wave_batches",
+        "validation_workers",
+        "surrogate_jobs",
     )
     for name in positive_ints:
         if getattr(args, name) <= 0:
@@ -237,11 +282,11 @@ def _validate_schedule_args(args: argparse.Namespace) -> None:
         raise ValueError("--adaptive-max-samples must be >= --adaptive-min-samples")
     if args.linkage_truncation_tau <= 0.0 or args.linkage_truncation_tau > 1.0:
         raise ValueError("--linkage-truncation-tau must be in (0, 1]")
+    return profile
 
 
 def _schedule_context(args: argparse.Namespace) -> ScheduleCliContext:
-    _validate_schedule_args(args)
-    profile = _profile(args)
+    profile = _validate_schedule_args(args)
     protocol = _protocol(args, profile)
     db = EvoTensileDB.connect(args.db)
     db.init()
@@ -272,6 +317,7 @@ def _propose_candidates_for_shapes(
 ) -> list[Candidate]:
     proposal = propose_candidates(
         db,
+        target_profile=_profile(args),
         proposal=args.proposal,
         num_random=args.num_random,
         seed=args.seed,
@@ -289,7 +335,7 @@ def _propose_candidates_for_shapes(
         mutation_rate=args.mutation_rate,
         crossover_rate=args.crossover_rate,
         random_gene_rate=args.random_gene_rate,
-        learned_linkage=not args.no_learned_linkage,
+        learned_linkage=args.learned_linkage,
         linkage_truncation_tau=args.linkage_truncation_tau,
         linkage_min_samples=args.linkage_min_samples,
         linkage_max_clusters=args.linkage_max_clusters,
@@ -302,6 +348,8 @@ def _propose_candidates_for_shapes(
         micro_exhaustive_neighborhoods=args.micro_exhaustive_neighborhoods,
         adaptive_donor_selection=args.adaptive_donor_selection,
         cost_aware_operator_credit=args.cost_aware_operator_credit,
+        surrogate_jobs=getattr(args, "surrogate_jobs", _profile(args).default_surrogate_jobs),
+        effective_cu_count=_profile(args).effective_cu_count,
     )
     return list(proposal.selected)
 
@@ -320,6 +368,8 @@ def _execute_schedule_from_args(
         candidates=candidates,
         shapes=shapes,
     )
+    if not args.no_compile_cache:
+        args.candidate_batch_size = 1
     return execute_schedule(
         context.db,
         shapes=shapes,
@@ -349,13 +399,14 @@ def _execute_schedule_from_args(
         else args.compile_cache_dir or Path(args.output_dir) / "compile_cache",
         cost_aware_scheduling=args.cost_aware_scheduling,
         validation_workers=args.validation_workers,
+        prepare_wave_batches=args.prepare_wave_batches,
     )
 
 
 def _learned_linkage_metadata(
     args: argparse.Namespace, context: ScheduleCliContext, shapes: list[Shape]
 ) -> dict[str, object]:
-    if args.no_learned_linkage:
+    if not args.learned_linkage:
         return {
             "learned_linkage_requested": False,
             "learned_linkage_enabled": False,
@@ -363,10 +414,14 @@ def _learned_linkage_metadata(
             "linkage_fallback_reason": "disabled",
             "linkage_models": [],
         }
-    models, summary = learn_linkage_models_from_db(
+    snapshot = load_proposal_evidence_snapshot(
         context.db,
         problem_type_hash=context.problem_hash,
         benchmark_protocol_hash=context.protocol_hash,
+        shapes=shapes,
+    )
+    models, summary = learn_linkage_models_from_snapshot(
+        snapshot,
         shapes=shapes,
         truncation_tau=args.linkage_truncation_tau,
         min_samples=args.linkage_min_samples,
@@ -394,15 +449,18 @@ def _family_metadata(
     candidates: list[Candidate],
     shapes: list[Shape],
 ) -> dict[str, object]:
-    descriptor_counts = family_descriptor_counts(candidates, profile=context.profile.name)
-    archive = load_family_archive(
+    descriptor_counts = family_descriptor_counts(candidates)
+    snapshot = load_proposal_evidence_snapshot(
         context.db,
         problem_type_hash=context.problem_hash,
         benchmark_protocol_hash=context.protocol_hash,
         shapes=shapes,
+    )
+    archive = load_family_archive(
+        snapshot,
+        shapes=shapes,
         min_samples=1,
         objective=GridObjective.GENERALIST if len(shapes) > 1 else GridObjective.SPECIALIST,
-        profile=context.profile.name,
         limit=16,
     )
     return {
@@ -412,6 +470,14 @@ def _family_metadata(
         "archive_family_count": len(archive),
         "archive_families": [entry.summary() for entry in archive],
     }
+
+
+def _search_policy_metadata(args: argparse.Namespace, profile: TargetProfile) -> dict[str, object] | None:
+    if args.search_policy is None:
+        return None
+    policy = get_search_policy(args.search_policy, target_profile_name=profile.name)
+    assert policy is not None
+    return {name: getattr(args, name) for name in policy.settings()}
 
 
 def _schedule_metadata_common(
@@ -433,6 +499,8 @@ def _schedule_metadata_common(
         "runner_protocol": context.protocol.runner_parameters(),
         "validation_backend": context.protocol.validation_backend,
         "proposal": args.proposal,
+        "search_policy": args.search_policy,
+        "search_policy_settings": _search_policy_metadata(args, context.profile),
         "proposal_scope": args.proposal_scope or ("shape" if len(shapes) == 1 else "shape-set"),
         "proposal_scope_shape_ids": [shape.id for shape in shapes],
         "adaptive_operators": args.adaptive_operators,
@@ -449,7 +517,10 @@ def _schedule_metadata_common(
         "candidate_batch_size": args.candidate_batch_size,
         "shape_batch_size": args.shape_batch_size,
         "prepare_workers": args.prepare_workers,
+        "prepare_wave_batches": args.prepare_wave_batches,
         "validation_workers": args.validation_workers,
+        "surrogate_jobs": args.surrogate_jobs,
+        "effective_cu_count": context.profile.effective_cu_count,
         "compile_cache_root": None
         if args.no_compile_cache
         else str(args.compile_cache_dir or Path(args.output_dir) / "compile_cache"),
@@ -464,12 +535,15 @@ def _schedule_metadata_common(
         "runner_timeout_s": context.runner_timeout,
         "adaptive_sampling": context.adaptive_policy is not None,
         "adaptive_max_rounds": args.adaptive_max_rounds,
+        "completed_waves": result.completed_waves,
         "adaptive_rounds": result.adaptive_rounds,
         "adaptive_policy": None if context.adaptive_policy is None else context.adaptive_policy.__dict__,
         "probe_policy": None if context.probe_policy is None else context.probe_policy.__dict__,
         "probe_protocol_hash": result.probe_protocol_hash,
+        "probe_policy_hash": result.probe_policy_hash,
         "probe_survivor_pairs": result.probe_survivor_pairs,
         "probe_screened_pairs": result.probe_screened_pairs,
+        "probe_preprepare_screened_pairs": result.probe_preprepare_screened_pairs,
         **_learned_linkage_metadata(args, context, shapes),
         "planned_batches": len(result.planned_batches),
         "planned_missing_pairs": result.missing_pairs,
@@ -481,7 +555,7 @@ def _schedule_metadata_common(
 
 
 def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False) -> None:
-    parser.add_argument("--proposal", choices=PROPOSAL_MODES, default=DEFAULT_PROPOSAL)
+    parser.add_argument("--proposal", choices=PROPOSAL_MODES, default=None)
     parser.add_argument(
         "--proposal-scope",
         choices=("shape", "cluster", "shape-set"),
@@ -493,29 +567,30 @@ def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False)
     parser.add_argument(
         "--transfer-shapes",
         type=int,
-        default=DEFAULT_TRANSFER_SHAPES,
+        default=None,
         help="Seed normal proposal generation from this many nearest already-tuned shapes; 0 disables transfer",
     )
     parser.add_argument(
         "--transfer-per-shape",
         type=int,
-        default=DEFAULT_TRANSFER_PER_SHAPE,
+        default=None,
         help="Seed normal proposal generation with this many top candidates per nearest shape",
     )
-    parser.add_argument("--elite-count", type=int, default=DEFAULT_ELITE_COUNT)
-    parser.add_argument("--local-count", type=int, default=DEFAULT_LOCAL_COUNT)
-    parser.add_argument("--de-count", type=int, default=DEFAULT_DE_COUNT)
-    parser.add_argument("--gomea-count", type=int, default=DEFAULT_GOMEA_COUNT)
-    parser.add_argument("--mutation-rate", type=float, default=DEFAULT_MUTATION_RATE)
+    parser.add_argument("--elite-count", type=int, default=None)
+    parser.add_argument("--local-count", type=int, default=None)
+    parser.add_argument("--de-count", type=int, default=None)
+    parser.add_argument("--gomea-count", type=int, default=None)
+    parser.add_argument("--mutation-rate", type=float, default=None)
     parser.add_argument(
         "--adaptive-operators",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Allocate family-QD variation budget from queried child-versus-parent evidence",
     )
     parser.add_argument(
         "--surrogate-pool-multiplier",
         type=int,
-        default=1,
+        default=None,
         help="Generate this multiple of the requested proposal budget, then shortlist blindly from DB evidence",
     )
     parser.add_argument(
@@ -526,43 +601,41 @@ def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False)
     )
     parser.add_argument(
         "--covering-cold-start",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Shortlist evidence-free one-shape pools by mechanical and parameter coverage",
     )
     parser.add_argument(
         "--adaptive-group-credit",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Bias semantic and neighborhood groups from queried group-level rewards",
     )
     parser.add_argument(
         "--micro-exhaustive-neighborhoods",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Enumerate bounded valid alternatives inside selected GOMEA neighborhoods",
     )
     parser.add_argument(
         "--adaptive-donor-selection",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Mix quality, diverse, and random GOMEA donors using queried donor-mode rewards",
     )
     parser.add_argument(
         "--cost-aware-operator-credit",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Scale queried operator, group, and donor rewards by measured evaluation cost",
     )
-    parser.add_argument("--crossover-rate", type=float, default=DEFAULT_CROSSOVER_RATE)
-    parser.add_argument("--random-gene-rate", type=float, default=DEFAULT_RANDOM_GENE_RATE)
+    parser.add_argument("--crossover-rate", type=float, default=None)
+    parser.add_argument("--random-gene-rate", type=float, default=None)
     parser.add_argument(
         "--learned-linkage",
-        dest="no_learned_linkage",
-        action="store_false",
-        default=not DEFAULT_LEARNED_LINKAGE_ENABLED,
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Use validated DB evidence to learn basin-aware GOMEA linkage models",
-    )
-    parser.add_argument(
-        "--no-learned-linkage",
-        dest="no_learned_linkage",
-        action="store_true",
-        help="Disable learned-linkage GOMEA models for A/B checks",
     )
     parser.add_argument("--linkage-truncation-tau", type=float, default=DEFAULT_LINKAGE_TRUNCATION_TAU)
     parser.add_argument("--linkage-min-samples", type=int, default=DEFAULT_LINKAGE_MIN_SAMPLES)
@@ -577,18 +650,30 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Candidates per TensileLite config; defaults to a production throughput heuristic; use 1 for debugging",
     )
-    parser.add_argument("--shape-batch-size", type=int, default=DEFAULT_PROFILE.default_shape_batch_size)
+    parser.add_argument("--shape-batch-size", type=int, default=None)
     parser.add_argument(
         "--prepare-workers",
         type=int,
-        default=default_prepare_workers(),
-        help="Parallel build/map/diagnostic/validation workers; timing always runs serially",
+        default=None,
+        help="Parallel build/map/diagnostic/validation workers; defaults to the target profile",
+    )
+    parser.add_argument(
+        "--prepare-wave-batches",
+        type=int,
+        default=None,
+        help="Maximum prepared batches before serial timing and coordinator feedback; defaults to the target profile",
     )
     parser.add_argument(
         "--validation-workers",
         type=int,
         default=None,
-        help="Optional cap on concurrent validation runners; compilation remains parallel",
+        help="Concurrent validation runners; defaults to the target profile",
+    )
+    parser.add_argument(
+        "--surrogate-jobs",
+        type=int,
+        default=None,
+        help="CPU jobs per ExtraTrees fit; defaults to the target profile",
     )
     parser.add_argument("--min-samples", type=int, default=1)
     parser.add_argument("--ignore-cache", action="store_true")
@@ -601,7 +686,8 @@ def _add_execution_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-compile-cache", action="store_true", help="Disable stable TensileLite build-cache reuse")
     parser.add_argument(
         "--cost-aware-scheduling",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Order parallel preparation longest-predicted-work first",
     )
     parser.add_argument("--max-batches", type=int, default=None)
@@ -655,7 +741,7 @@ def _add_schedule_args(parser: argparse.ArgumentParser, *, repair: bool = False)
 
 
 def cmd_proposal_coverage(args: argparse.Namespace) -> int:
-    profile = _profile(args)
+    profile = _resolved_profile(args)
     db = EvoTensileDB.connect(args.db)
     db.init()
     shapes = _parse_shapes(args, profile)
@@ -669,7 +755,7 @@ def cmd_proposal_coverage(args: argparse.Namespace) -> int:
         proposal_shape_id=args.proposal_shape_id,
     )
     coverage = candidate_coverage(candidates)
-    descriptor_counts = family_descriptor_counts(candidates, profile=profile.name)
+    descriptor_counts = family_descriptor_counts(candidates)
     payload = {
         **coverage,
         "profile": profile.name,
@@ -701,14 +787,17 @@ def cmd_summarize_families(args: argparse.Namespace) -> int:
     shapes = (
         _parse_shapes(args, profile) if getattr(args, "shapes", None) or getattr(args, "limit_shapes", None) else None
     )
-    archive = load_family_archive(
+    snapshot = load_proposal_evidence_snapshot(
         db,
         problem_type_hash=profile.problem_type_hash,
         benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
         shapes=shapes,
+    )
+    archive = load_family_archive(
+        snapshot,
+        shapes=shapes,
         min_samples=args.min_samples,
         objective=args.archive_objective,
-        profile=profile.name,
         limit=args.limit,
     )
     payload = {
@@ -927,7 +1016,7 @@ def cmd_repair_outliers(args: argparse.Namespace) -> int:
         protocol_hash=context.protocol_hash,
         shapes=repair_shapes,
     )
-    candidates = _dedupe_candidates([*repair_seeds, *proposal_candidates])
+    candidates = dedupe_candidates([*repair_seeds, *proposal_candidates])
     if args.max_candidates is not None:
         candidates = candidates[: args.max_candidates]
 
@@ -1032,7 +1121,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     cmd = sub.add_parser("summarize-space", help="Print search-space and generated-candidate summary")
     _add_profile_arg(cmd)
-    cmd.add_argument("--num-random", type=int, default=DEFAULT_NUM_RANDOM)
+    cmd.add_argument("--num-random", type=int, default=None)
     cmd.add_argument("--seed", type=int, default=1)
     cmd.set_defaults(func=cmd_summarize_space)
 

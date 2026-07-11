@@ -25,7 +25,7 @@ A new campaign writes `campaign_configuration.json` before measurement. One immu
 - batch sizes, compile threads, preparation/validation concurrency, cache behavior, and timeouts.
 - absolute runner and TensileLite paths, SHA-256 content/source fingerprints, the EvoTensile implementation fingerprint, and behavior-affecting environment variables.
 
-The current defaults remain `48` cold candidates, `24` requested feedback candidates, six isolated rounds, `16` island-local elites, `32` merged elites, an `8x` pool, eight preparation workers, one validation worker, and a `60s` confirmation reserve.
+The current defaults remain `48` cold candidates, `24` requested feedback candidates, six isolated rounds, `16` island-local elites, `32` merged elites, an `8x` pool, `32` preparation workers, a `32`-batch preparation wave, one validation worker, and a `60s` confirmation reserve.
 
 Resume reconstructs the complete configuration from the current invocation and rejects any field, binary, implementation, or environment mismatch before reading campaign state. There is no partial identity or compatibility override.
 
@@ -78,7 +78,7 @@ seconds_per_missing_pair = round_duration_s / missing_pairs
 
 It then uses the median plus median absolute deviation as a robust per-pair estimate, scales by expected missing pairs, applies a `1.15` margin, adds `5s`, and enforces a minimum estimate.
 
-The driver treats `--time-budget` as a soft admission budget. It admits a new round only when the round estimate fits before the search admission deadline. Once admitted, the complete schedule runs normally: preparation drains, timing remains serialized, and build/runner subprocesses retain their configured timeouts. The round may therefore finish after the soft deadline. No later round or stabilization group is admitted afterward.
+The driver treats `--time-budget` as a soft admission budget. It admits a new round only when the round estimate fits before the search admission deadline. Once admitted, the schedule runs normally in bounded prepare→serial-time waves: each admitted wave drains all preparation before timing, and build/runner subprocesses retain their configured timeouts. The current one-shape round normally fits in one profile-sized wave. A production coordinator can inspect feedback and the soft budget before admitting a later wave. An admitted wave may finish after the soft deadline. No later round or stabilization group is admitted afterward.
 
 The confirmation reserve is the greater of the configured floor and a launch-cost estimate for the currently ranked finalists. The estimate uses each finalist's measured median kernel time, the complete hot protocol launch count, per-finalist startup allowance, and a duration margin. Search admission recalculates this reserve before every round, so slow finalists can reserve more than the default `60s`. Hot finalists are likewise admitted only before the total soft deadline, but an admitted finalist receives the full runner timeout and may complete afterward.
 

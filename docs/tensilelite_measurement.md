@@ -32,7 +32,7 @@ The manifest records intended ordering. Final accepted mapping remains authorita
 
 ## Prepare Queue
 
-One scheduler wave has two phases separated by a hard barrier.
+One scheduler wave has two phases separated by a hard barrier. The target profile bounds the number of planned batches admitted to one wave. gfx1151 defaults to `32` batches.
 
 The parallel prepare queue performs, for every batch:
 - TensileLite build/codegen.
@@ -40,15 +40,15 @@ The parallel prepare queue performs, for every batch:
 - Structured diagnostics for unattributed mixed-build failures.
 - Correctness verification for accepted pairs that lack compatible cached validation.
 
-`--prepare-workers` controls this queue and defaults to available CPU cores. `--compile-threads` controls CPU threads inside one TensileLite build and defaults to `1`. `--validation-workers` optionally caps concurrent structured validation processes without reducing compilation parallelism.
+`--prepare-workers` and `--validation-workers` resolve from the selected target profile unless explicitly overridden. The gfx1151 profile uses `32` preparation workers and independently caps structured validation at one process because this split has provided fast compilation without the ROCr/KFD instability observed under concurrent large-library validation. `--compile-threads` controls CPU threads inside one TensileLite build and defaults to `1`.
 
-Compilation, diagnostics, CPU validation, and GPU validation may overlap when no validation cap is configured. The blind one-shape campaign uses one GPU validation worker because concurrent large-library validation destabilized ROCr/KFD on the integrated gfx1151 system. After all preparation futures finish, the worker pool is shut down. No timing starts until every prepare subprocess has exited.
+Compilation, diagnostics, CPU validation, and GPU validation may overlap subject to the profile validation cap. After all preparation futures in the admitted wave finish, the worker pool is shut down. No timing starts until every prepare subprocess in that wave has exited. The wave then drains serialized timing before another wave can be admitted, so a coordinator may inspect durable DB feedback, resource state, and its soft budget between waves without ever overlapping preparation and timing.
 
 Build, diagnostic, validation, and benchmark subprocesses use their configured operational timeouts. Campaign soft deadlines do not clamp those timeouts after a job starts. A timeout kills the complete subprocess process group before the future completes, so compiler descendants cannot survive the phase barrier.
 
 ## Serial Benchmark Queue
 
-After the prepare pool has fully drained, the scheduler benchmarks prepared batches one at a time. Benchmark mode:
+After the prepare pool has fully drained, the scheduler benchmarks prepared batches one at a time. Preparation submission order and timing order are separate: cost-aware scheduling can submit longest-predicted work first, while timing defaults to stable planned order and may be replaced by an explicit allocator callback. Benchmark mode:
 - Reuses the exact generated library and code object produced during preparation.
 - Accepts only pairs that compiled, mapped, and passed correctness verification.
 - Requires `num_elements_to_validate=0`.
@@ -79,13 +79,16 @@ External GPU programs that do not participate in this gate remain outside EvoTen
 
 The scheduler can reuse a stable TensileLite build cache under `OUTPUT_DIR/compile_cache` unless `--no-compile-cache` is passed.
 
-The cache key includes:
-- Candidate hashes in the batch.
+Stable caching uses candidate-centric TensileLite libraries: each prepared batch contains one candidate and all exact shapes assigned to that batch. This makes reuse independent of the proposal cohort without attempting to merge generated libraries or code objects. The cache key includes:
+- Candidate hash.
+- Sorted exact shape identities, because GridBased generation and final mapping are shape-dependent.
 - Compile-relevant global parameters.
 - Library logic.
 - Problem type hash.
 
-Timing budgets and validation extent are excluded when they do not affect code generation. A success marker and TensileLite cache files are required before reuse. A cache-specific lock prevents duplicate population by prepare workers.
+Timing budgets and validation extent are excluded when they do not affect code generation. A success marker and TensileLite cache files are required before reuse. Cache-disabled and generation-only workflows may retain multi-candidate batches.
+
+A cache-specific kernel advisory file lock prevents duplicate population by preparation workers. Its owner record contains a PID, host, creation time, and unique token for diagnostics. Process exit releases the lock automatically, including catastrophic termination. The persistent lock file is reused rather than unlinked while waiters may hold descriptors. Live ownership has a bounded wait and explicit `TimeoutError`.
 
 Validation, probe, main benchmark, and adaptive top-up modes always use the same prepared library directory. None of the timing stages invoke TensileLite again.
 
@@ -174,7 +177,9 @@ Adaptive sampling prepares the candidate set once. The scheduler then:
 - Runs benchmark-only top-up subsets from the original prepared-artifact index.
 - Repeats up to the configured adaptive-round limit.
 
-Probe evidence has a separate protocol hash and cannot enter main ranking. Missing or incomplete probe evidence is not admitted to main timing in that schedule and creates no reusable negative cache row. Probe, main, and adaptive rounds do not compile, remap, diagnose, or validate candidates. A contender without a successfully prepared artifact is ineligible for timing.
+Probe evidence has a separate protocol hash and cannot enter main ranking. Missing or incomplete probe evidence is not admitted to main timing in that schedule and creates no reusable negative cache row. Before preparation, the scheduler recomputes the initial-stage screen over currently proposed candidates with compatible probe samples. It skips a pair only when the current `ProbePolicy` threshold still screens it and the current cached cohort contains more than the configured minimum survivor floor. The deterministic policy hash is reported with the pre-prepare screened-pair count. Changing thresholds naturally retries the pair. This is an ephemeral timing-allocation decision, never static invalidity or a reusable benchmark-negative row.
+
+Probe, main, and adaptive rounds do not compile, remap, diagnose, or validate candidates. A contender without a successfully prepared artifact is ineligible for timing.
 
 ## Hot-Loop Confirmation
 

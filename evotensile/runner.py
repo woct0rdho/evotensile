@@ -66,6 +66,7 @@ def run_tensilelite(
     env: dict[str, str] | None = None,
     timeout_s: float | None = None,
     use_cache: bool = False,
+    candidate_hashes: list[str] | None = None,
 ) -> RunResult:
     yaml_path = Path(yaml_path)
     output_dir = Path(output_dir)
@@ -114,6 +115,9 @@ def run_tensilelite(
             output_dir=str(output_dir),
             status="timeout" if result.timed_out else "ok" if result.ok else "failed",
             returncode=result.returncode,
+            candidate_hashes=candidate_hashes,
+            cost_phase="prepare",
+            duration_s=duration_s,
             metadata_json=json.dumps(
                 {
                     "command": cmd,

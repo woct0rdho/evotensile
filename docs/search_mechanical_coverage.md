@@ -14,7 +14,7 @@ Every selected candidate still follows normal linked repair, source-backed rule 
 
 ## Candidate-Shape Mechanics
 
-`candidate_shape_mechanics()` projects one complete candidate and one shape into generic execution features. The current gfx1151 default uses an effective CU count of `20`. Callers may override it for another target.
+`candidate_shape_mechanics()` projects one complete candidate and one shape into generic execution features. Effective CU count is required explicitly and comes from the selected target profile. gfx1151 uses `20`. Generic helpers do not silently import a target-specific hardware value.
 
 Tile and dispatch features include:
 - M and N tile fill.
@@ -103,7 +103,6 @@ Tests cover feature ranges, the dispatch-efficiency ordering, fixed shortlist si
 
 ## Limitations
 
-- Effective CU count is currently a gfx1151 default rather than a profile field.
 - The prior does not model full VGPR allocation, occupancy, memory coalescing, instruction scheduling, or code-object size.
 - Token priorities and lane fractions are fixed policy constants and have not received a full multi-seed ablation.
 - Better mechanical coverage does not imply better final performance. Experiment outcomes belong in `docs/blind_one_shape_experiment.md`.

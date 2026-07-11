@@ -155,14 +155,28 @@ def load_island_elites(
     ][:limit]
 
 
-def population_diagnostics(candidates: Sequence[Candidate], shape: Shape) -> PopulationDiagnostics:
+def population_diagnostics(
+    candidates: Sequence[Candidate],
+    shape: Shape,
+    *,
+    effective_cu_count: int,
+) -> PopulationDiagnostics:
     deduped = list({candidate.hash: candidate for candidate in candidates}.values())
     if not deduped:
         return PopulationDiagnostics(0, 0, 0, 0, 0.0, 0)
     sampled = deduped[:64]
     genomes = [candidate_to_genome(candidate) for candidate in sampled]
     distances = [hamming_distance(left, right) for index, left in enumerate(genomes) for right in genomes[index + 1 :]]
-    tokens = set().union(*(mechanical_coverage_tokens(candidate, shape) for candidate in deduped))
+    tokens = set().union(
+        *(
+            mechanical_coverage_tokens(
+                candidate,
+                shape,
+                effective_cu_count=effective_cu_count,
+            )
+            for candidate in deduped
+        )
+    )
     instructions = {tuple(candidate.canonical_params()["MatrixInstruction"]) for candidate in deduped}
     return PopulationDiagnostics(
         candidates=len(deduped),

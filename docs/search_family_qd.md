@@ -58,7 +58,7 @@ An optional one-shape covering cold selector operates after stratified generatio
 
 ## Family Archive
 
-`load_family_archive()` derives archive entries on demand from SQLite. It does not require a separate materialized archive table.
+`load_family_archive()` derives archive entries from the immutable proposal evidence snapshot. The snapshot is loaded once per proposal call from SQLite and shared with elite, transfer, linkage, surrogate, cost, and operator-credit views. No separate materialized archive table is required.
 
 Positive archive scoring uses validation-passed `status='ok'` timing evidence under the requested problem and benchmark protocol. For multi-shape evidence, candidates are compared using shape-local rank percentiles rather than pooled absolute time or GFLOP/s.
 

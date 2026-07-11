@@ -176,6 +176,17 @@ CREATE TABLE IF NOT EXISTS runs (
   metadata_json TEXT
 );
 
+CREATE TABLE IF NOT EXISTS run_candidate_costs (
+  run_id TEXT NOT NULL,
+  candidate_hash TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  duration_s REAL NOT NULL,
+  PRIMARY KEY(run_id, candidate_hash, phase)
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_candidate_costs_candidate
+  ON run_candidate_costs(candidate_hash, phase);
+
 CREATE TABLE IF NOT EXISTS evaluations (
   eval_id INTEGER PRIMARY KEY AUTOINCREMENT,
   problem_type_hash TEXT NOT NULL DEFAULT '',
@@ -457,6 +468,9 @@ class EvoTensileDB:
         status: str,
         returncode: int | None = None,
         metadata_json: str | None = None,
+        candidate_hashes: list[str] | None = None,
+        cost_phase: str | None = None,
+        duration_s: float | None = None,
     ) -> None:
         with self.connection() as con:
             con.execute(
@@ -475,6 +489,20 @@ class EvoTensileDB:
                     metadata_json,
                 ),
             )
+            con.execute("DELETE FROM run_candidate_costs WHERE run_id = ?", (run_id,))
+            attributed_hashes = sorted(set(candidate_hashes or ()))
+            if cost_phase is not None and attributed_hashes:
+                if duration_s is None or duration_s < 0.0:
+                    raise ValueError("indexed run cost requires a non-negative duration")
+                share = duration_s / len(attributed_hashes)
+                con.executemany(
+                    """
+                    INSERT OR REPLACE INTO run_candidate_costs
+                      (run_id, candidate_hash, phase, duration_s)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    [(run_id, candidate_hash, cost_phase, share) for candidate_hash in attributed_hashes],
+                )
 
     def insert_evaluation(
         self,

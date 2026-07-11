@@ -4,8 +4,9 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from evotensile.candidate import Candidate, Shape
-from evotensile.database import EvaluationSummary, EvoTensileDB
+from evotensile.database import EvaluationSummary
 from evotensile.search.encoding import PARAM_NAMES, candidate_to_genome, hamming_distance
+from evotensile.search.evidence import ProposalEvidenceSnapshot
 from evotensile.search.grid_evidence import candidate_grid_scores
 
 DEFAULT_TRUNCATION_TAU = 0.5
@@ -85,28 +86,21 @@ def ordinal_gene_indices(param_names: Iterable[str] = DEFAULT_ORDINAL_PARAM_NAME
 
 
 def load_candidate_evidence(
-    db: EvoTensileDB,
+    snapshot: ProposalEvidenceSnapshot,
     *,
-    problem_type_hash: str | None = None,
-    benchmark_protocol_hash: str | None = None,
     shapes: Sequence[Shape] | None = None,
     min_samples: int = 1,
     elite_per_shape: int = 8,
     limit: int | None = None,
 ) -> list[CandidateEvidence]:
-    shape_ids = [shape.id for shape in shapes] if shapes is not None else [None]
     target_shape_ids = [shape.id for shape in shapes] if shapes is not None else []
     summaries_by_shape: dict[str, list[EvaluationSummary]] = {}
-    for shape_id in shape_ids:
-        summaries = db.rank_evaluations(
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            shape_id=shape_id,
-            min_samples=min_samples,
-            limit=None,
-        )
-        for summary in summaries:
-            summaries_by_shape.setdefault(summary.shape_id, []).append(summary)
+    for summary in snapshot.summaries:
+        if summary.samples < min_samples:
+            continue
+        if target_shape_ids and summary.shape_id not in target_shape_ids:
+            continue
+        summaries_by_shape.setdefault(summary.shape_id, []).append(summary)
 
     scores = candidate_grid_scores(
         summaries_by_shape,
@@ -114,7 +108,11 @@ def load_candidate_evidence(
         elite_per_shape=elite_per_shape,
     )
     candidate_hashes = sorted(scores)
-    candidates = {candidate.hash: candidate for candidate in db.get_candidates(candidate_hashes)}
+    candidates = {
+        candidate_hash: snapshot.candidates[candidate_hash]
+        for candidate_hash in candidate_hashes
+        if candidate_hash in snapshot.candidates
+    }
     evidence: list[CandidateEvidence] = []
     for candidate_hash, score in scores.items():
         candidate = candidates.get(candidate_hash)
@@ -380,11 +378,9 @@ def minimum_evidence_for_truncation(*, truncation_tau: float, min_samples: int) 
     return required
 
 
-def learn_linkage_models_from_db(
-    db: EvoTensileDB,
+def learn_linkage_models_from_snapshot(
+    snapshot: ProposalEvidenceSnapshot,
     *,
-    problem_type_hash: str | None = None,
-    benchmark_protocol_hash: str | None = None,
     shapes: Sequence[Shape] | None = None,
     evidence_min_samples: int = 1,
     elite_per_shape: int | None = None,
@@ -399,9 +395,7 @@ def learn_linkage_models_from_db(
         else elite_per_shape
     )
     evidence = load_candidate_evidence(
-        db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
+        snapshot,
         shapes=shapes,
         min_samples=evidence_min_samples,
         elite_per_shape=evidence_limit,

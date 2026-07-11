@@ -14,7 +14,7 @@ Learned linkage is proposal-only:
 
 ## Evidence Source
 
-`learn_linkage_models_from_db()` builds models from SQLite evidence through `load_candidate_evidence()`.
+`learn_linkage_models_from_snapshot()` builds models through `load_candidate_evidence()` from the immutable evidence snapshot created once for the proposal call.
 
 Evidence filtering uses:
 - `status='ok'` timing rows from `evaluations`.

@@ -39,7 +39,6 @@ Candidate registration uses `INSERT OR IGNORE`, so the first registered source/l
 ### proposal_occurrences
 
 Stores every proposal appearance independently of candidate identity:
-
 - active problem and benchmark protocol hashes.
 - candidate hash, occurrence source, parent hashes, and proposal metadata.
 - explicit global/shape/cluster/shape-set scope and shape IDs.
@@ -54,7 +53,11 @@ Stores exact `M`, `N`, batch, and `K` dimensions. Shape IDs use `m{M}_n{N}_b{bat
 
 ### runs
 
-Stores every build, diagnostic, validation, and benchmark invocation. Metadata includes command, phase/mode, paths, duration, timeout state, and pair count. Cost-aware search reconstructs approximate candidate phase costs from these rows, pair files, and manifests rather than materializing a separate cost table. Runtime artifact consumers no longer infer libraries or final YAML from run metadata.
+Stores every build, diagnostic, validation, and benchmark invocation. Metadata includes command, phase/mode, paths, duration, timeout state, and pair count. Runtime artifact consumers do not infer libraries or final YAML from run metadata.
+
+### run_candidate_costs
+
+Indexes the shared duration attributed to each distinct candidate in a build, diagnostic, validation, probe, or screening run. Execution boundaries already know the exact candidate set, so `insert_run()` divides duration once and records `(run_id, candidate_hash, phase, duration_s)` without rereading manifests or runner pair files. Proposal cost remains candidate-origin metadata because it is measured before execution.
 
 ### evaluations
 
@@ -96,7 +99,6 @@ Validation-only runs insert one row per pair. Validation rows never count as tim
 ### candidate_artifacts
 
 Stores one exact mapped artifact record per `(problem type, shape, candidate, library solution, library path, content identity)`. Each record contains:
-
 - runnable problem/requested/library/manifest solution indices.
 - originating build run and build output directory.
 - generated library directory.
@@ -151,7 +153,7 @@ There is no trusted no-validation path. Benchmark mode is allowed only for pairs
 
 `rank_evaluations()` groups `status='ok'` timing rows by `(shape_id, candidate_hash)` and computes sample count, median/best time, and median/best GFLOP/s. Validation-only rows cannot enter ranking because they are stored separately and have no timing.
 
-Ranking feeds CLI reports, transfer seeds, learned linkage, outlier repair, family archives, and final GridBased updates. One-shape proposal elites consume the shape-local ranking directly. Multi-shape proposal parents derive specialist and coverage-aware generalist lanes from shape-local incumbent-normalized regret. They do not treat the globally sorted pair rows as a candidate ranking.
+Ranking feeds CLI reports, transfer seeds, learned linkage, outlier repair, family archives, and final GridBased updates. One proposal call builds one immutable `ProposalEvidenceSnapshot` containing compatible ranking summaries, candidates, selected occurrences, latest positive timestamps, indexed costs, and status aggregates. Elite, transfer, family, linkage, surrogate, and operator-credit views consume that snapshot rather than independently rescanning SQLite or artifacts. One-shape proposal elites consume the shape-local ranking directly. Multi-shape proposal parents derive specialist and coverage-aware generalist lanes from shape-local incumbent-normalized regret. They do not treat the globally sorted pair rows as a candidate ranking.
 
 ## Phase Metadata
 

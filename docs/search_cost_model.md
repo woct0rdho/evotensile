@@ -32,13 +32,9 @@ Preserved parents and previously registered duplicate hashes do not receive new 
 
 ### Run Cost Attribution
 
-`load_candidate_evaluation_costs()` reconstructs costs from the `runs` table and retained artifacts:
-- build/prepare invocations use candidate hashes from `config.manifest.csv`.
-- validation, probe, and screening invocations use candidate hashes from the runner pair file in the recorded command.
-- zero-warmup benchmark pair files are classified as probe work.
-- validation mode is classified separately from main screening.
+Execution boundaries pass exact candidate hashes, phase, and duration to `insert_run()`. SQLite records one shared-cost row per distinct candidate in `run_candidate_costs` for prepare, validation, probe, and screening work. `load_candidate_evaluation_costs()` aggregates this index and combines it with proposal-origin cost metadata. It does not reopen manifests, pair files, or run directories.
 
-One invocation's duration is divided equally between the distinct candidate hashes attributed to that invocation.
+One invocation's duration is divided equally between the distinct candidate hashes attributed to that invocation at insertion time.
 
 This is an audit-quality shared-cost estimate, not an exact per-candidate profiler. Batch startup, library loading, one pathological candidate, and shared codegen can make equal attribution inaccurate.
 
@@ -75,9 +71,9 @@ Minimum exploration is applied before proportional allocation, so a high estimat
 
 A batch weight sums candidate weights averaged over its shapes.
 
-With `--cost-aware-scheduling`, the scheduler submits higher-weight preparation batches first. This is a longest-predicted-work-first heuristic intended to reduce the tail before the hard preparation/timing barrier. It does not change the batch contents or allow timing overlap.
+With `--cost-aware-scheduling`, the scheduler submits higher-weight preparation batches first. This is a longest-predicted-work-first heuristic intended to reduce the tail before each hard preparation/timing barrier. It does not change batch contents, timing order, or permit timing overlap.
 
-The predictor is analytical rather than fitted from observed build and validation history. Preparation completion order currently also determines the subsequent serial benchmark order. Expected improvement, information gain, unresolved-shape priority, and deadline fit do not yet reorder timing independently. A production grid controller must separate those two orderings and may replace the analytical weight with a measured predictor when enough evidence exists.
+Preparation and timing order are independent. After preparation drains, stable planned order is the default serialized timing order. A production controller may supply an explicit allocator based on expected improvement, information gain, unresolved-shape priority, or soft-deadline fit. The preparation predictor remains analytical rather than fitted from observed build and validation history.
 
 ## Campaign Round Admission
 
@@ -96,7 +92,7 @@ Both default off in the general CLI. The blind one-shape policy enables both exp
 
 Proposal metadata is stored inside candidate JSON and restored by `EvoTensileDB.get_candidates()`. Candidate hashes remain a function only of canonical parameter dictionaries. Cost metadata therefore affects future proposal policy without fragmenting cache identity.
 
-Run durations and commands remain the authoritative low-level provenance. Derived candidate costs are reconstructed on demand rather than materialized in a new database table.
+Run durations and commands remain the authoritative low-level provenance. Derived shared candidate costs are indexed when each run is inserted and loaded into the immutable proposal evidence snapshot.
 
 ## Limitations
 

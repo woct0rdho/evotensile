@@ -17,14 +17,12 @@ from evotensile.search_space import (
     macro_tile,
 )
 
-GFX1151_EFFECTIVE_CU_COUNT = 20
-
 
 def candidate_shape_mechanics(
     candidate: Candidate,
     shape: Shape,
     *,
-    effective_cu_count: int = GFX1151_EFFECTIVE_CU_COUNT,
+    effective_cu_count: int,
 ) -> dict[str, float]:
     if effective_cu_count <= 0:
         raise ValueError("effective CU count must be positive")
@@ -87,7 +85,7 @@ def mechanical_prior_score(
     candidate: Candidate,
     shape: Shape,
     *,
-    effective_cu_count: int = GFX1151_EFFECTIVE_CU_COUNT,
+    effective_cu_count: int,
 ) -> float:
     mechanics = candidate_shape_mechanics(candidate, shape, effective_cu_count=effective_cu_count)
     utilization = (
@@ -111,7 +109,7 @@ def mechanical_coverage_tokens(
     candidate: Candidate,
     shape: Shape,
     *,
-    effective_cu_count: int = GFX1151_EFFECTIVE_CU_COUNT,
+    effective_cu_count: int,
 ) -> frozenset[str]:
     params = candidate.canonical_params()
     instruction = params["MatrixInstruction"]
@@ -142,7 +140,7 @@ def select_covering_cold_pool(
     shape: Shape,
     count: int,
     seed: int,
-    effective_cu_count: int = GFX1151_EFFECTIVE_CU_COUNT,
+    effective_cu_count: int,
     coverage_fraction: float = 0.80,
     prior_fraction: float = 0.10,
     precovered_tokens: set[str] | None = None,

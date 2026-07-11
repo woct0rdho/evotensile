@@ -20,7 +20,7 @@ from evotensile.search.campaign_control import (
     restart_epoch,
     tag_generated_proposals,
 )
-from evotensile.search.cost_model import load_candidate_evaluation_costs
+from evotensile.search.evaluation_cost import load_candidate_evaluation_costs
 from evotensile.search.operator_credit import OperatorCredit, allocate_operator_budget
 from evotensile.shapes import pilot_100_shapes
 from scripts.run_blind_one_shape import (
@@ -31,7 +31,7 @@ from scripts.run_blind_one_shape import (
     main,
 )
 from tests.helpers import sample_candidates
-from tests.test_structured_runner import _fake_build_tensile, _fake_structured_runner
+from tests.test_structured_runner import fake_build_tensile, fake_structured_runner
 
 
 def test_island_metadata_and_elite_loading_are_query_local(tmp_path: Path):
@@ -240,7 +240,11 @@ def test_confirmation_reserve_scales_with_finalist_launch_cost():
 
 def test_population_plateau_cost_guard_and_convergence_are_deterministic():
     shape = pilot_100_shapes()[0]
-    diagnostics = population_diagnostics(sample_candidates(8), shape)
+    diagnostics = population_diagnostics(
+        sample_candidates(8),
+        shape,
+        effective_cu_count=DEFAULT_PROFILE.effective_cu_count,
+    )
     rounds = [
         {"duration_s": 24.0, "schedule": {"missing_pairs": 24}},
         {"duration_s": 30.0, "schedule": {"missing_pairs": 24}},
@@ -297,8 +301,8 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
     monkeypatch,
     capsys,
 ):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     output = tmp_path / "campaign"
     arguments = [
         "run_blind_one_shape.py",
@@ -340,6 +344,9 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
     assert configuration["adaptive_policy"]["confidence"] == 0.90
     assert configuration["screening_protocol"]["num_benchmarks"] == 2
     assert configuration["hot_protocol"]["num_warmups"] == 20
+    assert configuration["candidate_batch_size"] == 1
+    assert configuration["prepare_workers"] == 32
+    assert configuration["validation_workers"] == 1
     assert Path(configuration["runner_bin"]).is_absolute()
     assert len(configuration["runner_fingerprint"]) == 64
     assert len(configuration["tensilelite_fingerprint"]) == 64
@@ -364,8 +371,8 @@ def test_campaign_soft_budget_does_not_clamp_admitted_job_timeout(
     monkeypatch,
     capsys,
 ):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     output = tmp_path / "soft_budget"
     monkeypatch.setenv("EVOTENSILE_TEST_BUILD_SLEEP_S", "0.1")
     monkeypatch.setattr(
@@ -404,9 +411,43 @@ def test_campaign_soft_budget_does_not_clamp_admitted_job_timeout(
     assert summary["budget_overrun_s"] > 0.0
 
 
+def test_indexed_run_cost_divides_shared_duration_once(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "costs.sqlite")
+    db.init()
+    candidates = sample_candidates(2)
+    db.register_candidates(candidates)
+
+    db.insert_run(
+        "shared",
+        yaml_path=None,
+        output_dir=None,
+        status="ok",
+        candidate_hashes=[candidates[0].hash, candidates[1].hash, candidates[0].hash],
+        cost_phase="prepare",
+        duration_s=6.0,
+    )
+    costs = load_candidate_evaluation_costs(db)
+
+    assert costs[candidates[0].hash].prepare_s == 3.0
+    assert costs[candidates[1].hash].prepare_s == 3.0
+
+    db.insert_run(
+        "shared",
+        yaml_path=None,
+        output_dir=None,
+        status="ok",
+        candidate_hashes=[candidates[1].hash],
+        cost_phase="prepare",
+        duration_s=2.0,
+    )
+    replaced_costs = load_candidate_evaluation_costs(db)
+    assert replaced_costs[candidates[0].hash].prepare_s == 0.0
+    assert replaced_costs[candidates[1].hash].prepare_s == 2.0
+
+
 def test_recorded_run_costs_cover_prepare_validation_and_screening(tmp_path: Path):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "costs.sqlite")
     candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]

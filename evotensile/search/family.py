@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..candidate import Candidate, Shape
-from ..database import EvaluationSummary, EvoTensileDB
 from ..search.encoding import candidate_to_genome, hamming_distance
+from ..search.evidence import ProposalEvidenceSnapshot
 from ..search.grid_evidence import CandidateGridScore, GridObjective, candidate_grid_scores
 from ..search_space import (
     DOMAINS,
@@ -124,20 +124,14 @@ def nt_hhs_family_descriptor(candidate: Candidate | Mapping[str, Any]) -> Family
     return FamilyDescriptor(profile=NT_HHS_PROFILE, version=FAMILY_DESCRIPTOR_VERSION, fields=fields)
 
 
-def family_descriptor(candidate: Candidate | Mapping[str, Any], *, profile: str = NT_HHS_PROFILE) -> FamilyDescriptor:
-    if profile != NT_HHS_PROFILE:
-        raise ValueError(f"unsupported family descriptor profile: {profile}")
+def family_descriptor(candidate: Candidate | Mapping[str, Any]) -> FamilyDescriptor:
     return nt_hhs_family_descriptor(candidate)
 
 
-def family_descriptor_counts(
-    candidates: Iterable[Candidate],
-    *,
-    profile: str = NT_HHS_PROFILE,
-) -> dict[str, int]:
+def family_descriptor_counts(candidates: Iterable[Candidate]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for candidate in candidates:
-        descriptor = family_descriptor(candidate, profile=profile)
+        descriptor = family_descriptor(candidate)
         counts[descriptor.key] = counts.get(descriptor.key, 0) + 1
     return counts
 
@@ -173,56 +167,6 @@ def nt_hhs_family_cells() -> list[FamilyDescriptor]:
         for transpose_lds in (0, 2)
         for global_split_u in DOMAINS["GlobalSplitU"]
     ]
-
-
-def load_family_attempt_counts(
-    db: EvoTensileDB,
-    *,
-    problem_type_hash: str | None = None,
-    benchmark_protocol_hash: str | None = None,
-    shapes: Sequence[Shape] | None = None,
-    profile: str = NT_HHS_PROFILE,
-) -> dict[str, int]:
-    evaluation_clauses: list[str] = []
-    evaluation_params: list[str] = []
-    validation_clauses: list[str] = []
-    validation_params: list[str] = []
-    if problem_type_hash is not None:
-        evaluation_clauses.append("problem_type_hash = ?")
-        evaluation_params.append(problem_type_hash)
-        validation_clauses.append("problem_type_hash = ?")
-        validation_params.append(problem_type_hash)
-    if benchmark_protocol_hash is not None:
-        evaluation_clauses.append("benchmark_protocol_hash = ?")
-        evaluation_params.append(benchmark_protocol_hash)
-    if shapes:
-        placeholders = ",".join("?" for _ in shapes)
-        evaluation_clauses.append(f"shape_id IN ({placeholders})")
-        evaluation_params.extend(shape.id for shape in shapes)
-        validation_clauses.append(f"shape_id IN ({placeholders})")
-        validation_params.extend(shape.id for shape in shapes)
-    evaluation_where = "WHERE " + " AND ".join(evaluation_clauses) if evaluation_clauses else ""
-    validation_where = "WHERE " + " AND ".join(validation_clauses) if validation_clauses else ""
-    with db.connection() as con:
-        evaluation_rows = con.execute(
-            f"""
-            SELECT DISTINCT candidate_hash
-            FROM evaluations
-            {evaluation_where}
-            """,
-            evaluation_params,
-        ).fetchall()
-        validation_rows = con.execute(
-            f"""
-            SELECT DISTINCT candidate_hash
-            FROM validations
-            {validation_where}
-            """,
-            validation_params,
-        ).fetchall()
-    candidate_hashes = {str(row["candidate_hash"]) for row in [*evaluation_rows, *validation_rows]}
-    candidates = db.get_candidates(sorted(candidate_hashes))
-    return family_descriptor_counts(candidates, profile=profile)
 
 
 def _candidate_for_family(
@@ -266,40 +210,32 @@ def _candidate_for_family(
 
 
 def family_stratified_random_candidates(
-    db: EvoTensileDB,
+    snapshot: ProposalEvidenceSnapshot,
     count: int,
     *,
     seed: int,
     target_shapes: Sequence[Shape] | None,
-    problem_type_hash: str | None,
-    benchmark_protocol_hash: str | None,
-    profile: str = NT_HHS_PROFILE,
 ) -> list[Candidate]:
     if count <= 0:
         return []
-    if profile != NT_HHS_PROFILE:
-        raise ValueError(f"unsupported family descriptor profile: {profile}")
 
     rng = random.Random(seed)
     cells = nt_hhs_family_cells()
-    counts = load_family_attempt_counts(
-        db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-        shapes=target_shapes,
-        profile=profile,
-    )
+    counts: dict[str, int] = {}
+    for candidate_hash in snapshot.evaluation_status_counts:
+        candidate = snapshot.candidates.get(candidate_hash)
+        if candidate is None:
+            continue
+        descriptor_key = family_descriptor(candidate).key
+        counts[descriptor_key] = counts.get(descriptor_key, 0) + 1
     target_aspect = _target_tile_aspect(target_shapes)
     positive_family_keys = {
         entry.descriptor.key
         for entry in load_family_archive(
-            db,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
+            snapshot,
             shapes=target_shapes,
             min_samples=1,
             objective=GridObjective.SPECIALIST,
-            profile=profile,
             limit=None,
         )
     }
@@ -344,103 +280,6 @@ def family_stratified_random_candidates(
     if len(out) < count:
         raise RuntimeError(f"failed to generate {count} family-stratified candidates; generated {len(out)}")
     return list(out.values())
-
-
-def _archive_shape_ids(
-    db: EvoTensileDB,
-    *,
-    problem_type_hash: str | None,
-    benchmark_protocol_hash: str | None,
-    shapes: Sequence[Shape] | None,
-) -> list[str]:
-    if shapes is not None:
-        return [shape.id for shape in shapes]
-    clauses: list[str] = []
-    params: list[str] = []
-    if problem_type_hash is not None:
-        clauses.append("problem_type_hash = ?")
-        params.append(problem_type_hash)
-    if benchmark_protocol_hash is not None:
-        clauses.append("benchmark_protocol_hash = ?")
-        params.append(benchmark_protocol_hash)
-    where = "WHERE " + " AND ".join(clauses) if clauses else ""
-    with db.connection() as con:
-        rows = con.execute(
-            f"""
-            SELECT DISTINCT shape_id
-            FROM evaluations
-            {where}
-            ORDER BY shape_id
-            """,
-            params,
-        ).fetchall()
-    return [str(row["shape_id"]) for row in rows]
-
-
-def _family_status_counts(
-    db: EvoTensileDB,
-    *,
-    problem_type_hash: str | None,
-    benchmark_protocol_hash: str | None,
-    shape_ids: Sequence[str],
-    profile: str,
-) -> dict[str, dict[str, int]]:
-    evaluation_clauses: list[str] = []
-    evaluation_params: list[str] = []
-    validation_clauses: list[str] = []
-    validation_params: list[str] = []
-    if problem_type_hash is not None:
-        evaluation_clauses.append("problem_type_hash = ?")
-        evaluation_params.append(problem_type_hash)
-        validation_clauses.append("problem_type_hash = ?")
-        validation_params.append(problem_type_hash)
-    if benchmark_protocol_hash is not None:
-        evaluation_clauses.append("benchmark_protocol_hash = ?")
-        evaluation_params.append(benchmark_protocol_hash)
-    if shape_ids:
-        placeholders = ",".join("?" for _ in shape_ids)
-        evaluation_clauses.append(f"shape_id IN ({placeholders})")
-        evaluation_params.extend(shape_ids)
-        validation_clauses.append(f"shape_id IN ({placeholders})")
-        validation_params.extend(shape_ids)
-    evaluation_where = "WHERE " + " AND ".join(evaluation_clauses) if evaluation_clauses else ""
-    validation_where = "WHERE " + " AND ".join(validation_clauses) if validation_clauses else ""
-    with db.connection() as con:
-        evaluation_rows = con.execute(
-            f"""
-            SELECT candidate_hash, status, COUNT(*) AS n
-            FROM evaluations
-            {evaluation_where}
-            GROUP BY candidate_hash, status
-            """,
-            evaluation_params,
-        ).fetchall()
-        validation_rows = con.execute(
-            f"""
-            SELECT candidate_hash, status, COUNT(*) AS n
-            FROM validations
-            {validation_where}
-            GROUP BY candidate_hash, status
-            """,
-            validation_params,
-        ).fetchall()
-
-    candidate_hashes = sorted({str(row["candidate_hash"]) for row in [*evaluation_rows, *validation_rows]})
-    candidates = {candidate.hash: candidate for candidate in db.get_candidates(candidate_hashes)}
-    counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for row in evaluation_rows:
-        candidate = candidates.get(str(row["candidate_hash"]))
-        if candidate is None:
-            continue
-        descriptor_key = family_descriptor(candidate, profile=profile).key
-        counts[descriptor_key][str(row["status"])] += int(row["n"])
-    for row in validation_rows:
-        candidate = candidates.get(str(row["candidate_hash"]))
-        if candidate is None:
-            continue
-        descriptor_key = family_descriptor(candidate, profile=profile).key
-        counts[descriptor_key][f"validation_{row['status']}"] += int(row["n"])
-    return {key: dict(status_counts) for key, status_counts in counts.items()}
 
 
 @dataclass(frozen=True)
@@ -507,14 +346,11 @@ def _select_diverse_family_scores(
 
 
 def load_family_archive(
-    db: EvoTensileDB,
+    snapshot: ProposalEvidenceSnapshot,
     *,
-    problem_type_hash: str | None = None,
-    benchmark_protocol_hash: str | None = None,
     shapes: Sequence[Shape] | None = None,
     min_samples: int = 1,
     objective: str,
-    profile: str = NT_HHS_PROFILE,
     limit: int | None = None,
     elites_per_family: int = 1,
     diversity_score_slack: float = DEFAULT_FAMILY_DIVERSITY_SCORE_SLACK,
@@ -526,36 +362,28 @@ def load_family_archive(
         GridObjective.UNCERTAINTY,
     }:
         raise ValueError(f"unknown family archive objective: {objective}")
-    shape_ids = _archive_shape_ids(
-        db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-        shapes=shapes,
-    )
+    shape_ids = [shape.id for shape in shapes] if shapes is not None else list(snapshot.summaries_by_shape)
     if not shape_ids:
         return []
 
-    summaries_by_shape: dict[str, list[EvaluationSummary]] = {}
-    candidate_hashes: set[str] = set()
-    for shape_id in shape_ids:
-        summaries = db.rank_evaluations(
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            shape_id=shape_id,
-            min_samples=min_samples,
-            limit=None,
-        )
-        summaries_by_shape[shape_id] = summaries
-        candidate_hashes.update(summary.candidate_hash for summary in summaries)
-
-    candidates = {candidate.hash: candidate for candidate in db.get_candidates(sorted(candidate_hashes))}
-    status_counts = _family_status_counts(
-        db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-        shape_ids=shape_ids,
-        profile=profile,
-    )
+    summaries_by_shape = {
+        shape_id: [summary for summary in snapshot.shape_summaries(shape_id) if summary.samples >= min_samples]
+        for shape_id in shape_ids
+    }
+    candidate_hashes = {summary.candidate_hash for summaries in summaries_by_shape.values() for summary in summaries}
+    candidates = {
+        candidate_hash: snapshot.candidates[candidate_hash]
+        for candidate_hash in candidate_hashes
+        if candidate_hash in snapshot.candidates
+    }
+    status_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for candidate_hash, counts in snapshot.evaluation_status_counts.items():
+        candidate = snapshot.candidates.get(candidate_hash)
+        if candidate is None:
+            continue
+        descriptor_key = family_descriptor(candidate).key
+        for status, count in counts.items():
+            status_counts[descriptor_key][status] += count
 
     grid_scores = candidate_grid_scores(summaries_by_shape, target_shape_ids=shape_ids)
     candidate_scores: dict[str, dict[str, CandidateGridScore]] = defaultdict(dict)
@@ -564,7 +392,7 @@ def load_family_archive(
         candidate = candidates.get(candidate_hash)
         if candidate is None:
             continue
-        descriptor = family_descriptor(candidate, profile=profile)
+        descriptor = family_descriptor(candidate)
         family_descriptors[descriptor.key] = descriptor
         candidate_scores[descriptor.key][candidate_hash] = grid_score
 

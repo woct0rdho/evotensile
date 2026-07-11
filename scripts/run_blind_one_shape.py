@@ -99,12 +99,15 @@ class CampaignConfiguration:
     feedback_pool_multiplier: int = 8
     surrogate_min_evidence: int = 24
     elite_count: int = 32
-    candidate_batch_size: int = 8
+    candidate_batch_size: int = 1
     shape_batch_size: int = 1
     min_samples: int = 2
     adaptive_max_rounds: int = 0
-    prepare_workers: int = 8
+    prepare_workers: int = 32
+    prepare_wave_batches: int = 32
     validation_workers: int = 1
+    surrogate_jobs: int = 1
+    effective_cu_count: int = 20
     compile_threads: int = 1
     keep_going: bool = True
     compile_cache: bool = True
@@ -156,8 +159,15 @@ class CampaignConfiguration:
             raise ValueError("island elites must be positive and no greater than merged elites")
         if self.candidate_batch_size <= 0 or self.shape_batch_size <= 0:
             raise ValueError("campaign batch sizes must be positive")
-        if self.prepare_workers <= 0 or self.validation_workers <= 0:
+        if (
+            self.prepare_workers <= 0
+            or self.prepare_wave_batches <= 0
+            or self.validation_workers <= 0
+            or self.surrogate_jobs <= 0
+        ):
             raise ValueError("campaign worker counts must be positive")
+        if self.effective_cu_count <= 0:
+            raise ValueError("effective CU count must be positive")
         if self.compile_threads <= 0:
             raise ValueError("campaign compile threads must be positive")
         if self.build_timeout_s <= 0.0 or self.runner_timeout_s <= 0.0:
@@ -285,6 +295,11 @@ def _campaign_configuration(
         hot_protocol=hot_protocol,
         stabilization_policy=ScreeningStabilizationPolicy(),
         leader_stabilization=not args.no_leader_stabilization,
+        prepare_workers=profile.default_prepare_workers,
+        prepare_wave_batches=profile.default_prepare_wave_batches,
+        validation_workers=profile.default_validation_workers,
+        surrogate_jobs=profile.default_surrogate_jobs,
+        effective_cu_count=profile.effective_cu_count,
         mutation_rate=profile.default_mutation_rate,
         crossover_rate=profile.default_crossover_rate,
         random_gene_rate=profile.default_random_gene_rate,
@@ -302,8 +317,10 @@ def _round_summary(result: ScheduleResult) -> dict[str, object]:
         "planned_batches": len(result.planned_batches),
         "executed_batches": len(result.executed_batches),
         "missing_pairs": result.missing_pairs,
+        "probe_policy_hash": result.probe_policy_hash,
         "probe_survivor_pairs": result.probe_survivor_pairs,
         "probe_screened_pairs": result.probe_screened_pairs,
+        "probe_preprepare_screened_pairs": result.probe_preprepare_screened_pairs,
         "status_counts": dict(sorted(status_counts.items())),
         "errors": errors,
     }
@@ -461,6 +478,7 @@ def _proposal_call(
     started = time.perf_counter()
     proposal = propose_candidates(
         db,
+        target_profile=profile,
         proposal=configuration.proposal_mode,
         seed=seed,
         problem_type_hash=profile.problem_type_hash,
@@ -479,6 +497,8 @@ def _proposal_call(
         linkage_ordinal_bins=configuration.linkage_ordinal_bins,
         parent_candidates=parents,
         cold_start_precovered_tokens=cold_start_precovered_tokens,
+        surrogate_jobs=configuration.surrogate_jobs,
+        effective_cu_count=configuration.effective_cu_count,
         **proposal_args,
     )
     duration = time.perf_counter() - started
@@ -619,7 +639,13 @@ def _propose_round(
             )
             proposals.append(proposal)
             precovered_tokens.update(
-                token for candidate in proposal.selected for token in mechanical_coverage_tokens(candidate, shape)
+                token
+                for candidate in proposal.selected
+                for token in mechanical_coverage_tokens(
+                    candidate,
+                    shape,
+                    effective_cu_count=configuration.effective_cu_count,
+                )
             )
         return _merge_proposals(proposals)
 
@@ -978,6 +1004,7 @@ def main() -> int:
             probe_policy=probe_policy,
             adaptive_max_rounds=configuration.adaptive_max_rounds,
             prepare_workers=configuration.prepare_workers,
+            prepare_wave_batches=configuration.prepare_wave_batches,
             compile_cache_root=compile_cache,
             cost_aware_scheduling=configuration.cost_aware_scheduling,
             validation_workers=configuration.validation_workers,
@@ -996,12 +1023,24 @@ def main() -> int:
                 admission_deadline=search_admission_deadline,
                 runner_timeout_s=configuration.runner_timeout_s,
             )
-        active_diagnostics = population_diagnostics(round_proposal.active, shape)
-        archive_diagnostics = population_diagnostics(round_proposal.archive, shape)
+        active_diagnostics = population_diagnostics(
+            round_proposal.active,
+            shape,
+            effective_cu_count=configuration.effective_cu_count,
+        )
+        archive_diagnostics = population_diagnostics(
+            round_proposal.archive,
+            shape,
+            effective_cu_count=configuration.effective_cu_count,
+        )
         measured_new = {
             candidate.hash: candidate for batch in schedule.planned_batches for candidate in batch.candidates
         }
-        measured_new_diagnostics = population_diagnostics(tuple(measured_new.values()), shape)
+        measured_new_diagnostics = population_diagnostics(
+            tuple(measured_new.values()),
+            shape,
+            effective_cu_count=configuration.effective_cu_count,
+        )
         island_leaders = {
             island_id: _leader(
                 db,

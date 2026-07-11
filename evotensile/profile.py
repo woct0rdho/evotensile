@@ -39,6 +39,11 @@ class TargetProfile:
     default_random_gene_rate: float = 0.1
     default_candidate_batch_size: int = 32
     default_shape_batch_size: int = 100
+    default_prepare_workers: int = 32
+    default_prepare_wave_batches: int = 32
+    default_validation_workers: int = 1
+    default_surrogate_jobs: int = 1
+    effective_cu_count: int = 20
     default_runner_bin: str = "./build/evotensile-structured-runner"
     default_build_timeout_s: float | None = 1800.0
     default_runner_timeout_s: float | None = 600.0

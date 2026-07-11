@@ -94,6 +94,7 @@ def run_tensilelite_diagnostics(
     protocol: BenchmarkProtocol,
     env: dict[str, str] | None = None,
     timeout_s: float | None = None,
+    candidate_hashes: list[str] | None = None,
 ) -> DiagnosticRunResult:
     yaml_path = Path(yaml_path)
     manifest_path = Path(manifest_path)
@@ -151,6 +152,9 @@ def run_tensilelite_diagnostics(
             output_dir=str(output_dir),
             status="timeout" if timed_out else "ok" if returncode == 0 else "failed",
             returncode=returncode,
+            candidate_hashes=candidate_hashes,
+            cost_phase="prepare",
+            duration_s=duration_s,
             metadata_json=json.dumps(
                 {
                     "command": command,

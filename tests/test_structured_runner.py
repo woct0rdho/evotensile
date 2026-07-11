@@ -4,11 +4,12 @@ import time
 from pathlib import Path
 from textwrap import dedent
 
+from evotensile import scheduler as scheduler_module
 from evotensile.adaptive_retime import AdaptivePolicy, ProbePolicy
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
-from evotensile.scheduler import execute_schedule
+from evotensile.scheduler import ScheduleResult, execute_schedule
 from evotensile.shapes import pilot_100_shapes
 from evotensile.structured_runner import (
     RunnablePair,
@@ -201,6 +202,10 @@ def _fake_build_tensile(path: Path) -> Path:
     return script
 
 
+fake_structured_runner = _fake_structured_runner
+fake_build_tensile = _fake_build_tensile
+
+
 def _pair() -> RunnablePair:
     return RunnablePair(
         shape_id="m1_n1_b1_k1",
@@ -382,6 +387,78 @@ def test_parallel_prepare_finishes_before_serial_benchmark_queue(tmp_path: Path,
     assert db.cache_summary() == {"ok": 2}
 
 
+def test_cost_aware_prepare_order_does_not_change_timing_order(tmp_path: Path, monkeypatch):
+    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = sample_candidates(2)
+    shape = pilot_100_shapes()[0]
+    prepared_indices: list[int] = []
+    original_prepare = scheduler_module._prepare_current_batch
+
+    def record_prepare(db, batch, **kwargs):
+        prepared_indices.append(batch.batch_index)
+        return original_prepare(db, batch, **kwargs)
+
+    weights = {candidates[0].hash: 1.0, candidates[1].hash: 2.0}
+    monkeypatch.setattr(scheduler_module, "_prepare_current_batch", record_prepare)
+    monkeypatch.setattr(
+        scheduler_module,
+        "predicted_batch_prepare_weight",
+        lambda batch_candidates, shapes, effective_cu_count: weights[batch_candidates[0].hash],
+    )
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        prepare_workers=1,
+        prepare_wave_batches=2,
+        cost_aware_scheduling=True,
+    )
+
+    assert prepared_indices == [1, 0]
+    assert [batch.planned.batch_index for batch in result.executed_batches] == [0, 1]
+
+
+def test_prepare_waves_allow_coordinator_to_stop_before_next_wave(tmp_path: Path):
+    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = sample_candidates(3)
+    shape = pilot_100_shapes()[0]
+    progress: list[ScheduleResult] = []
+
+    result = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        candidate_batch_size=1,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        prepare_workers=1,
+        prepare_wave_batches=1,
+        admit_next_wave=lambda state: progress.append(state) is None and False,
+    )
+
+    assert result.completed_waves == 1
+    assert len(result.executed_batches) == 1
+    assert len(progress) == 1
+    assert progress[0].completed_waves == 1
+    assert db.cache_summary() == {"ok": 1}
+
+
 def test_validation_worker_cap_serializes_gpu_validation(tmp_path: Path, monkeypatch):
     fake_tensile = _fake_build_tensile(tmp_path)
     fake_runner = _fake_structured_runner(tmp_path)
@@ -537,6 +614,78 @@ def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, mon
     assert len(main_pairs) == 1
     assert main_pairs[0]["candidate_hash"] == candidates[0].hash
     assert main_pairs[0]["num_benchmarks"] == 2
+
+
+def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_path: Path, monkeypatch):
+    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_runner = _fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = sample_candidates(2)
+    shape = pilot_100_shapes()[0]
+    main_protocol = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2)
+    probe_policy = ProbePolicy(samples=3, max_slowdown_factor=4.0, min_survivors=1)
+    monkeypatch.setenv(
+        "EVOTENSILE_TEST_TIME_MULTIPLIERS",
+        json.dumps({candidates[1].hash: 10.0}),
+    )
+
+    first = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "first",
+        protocol=main_protocol,
+        candidate_batch_size=2,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        adaptive_policy=AdaptivePolicy(),
+        probe_policy=probe_policy,
+        adaptive_max_rounds=0,
+    )
+    second = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "second",
+        protocol=main_protocol,
+        candidate_batch_size=2,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        adaptive_policy=AdaptivePolicy(),
+        probe_policy=probe_policy,
+        adaptive_max_rounds=0,
+    )
+    relaxed_policy = ProbePolicy(samples=3, max_slowdown_factor=20.0, min_survivors=1)
+    third = execute_schedule(
+        db,
+        shapes=[shape],
+        candidates=candidates,
+        output_root=tmp_path / "third",
+        protocol=main_protocol,
+        candidate_batch_size=2,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+        adaptive_policy=AdaptivePolicy(),
+        probe_policy=relaxed_policy,
+        adaptive_max_rounds=0,
+    )
+
+    assert first.probe_screened_pairs == 1
+    assert second.planned_batches == []
+    assert second.executed_batches == []
+    assert second.probe_preprepare_screened_pairs == 1
+    assert second.probe_screened_pairs == 1
+    assert second.probe_policy_hash == probe_policy.policy_hash
+    assert third.probe_policy_hash == relaxed_policy.policy_hash
+    assert third.probe_policy_hash != second.probe_policy_hash
+    assert len(third.planned_batches) == 1
+    assert third.planned_batches[0].candidates == [candidates[1]]
 
 
 def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch):
@@ -757,17 +906,17 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
     fake_tensile.chmod(0o755)
     fake_runner = _fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
-    candidate = sample_candidates(1)[0]
+    candidates = sample_candidates(3)
     shape = pilot_100_shapes()[0]
     compile_cache_root = tmp_path / "compile_cache"
 
     first = execute_schedule(
         db,
         shapes=[shape],
-        candidates=[candidate],
+        candidates=candidates[:2],
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
-        candidate_batch_size=1,
+        candidate_batch_size=2,
         shape_batch_size=1,
         tensilelite_bin=fake_tensile,
         runner_bin=fake_runner,
@@ -777,28 +926,31 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
     second = execute_schedule(
         db,
         shapes=[shape],
-        candidates=[candidate],
+        candidates=[candidates[0], candidates[2]],
         output_root=tmp_path / "batches",
-        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
-        min_samples=2,
-        candidate_batch_size=1,
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        candidate_batch_size=2,
         shape_batch_size=1,
+        ignore_cache=True,
         tensilelite_bin=fake_tensile,
         runner_bin=fake_runner,
         keep_going=True,
         compile_cache_root=compile_cache_root,
     )
 
-    assert first.executed_batches[0].build_output_dir == second.executed_batches[0].build_output_dir
-    build_dir = first.executed_batches[0].build_output_dir
+    assert all(len(batch.planned.candidates) == 1 for batch in [*first.executed_batches, *second.executed_batches])
+    first_dirs = {batch.planned.candidates[0].hash: batch.build_output_dir for batch in first.executed_batches}
+    second_dirs = {batch.planned.candidates[0].hash: batch.build_output_dir for batch in second.executed_batches}
+    build_dir = first_dirs[candidates[0].hash]
+    assert build_dir == second_dirs[candidates[0].hash]
     assert build_dir is not None
     calls = [json.loads(line) for line in (build_dir / "calls.jsonl").read_text(encoding="utf-8").splitlines()]
     assert "--use-cache" not in calls[0]
     assert "--use-cache" in calls[1]
     assert (build_dir / ".evotensile_compile_cache_ok").exists()
-    assert first.executed_batches[0].output_dir != build_dir
-    assert second.executed_batches[0].output_dir != build_dir
-    assert db.counts()["candidate_artifacts"] == 1
+    assert all(batch.output_dir != batch.build_output_dir for batch in first.executed_batches)
+    assert all(batch.output_dir != batch.build_output_dir for batch in second.executed_batches)
+    assert db.counts()["candidate_artifacts"] == 3
 
 
 def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):

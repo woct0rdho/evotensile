@@ -3,8 +3,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from evotensile.candidate import Shape
-from evotensile.database import EvoTensileDB, ProposalOccurrence
-from evotensile.search.cost_model import load_candidate_evaluation_costs
+from evotensile.database import ProposalOccurrence
+from evotensile.search.evidence import ProposalEvidenceSnapshot
 from evotensile.search.semantics import semantic_group_key, semantic_group_names
 
 ADAPTIVE_OPERATOR_ARMS = (
@@ -47,6 +47,13 @@ class OperatorCredit:
 
 
 @dataclass(frozen=True)
+class OperatorCreditViews:
+    operator: Mapping[str, OperatorCredit]
+    semantic_group: Mapping[str, OperatorCredit]
+    donor_mode: Mapping[str, OperatorCredit]
+
+
+@dataclass(frozen=True)
 class _ChildOutcome:
     occurrence: ProposalOccurrence
     success: bool
@@ -56,41 +63,25 @@ class _ChildOutcome:
 
 
 def _queried_child_outcomes(
-    db: EvoTensileDB,
+    evidence: ProposalEvidenceSnapshot,
     *,
-    problem_type_hash: str | None,
-    benchmark_protocol_hash: str | None,
     shapes: Sequence[Shape] | None,
     min_improvement_fraction: float,
     shape_weights: Mapping[str, float] | None,
 ) -> list[_ChildOutcome]:
-    summaries = db.rank_evaluations(
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-        min_samples=1,
-        limit=None,
-    )
+    summaries = evidence.summaries
     allowed_shape_ids = {shape.id for shape in shapes} if shapes is not None else None
     by_pair = {
         (summary.shape_id, summary.candidate_hash): summary
         for summary in summaries
         if allowed_shape_ids is None or summary.shape_id in allowed_shape_ids
     }
-    if problem_type_hash is None or benchmark_protocol_hash is None:
-        return []
-    latest_positive_times = db.latest_positive_evaluation_times(
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-    )
-    candidate_costs = load_candidate_evaluation_costs(db)
+    latest_positive_times = evidence.latest_positive_times
+    candidate_costs = evidence.candidate_costs
     outcomes: list[_ChildOutcome] = []
     claimed_candidate_hashes: set[str] = set()
     improvement_threshold = -math.log(max(1e-12, 1.0 - max(0.0, min_improvement_fraction)))
-    occurrences = db.proposal_occurrences(
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-        selected_only=True,
-    )
+    occurrences = evidence.selected_occurrences
     for occurrence in reversed(occurrences):
         if occurrence.candidate_hash in claimed_candidate_hashes:
             continue
@@ -170,87 +161,46 @@ def _credits_from_outcomes(
     }
 
 
-def load_operator_credits(
-    db: EvoTensileDB,
+def load_operator_credit_views(
+    evidence: ProposalEvidenceSnapshot,
     *,
-    problem_type_hash: str | None,
-    benchmark_protocol_hash: str | None,
     shapes: Sequence[Shape] | None,
     min_improvement_fraction: float = 0.005,
     shape_weights: Mapping[str, float] | None = None,
-) -> dict[str, OperatorCredit]:
+) -> OperatorCreditViews:
     outcomes = _queried_child_outcomes(
-        db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
+        evidence,
         shapes=shapes,
         min_improvement_fraction=min_improvement_fraction,
         shape_weights=shape_weights,
     )
-    return _credits_from_outcomes(
-        outcomes,
-        keys=ADAPTIVE_OPERATOR_ARMS,
-        classify=lambda occurrence: occurrence.source,
-    )
+    semantic_keys = tuple(semantic_group_key(group) for group in semantic_group_names())
 
-
-def load_semantic_group_credits(
-    db: EvoTensileDB,
-    *,
-    problem_type_hash: str | None,
-    benchmark_protocol_hash: str | None,
-    shapes: Sequence[Shape] | None,
-    min_improvement_fraction: float = 0.005,
-    shape_weights: Mapping[str, float] | None = None,
-) -> dict[str, OperatorCredit]:
-    outcomes = _queried_child_outcomes(
-        db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-        shapes=shapes,
-        min_improvement_fraction=min_improvement_fraction,
-        shape_weights=shape_weights,
-    )
-    keys = tuple(semantic_group_key(group) for group in semantic_group_names())
-
-    def classify(occurrence: ProposalOccurrence) -> str | None:
+    def semantic_group(occurrence: ProposalOccurrence) -> str | None:
         if occurrence.source not in {"semantic-mutation", "gomea-neighborhood"}:
             return None
         value = occurrence.proposal_metadata.get("semantic_group")
         return str(value) if value is not None else None
 
-    return _credits_from_outcomes(outcomes, keys=keys, classify=classify)
-
-
-def load_donor_mode_credits(
-    db: EvoTensileDB,
-    *,
-    problem_type_hash: str | None,
-    benchmark_protocol_hash: str | None,
-    shapes: Sequence[Shape] | None,
-    min_improvement_fraction: float = 0.005,
-    shape_weights: Mapping[str, float] | None = None,
-) -> dict[str, OperatorCredit]:
-    outcomes = _queried_child_outcomes(
-        db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-        shapes=shapes,
-        min_improvement_fraction=min_improvement_fraction,
-        shape_weights=shape_weights,
-    )
-
-    def classify(occurrence: ProposalOccurrence) -> str | None:
+    def donor_mode(occurrence: ProposalOccurrence) -> str | None:
         if occurrence.source != "gomea-mixing":
             return None
         value = occurrence.proposal_metadata.get("donor_mode")
         return str(value) if value is not None else None
 
-    return _credits_from_outcomes(outcomes, keys=DONOR_MODES, classify=classify)
+    return OperatorCreditViews(
+        operator=_credits_from_outcomes(
+            outcomes,
+            keys=ADAPTIVE_OPERATOR_ARMS,
+            classify=lambda occurrence: occurrence.source,
+        ),
+        semantic_group=_credits_from_outcomes(outcomes, keys=semantic_keys, classify=semantic_group),
+        donor_mode=_credits_from_outcomes(outcomes, keys=DONOR_MODES, classify=donor_mode),
+    )
 
 
 def credit_ucb_scores(
-    credits: dict[str, OperatorCredit],
+    credits: Mapping[str, OperatorCredit],
     *,
     cost_aware: bool = False,
 ) -> dict[str, float]:
@@ -273,7 +223,7 @@ def credit_ucb_scores(
 
 def allocate_operator_budget(
     total: int,
-    credits: dict[str, OperatorCredit],
+    credits: Mapping[str, OperatorCredit],
     *,
     minimum_per_arm: int = 1,
     cost_aware: bool = False,
