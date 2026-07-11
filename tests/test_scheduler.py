@@ -1,13 +1,18 @@
+import fcntl
 import json
+import os
+from dataclasses import replace
 from pathlib import Path
 from textwrap import dedent
+
+import pytest
 
 from evotensile.candidate import Shape
 from evotensile.cli import main as cli_main
 from evotensile.database import EvoTensileDB, ValidationInsert
-from evotensile.profile import DEFAULT_PROFILE
+from evotensile.profile import DEFAULT_PROFILE, PROFILES
 from evotensile.scheduler import (
-    default_prepare_workers,
+    _compile_cache_lock,
     detect_underperforming_shapes,
     execute_schedule,
     plan_batches,
@@ -82,6 +87,34 @@ def test_production_candidate_batch_size_maximizes_size_while_saturating_workers
         )
         == 1
     )
+
+
+def test_compile_cache_lock_reuses_file_after_dead_owner_release(tmp_path: Path):
+    cache_dir = tmp_path / "ccache_test"
+    lock_path = tmp_path / ".ccache_test.lock"
+    lock_path.write_text('{"pid": 999999999, "token": "dead"}\n', encoding="utf-8")
+
+    with _compile_cache_lock(cache_dir, wait_timeout_s=0.1):
+        owner = json.loads(lock_path.read_text(encoding="utf-8"))
+        assert owner["pid"] == os.getpid()
+        assert owner["token"] != "dead"
+
+    assert lock_path.exists()
+    assert lock_path.read_text(encoding="utf-8") == ""
+
+
+def test_compile_cache_lock_times_out_on_live_owner(tmp_path: Path):
+    cache_dir = tmp_path / "ccache_test"
+    lock_path = tmp_path / ".ccache_test.lock"
+    with lock_path.open("a+", encoding="utf-8") as owner_file:
+        fcntl.flock(owner_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        owner_file.write('{"pid": 1, "token": "live"}\n')
+        owner_file.flush()
+        with pytest.raises(TimeoutError, match="waiting for compile-cache lock"):
+            with _compile_cache_lock(cache_dir, wait_timeout_s=0.01):
+                pass
+
+    assert lock_path.exists()
 
 
 def test_plan_batches_skips_cached_ok_pairs(tmp_path: Path):
@@ -848,6 +881,59 @@ def test_exact_shape_elites_disable_nearest_shape_transfer(tmp_path: Path):
     assert candidates[1].hash not in {parent for candidate in proposed for parent in candidate.parent_hashes}
 
 
+def test_family_qd_builds_one_evidence_snapshot_per_proposal(tmp_path: Path, monkeypatch):
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = sample_candidates(8)
+    shape = pilot_100_shapes()[0]
+    p_hash = DEFAULT_PROFILE.problem_type_hash
+    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
+    db.register_candidates(candidates)
+    db.register_shapes([shape])
+    for index, candidate in enumerate(candidates):
+        db.insert_evaluation(
+            shape_id=shape.id,
+            candidate_hash=candidate.hash,
+            run_id="cached",
+            status="ok",
+            problem_type_hash=p_hash,
+            benchmark_protocol_hash=b_hash,
+            time_us=1.0 + index,
+            validation="PASSED",
+        )
+
+    rank_calls = 0
+    original_rank = db.rank_evaluations
+
+    def counted_rank(*args, **kwargs):
+        nonlocal rank_calls
+        rank_calls += 1
+        return original_rank(*args, **kwargs)
+
+    monkeypatch.setattr(db, "rank_evaluations", counted_rank)
+    proposed = propose_candidates(
+        db,
+        proposal="family-qd",
+        num_random=2,
+        local_count=2,
+        de_count=2,
+        gomea_count=4,
+        elite_count=8,
+        target_shapes=[shape],
+        problem_type_hash=p_hash,
+        benchmark_protocol_hash=b_hash,
+        adaptive_operators=True,
+        adaptive_group_credit=True,
+        adaptive_donor_selection=True,
+        surrogate_pool_multiplier=2,
+        linkage_min_samples=4,
+        linkage_truncation_tau=1.0,
+    ).selected
+
+    assert proposed
+    assert rank_calls == 1
+
+
 def test_gomea_proposal_uses_learned_linkage_by_default_when_evidence_exists(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -1495,7 +1581,10 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
         prepare_workers=default_metadata["prepare_workers"],
         max_candidate_batch_size=DEFAULT_PROFILE.default_candidate_batch_size,
     )
-    assert default_metadata["prepare_workers"] == default_prepare_workers()
+    assert default_metadata["prepare_workers"] == DEFAULT_PROFILE.default_prepare_workers == 32
+    assert default_metadata["validation_workers"] == DEFAULT_PROFILE.default_validation_workers == 1
+    assert default_metadata["surrogate_jobs"] == DEFAULT_PROFILE.default_surrogate_jobs
+    assert default_metadata["effective_cu_count"] == DEFAULT_PROFILE.effective_cu_count
     assert default_metadata["adaptive_sampling"] is True
     assert default_metadata["stop_on_error"] is False
     assert default_metadata["learned_linkage_requested"] is True
@@ -1508,24 +1597,46 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
     assert default_metadata["compile_cache_enabled"] is True
     assert default_metadata["compile_cache_root"] == str(tmp_path / "default" / "compile_cache")
 
+    cached_batch_metadata = run_cli(
+        tmp_path / "cached_batch",
+        "--num-random",
+        "16",
+        "--prepare-workers",
+        "8",
+    )
+    assert cached_batch_metadata["candidate_batch_size"] == 1
+    assert cached_batch_metadata["planned_batches"] >= cached_batch_metadata["prepare_workers"]
+
     large_batch_metadata = run_cli(
         tmp_path / "large_batch",
         "--num-random",
         "16",
         "--prepare-workers",
         "8",
+        "--no-compile-cache",
     )
     assert large_batch_metadata["candidate_batch_size"] > 1
-    assert large_batch_metadata["planned_batches"] >= large_batch_metadata["prepare_workers"]
 
     debug_singleton_metadata = run_cli(tmp_path / "debug_singleton", "--candidate-batch-size", "1")
     assert debug_singleton_metadata["candidate_batch_size"] == 1
 
-    learned_metadata = run_cli(tmp_path / "learned", "--learned-linkage")
-    assert learned_metadata["learned_linkage_requested"] is True
-    assert learned_metadata["learned_linkage_enabled"] is False
-    assert learned_metadata["linkage_fallback_reason"] == "insufficient_validated_evidence"
-    assert learned_metadata["linkage_min_samples"] == 8
+    production_policy_metadata = run_cli(
+        tmp_path / "production_policy",
+        "--search-policy",
+        "gfx1151-grid-v1",
+        "--num-random",
+        "0",
+        "--no-adaptive-donor-selection",
+    )
+    assert production_policy_metadata["search_policy"] == "gfx1151-grid-v1"
+    assert production_policy_metadata["search_policy_settings"]["proposal"] == "family-qd"
+    assert production_policy_metadata["proposal"] == "family-qd"
+    assert production_policy_metadata["surrogate_pool_multiplier"] == 8
+    assert production_policy_metadata["adaptive_operators"] is True
+    assert production_policy_metadata["adaptive_group_credit"] is True
+    assert production_policy_metadata["adaptive_donor_selection"] is False
+    assert production_policy_metadata["cost_aware_operator_credit"] is True
+    assert production_policy_metadata["cost_aware_scheduling"] is True
 
     no_learned_metadata = run_cli(tmp_path / "no_learned", "--no-learned-linkage")
     assert no_learned_metadata["learned_linkage_requested"] is False
@@ -1539,6 +1650,85 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
     fixed_sampling_metadata = run_cli(tmp_path / "fixed", "--fixed-sampling")
     assert fail_fast_metadata["stop_on_error"] is True
     assert fixed_sampling_metadata["adaptive_sampling"] is False
+
+
+def test_schedule_cli_resolves_selected_profile_defaults(tmp_path: Path):
+    profile = replace(
+        DEFAULT_PROFILE,
+        name="test-profile",
+        default_proposal="random",
+        default_num_random=3,
+        default_elite_count=5,
+        default_local_count=7,
+        default_de_count=9,
+        default_gomea_count=11,
+        default_transfer_shapes=2,
+        default_transfer_per_shape=3,
+        default_mutation_rate=0.15,
+        default_crossover_rate=0.65,
+        default_random_gene_rate=0.05,
+        default_candidate_batch_size=4,
+        default_shape_batch_size=2,
+        default_prepare_workers=6,
+        default_validation_workers=1,
+        default_surrogate_jobs=2,
+        effective_cu_count=12,
+    )
+    PROFILES[profile.name] = profile
+    try:
+        output_dir = tmp_path / "selected_profile"
+        assert (
+            cli_main(
+                [
+                    "schedule-batches",
+                    "--db",
+                    str(tmp_path / "sched.sqlite"),
+                    "--output-dir",
+                    str(output_dir),
+                    "--profile",
+                    profile.name,
+                    "--limit-shapes",
+                    "1",
+                    "--dry-run",
+                ]
+            )
+            == 0
+        )
+    finally:
+        del PROFILES[profile.name]
+
+    metadata = json.loads((output_dir / "schedule_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["profile"] == profile.name
+    assert metadata["proposal"] == profile.default_proposal
+    assert metadata["candidates"] == profile.default_num_random
+    assert metadata["shape_batch_size"] == profile.default_shape_batch_size
+    assert metadata["prepare_workers"] == profile.default_prepare_workers
+    assert metadata["validation_workers"] == profile.default_validation_workers
+    assert metadata["surrogate_jobs"] == profile.default_surrogate_jobs
+    assert metadata["effective_cu_count"] == profile.effective_cu_count
+
+
+def test_search_policy_rejects_incompatible_profile(tmp_path: Path):
+    profile = replace(DEFAULT_PROFILE, name="test-profile")
+    PROFILES[profile.name] = profile
+    try:
+        with pytest.raises(ValueError, match="requires profile gfx1151-nt-hhs"):
+            cli_main(
+                [
+                    "schedule-batches",
+                    "--db",
+                    str(tmp_path / "sched.sqlite"),
+                    "--output-dir",
+                    str(tmp_path / "output"),
+                    "--profile",
+                    profile.name,
+                    "--search-policy",
+                    "gfx1151-grid-v1",
+                    "--dry-run",
+                ]
+            )
+    finally:
+        del PROFILES[profile.name]
 
 
 def test_execute_schedule_generate_only_writes_batch_inputs(tmp_path: Path):

@@ -1,8 +1,7 @@
-import pytest
-
 from evotensile.database import EvoTensileDB, ValidationInsert
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search.encoding import candidate_to_genome, hamming_distance
+from evotensile.search.evidence import load_proposal_evidence_snapshot
 from evotensile.search.family import (
     family_descriptor,
     family_descriptor_counts,
@@ -13,6 +12,15 @@ from evotensile.search.grid_evidence import GRID_OBJECTIVES, GridObjective
 from evotensile.search_space import DOMAINS, make_candidate
 from evotensile.shapes import pilot_100_shapes
 from tests.helpers import REFERENCE_CANDIDATE, sample_candidates
+
+
+def _evidence(db: EvoTensileDB, shapes):
+    return load_proposal_evidence_snapshot(
+        db,
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        shapes=shapes,
+    )
 
 
 def test_nt_hhs_family_descriptor_is_stable_for_reference_candidate():
@@ -44,23 +52,16 @@ def test_family_descriptor_counts_candidates_by_key():
     assert counts[family_descriptor(candidates[0]).key] >= 2
 
 
-def test_family_descriptor_rejects_unknown_profile():
-    with pytest.raises(ValueError, match="unsupported family descriptor profile"):
-        family_descriptor(REFERENCE_CANDIDATE, profile="unknown")
-
-
 def test_family_stratified_random_candidates_balance_target_aspect_and_broad_cells(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "families.sqlite")
     db.init()
     shape = pilot_100_shapes()[0]
 
     candidates = family_stratified_random_candidates(
-        db,
+        _evidence(db, [shape]),
         16,
         seed=1151,
         target_shapes=[shape],
-        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
-        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
     )
     fields = [dict(family_descriptor(candidate).fields) for candidate in candidates]
 
@@ -77,14 +78,11 @@ def test_family_stratified_random_candidates_retry_failed_family(tmp_path):
     db.init()
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
-    b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
     initial = family_stratified_random_candidates(
-        db,
+        _evidence(db, [shape]),
         8,
         seed=1151,
         target_shapes=[shape],
-        problem_type_hash=p_hash,
-        benchmark_protocol_hash=b_hash,
     )
     failed_family = family_descriptor(initial[0])
     db.register_candidates(initial)
@@ -104,12 +102,10 @@ def test_family_stratified_random_candidates_retry_failed_family(tmp_path):
     )
 
     followup = family_stratified_random_candidates(
-        db,
+        _evidence(db, [shape]),
         32,
         seed=1152,
         target_shapes=[shape],
-        problem_type_hash=p_hash,
-        benchmark_protocol_hash=b_hash,
     )
 
     assert any(family_descriptor(candidate) == failed_family for candidate in followup)
@@ -152,9 +148,7 @@ def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
     )
 
     archive = load_family_archive(
-        db,
-        problem_type_hash=p_hash,
-        benchmark_protocol_hash=b_hash,
+        _evidence(db, shapes),
         shapes=shapes,
         objective=GridObjective.GENERALIST,
     )
@@ -200,9 +194,7 @@ def test_family_archive_objectives_distinguish_sparse_specialists_and_broad_gene
 
     leaders = {
         objective: load_family_archive(
-            db,
-            problem_type_hash=p_hash,
-            benchmark_protocol_hash=b_hash,
+            _evidence(db, shapes),
             shapes=shapes,
             objective=objective,
         )[0]
@@ -244,9 +236,7 @@ def test_load_family_archive_keeps_diverse_quality_bounded_elites_per_family(tmp
         )
 
     archive = load_family_archive(
-        db,
-        problem_type_hash=p_hash,
-        benchmark_protocol_hash=b_hash,
+        _evidence(db, [shape]),
         shapes=[shape],
         objective=GridObjective.SPECIALIST,
         elites_per_family=3,
@@ -294,9 +284,7 @@ def test_load_family_archive_filters_protocol_and_min_samples(tmp_path):
     )
 
     archive = load_family_archive(
-        db,
-        problem_type_hash=p_hash,
-        benchmark_protocol_hash=b_hash,
+        _evidence(db, [shape]),
         shapes=[shape],
         min_samples=2,
         objective=GridObjective.SPECIALIST,

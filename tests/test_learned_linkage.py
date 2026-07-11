@@ -1,6 +1,7 @@
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search.encoding import PARAM_NAMES
+from evotensile.search.evidence import load_proposal_evidence_snapshot
 from evotensile.search.learned_linkage import (
     DEFAULT_ORDINAL_PARAM_NAMES,
     ScoredGenome,
@@ -8,7 +9,7 @@ from evotensile.search.learned_linkage import (
     hybrid_mi_matrix,
     leader_clusters,
     learn_linkage_models,
-    learn_linkage_models_from_db,
+    learn_linkage_models_from_snapshot,
     load_candidate_evidence,
     minimum_evidence_for_truncation,
     nearest_linkage_model,
@@ -74,10 +75,14 @@ def test_load_candidate_evidence_uses_shape_local_ranks_and_positive_rows(tmp_pa
         validation="FAILED",
     )
 
-    evidence = load_candidate_evidence(
+    snapshot = load_proposal_evidence_snapshot(
         db,
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
+        shapes=shapes,
+    )
+    evidence = load_candidate_evidence(
+        snapshot,
         shapes=shapes,
         elite_per_shape=8,
     )
@@ -121,10 +126,14 @@ def test_linkage_db_loader_expands_evidence_for_truncation(tmp_path):
             validation="PASSED",
         )
 
-    _, summary = learn_linkage_models_from_db(
+    snapshot = load_proposal_evidence_snapshot(
         db,
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
+        shapes=[shape],
+    )
+    _, summary = learn_linkage_models_from_snapshot(
+        snapshot,
         shapes=[shape],
         truncation_tau=0.5,
         min_samples=8,

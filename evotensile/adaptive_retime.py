@@ -7,8 +7,9 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .candidate import Candidate
+from .candidate import Candidate, stable_hash
 from .database import EvoTensileDB
+from .utils import round_up
 
 MEDIAN_SE_FACTOR = 1.2533141373155001
 
@@ -28,12 +29,6 @@ def _quantile(sorted_values: Sequence[float], q: float) -> float:
     if lo == hi:
         return sorted_values[lo]
     return sorted_values[lo] * (hi - position) + sorted_values[hi] * (position - lo)
-
-
-def _round_up(value: int, step: int) -> int:
-    if step <= 1:
-        return value
-    return int(math.ceil(value / step) * step)
 
 
 def _sample_stddev(values: Sequence[float]) -> float:
@@ -125,6 +120,21 @@ class ProbePolicy:
             raise ValueError("probe noise floor must be non-negative")
         if self.min_survivors <= 0:
             raise ValueError("probe minimum survivors must be positive")
+
+    @property
+    def policy_hash(self) -> str:
+        return stable_hash(
+            {
+                "version": 1,
+                "samples": self.samples,
+                "initial_samples": self.initial_samples,
+                "max_slowdown_factor": self.max_slowdown_factor,
+                "confidence": self.confidence,
+                "noise_floor_pct": self.noise_floor_pct,
+                "min_survivors": self.min_survivors,
+            },
+            prefix="probe_policy_",
+        )[:29]
 
     @property
     def max_slowdown_log(self) -> float:
@@ -311,7 +321,7 @@ def _required_samples(active: Sequence[CandidateTimingStats], *, policy: Adaptiv
             pair_required = math.ceil((z * sigma_gap / denominator) ** 2)
         required = max(required, pair_required)
     required = min(required, policy.max_retime_samples)
-    required = _round_up(required, policy.sample_step)
+    required = round_up(required, policy.sample_step)
     return max(policy.min_retime_samples, required)
 
 

@@ -12,7 +12,9 @@ from pathlib import Path
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.metrics import gflops_from_us
+from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search.campaign_control import convergence_detected, population_diagnostics, split_budget
+from evotensile.search.evidence import load_proposal_evidence_snapshot
 from evotensile.search.surrogate import select_surrogate_pool
 
 
@@ -265,17 +267,23 @@ def _select_replay_batch(
     island_count: int,
     isolated: bool,
 ) -> list[Candidate]:
+    evidence = load_proposal_evidence_snapshot(
+        db,
+        problem_type_hash=problem_type_hash,
+        benchmark_protocol_hash=benchmark_protocol_hash,
+        shapes=[shape],
+    )
     if not isolated or island_count <= 1:
         return select_surrogate_pool(
             pending,
-            db=db,
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
+            evidence=evidence,
             shapes=[shape],
             count=min(count, len(pending)),
             seed=seed,
             min_evidence=min_evidence,
             covering_cold_start=covering_cold_start,
+            surrogate_jobs=1,
+            effective_cu_count=DEFAULT_PROFILE.effective_cu_count,
         )
     selected: list[Candidate] = []
     budgets = split_budget(count, island_count)
@@ -286,14 +294,14 @@ def _select_replay_batch(
         selected.extend(
             select_surrogate_pool(
                 pool,
-                db=db,
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
+                evidence=evidence,
                 shapes=[shape],
                 count=min(budget, len(pool)),
                 seed=seed + island_index * 1_000_003,
                 min_evidence=min_evidence,
                 covering_cold_start=covering_cold_start,
+                surrogate_jobs=1,
+                effective_cu_count=DEFAULT_PROFILE.effective_cu_count,
             )
         )
     if len(selected) < min(count, len(pending)):
@@ -475,7 +483,11 @@ def simulate_candidate_stream(
                     stabilization_samples += remaining
             if result.best_screening_gflops is not None:
                 best_history.append(result.best_screening_gflops)
-            diagnostics = population_diagnostics(selected, shape)
+            diagnostics = population_diagnostics(
+                selected,
+                shape,
+                effective_cu_count=DEFAULT_PROFILE.effective_cu_count,
+            )
             result.trace.append(
                 {
                     "round": round_index,

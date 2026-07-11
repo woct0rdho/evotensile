@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from evotensile.candidate import Candidate, Shape
-from evotensile.database import EvoTensileDB
 from evotensile.search.encoding import PARAM_NAMES, candidate_to_genome, hamming_distance
+from evotensile.search.evidence import ProposalEvidenceSnapshot
 from evotensile.search.family import family_descriptor
 from evotensile.search.mechanics import candidate_shape_mechanics, mechanical_prior_score, select_covering_cold_pool
 from evotensile.search_space import _valu_vgpr_lower_bound, macro_tile
@@ -59,7 +59,7 @@ class GridCandidatePrediction:
 
 
 class ExtraTreesSurrogate:
-    def __init__(self, *, seed: int = 0) -> None:
+    def __init__(self, *, seed: int = 0, jobs: int) -> None:
         try:
             from sklearn.ensemble import ExtraTreesRegressor
             from sklearn.feature_extraction import DictVectorizer
@@ -71,7 +71,7 @@ class ExtraTreesSurrogate:
             min_samples_leaf=2,
             max_features=0.7,
             random_state=seed,
-            n_jobs=-1,
+            n_jobs=jobs,
         )
 
     def fit(self, rows: Sequence[Mapping[str, Any]], targets: Sequence[float]) -> None:
@@ -91,11 +91,16 @@ class ExtraTreesSurrogate:
         return means, standard_deviations
 
 
-def candidate_shape_features(candidate: Candidate, shape: Shape) -> dict[str, float | str]:
+def candidate_shape_features(
+    candidate: Candidate,
+    shape: Shape,
+    *,
+    effective_cu_count: int,
+) -> dict[str, float | str]:
     params = candidate.canonical_params()
     macro_tile0, macro_tile1 = macro_tile(params["MatrixInstruction"])
     workgroup_threads = math.prod(params["WorkGroup"])
-    mechanics = candidate_shape_mechanics(candidate, shape)
+    mechanics = candidate_shape_mechanics(candidate, shape, effective_cu_count=effective_cu_count)
     features: dict[str, float | str] = {
         f"gene:{name}": json.dumps(params[name], sort_keys=True, separators=(",", ":")) for name in PARAM_NAMES
     }
@@ -142,21 +147,14 @@ def candidate_shape_features(candidate: Candidate, shape: Shape) -> dict[str, fl
 
 
 def _training_observations(
-    db: EvoTensileDB,
+    snapshot: ProposalEvidenceSnapshot,
     *,
-    problem_type_hash: str | None,
-    benchmark_protocol_hash: str | None,
     shapes: Sequence[Shape] | None,
+    effective_cu_count: int,
 ) -> list[TrainingObservation]:
     allowed_shapes = {shape.id: shape for shape in shapes} if shapes is not None else {}
-    summaries = db.rank_evaluations(
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
-        min_samples=1,
-        limit=None,
-    )
-    candidate_hashes = sorted({summary.candidate_hash for summary in summaries})
-    candidates = {candidate.hash: candidate for candidate in db.get_candidates(candidate_hashes)}
+    summaries = snapshot.summaries
+    candidates = snapshot.candidates
     observations = []
     for summary in summaries:
         candidate = candidates.get(summary.candidate_hash)
@@ -166,19 +164,16 @@ def _training_observations(
         if shapes is not None and shape is None:
             continue
         if shape is None:
-            with db.connection() as con:
-                row = con.execute(
-                    "SELECT m, n, batch, k FROM shapes WHERE shape_id = ?",
-                    (summary.shape_id,),
-                ).fetchone()
-            if row is None:
-                continue
-            shape = Shape(int(row["m"]), int(row["n"]), int(row["batch"]), int(row["k"]))
+            continue
         observations.append(
             TrainingObservation(
                 candidate_hash=candidate.hash,
                 shape_id=shape.id,
-                features=candidate_shape_features(candidate, shape),
+                features=candidate_shape_features(
+                    candidate,
+                    shape,
+                    effective_cu_count=effective_cu_count,
+                ),
                 log_time=math.log(summary.median_time_us),
             )
         )
@@ -219,6 +214,7 @@ def _shape_models(
     shapes: Sequence[Shape],
     min_evidence: int,
     seed: int,
+    surrogate_jobs: int,
 ) -> tuple[dict[str, ExtraTreesSurrogate], dict[str, float]]:
     by_shape: dict[str, list[TrainingObservation]] = defaultdict(list)
     for observation in observations:
@@ -230,7 +226,7 @@ def _shape_models(
         if shape.id not in modeled_shape_ids:
             continue
         shape_observations = by_shape[shape.id]
-        model = ExtraTreesSurrogate(seed=seed + shape_index)
+        model = ExtraTreesSurrogate(seed=seed + shape_index, jobs=surrogate_jobs)
         model.fit(
             [observation.features for observation in shape_observations],
             [observation.log_time for observation in shape_observations],
@@ -246,6 +242,7 @@ def _grid_predictions(
     shapes: Sequence[Shape],
     models: Mapping[str, ExtraTreesSurrogate],
     incumbents: Mapping[str, float],
+    effective_cu_count: int,
 ) -> list[GridCandidatePrediction]:
     predictions_by_hash: dict[str, list[ShapePrediction]] = {candidate.hash: [] for candidate in candidates}
     for shape in shapes:
@@ -253,7 +250,14 @@ def _grid_predictions(
         if model is None:
             continue
         means, standard_deviations = model.predict(
-            [candidate_shape_features(candidate, shape) for candidate in candidates]
+            [
+                candidate_shape_features(
+                    candidate,
+                    shape,
+                    effective_cu_count=effective_cu_count,
+                )
+                for candidate in candidates
+            ]
         )
         for candidate, mean, standard_deviation in zip(candidates, means, standard_deviations, strict=True):
             predictions_by_hash[candidate.hash].append(
@@ -324,9 +328,20 @@ def _marginal_grid_gain_order(predictions: Sequence[GridCandidatePrediction]) ->
     return ordered
 
 
-def _unresolved_shape_order(candidates: Sequence[Candidate], shapes: Sequence[Shape]) -> list[Candidate]:
+def _unresolved_shape_order(
+    candidates: Sequence[Candidate],
+    shapes: Sequence[Shape],
+    *,
+    effective_cu_count: int,
+) -> list[Candidate]:
     queues = [
-        sorted(candidates, key=lambda candidate: (-mechanical_prior_score(candidate, shape), candidate.hash))
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                -mechanical_prior_score(candidate, shape, effective_cu_count=effective_cu_count),
+                candidate.hash,
+            ),
+        )
         for shape in shapes
     ]
     selected: list[Candidate] = []
@@ -351,15 +366,15 @@ def _unresolved_shape_order(candidates: Sequence[Candidate], shapes: Sequence[Sh
 def select_surrogate_pool(
     candidates: Sequence[Candidate],
     *,
-    db: EvoTensileDB,
-    problem_type_hash: str | None,
-    benchmark_protocol_hash: str | None,
+    evidence: ProposalEvidenceSnapshot,
     shapes: Sequence[Shape],
     count: int,
     seed: int,
     min_evidence: int = DEFAULT_SURROGATE_MIN_EVIDENCE,
     covering_cold_start: bool = False,
     cold_start_precovered_tokens: set[str] | None = None,
+    surrogate_jobs: int,
+    effective_cu_count: int,
 ) -> list[Candidate]:
     deduped = list({candidate.hash: candidate for candidate in candidates}.values())
     if count <= 0:
@@ -369,12 +384,17 @@ def select_surrogate_pool(
     if not shapes:
         return _diverse_fallback(deduped, count=count, seed=seed)
     observations = _training_observations(
-        db,
-        problem_type_hash=problem_type_hash,
-        benchmark_protocol_hash=benchmark_protocol_hash,
+        evidence,
         shapes=shapes,
+        effective_cu_count=effective_cu_count,
     )
-    models, incumbents = _shape_models(observations, shapes=shapes, min_evidence=min_evidence, seed=seed)
+    models, incumbents = _shape_models(
+        observations,
+        shapes=shapes,
+        min_evidence=min_evidence,
+        seed=seed,
+        surrogate_jobs=surrogate_jobs,
+    )
     if not models:
         if covering_cold_start and len(shapes) == 1:
             return select_covering_cold_pool(
@@ -383,16 +403,31 @@ def select_surrogate_pool(
                 count=count,
                 seed=seed,
                 precovered_tokens=cold_start_precovered_tokens,
+                effective_cu_count=effective_cu_count,
             )
         if len(shapes) > 1:
             selected: list[Candidate] = []
-            _append_unique(selected, _unresolved_shape_order(deduped, shapes), max(1, count // 2))
+            _append_unique(
+                selected,
+                _unresolved_shape_order(
+                    deduped,
+                    shapes,
+                    effective_cu_count=effective_cu_count,
+                ),
+                max(1, count // 2),
+            )
             remaining = [candidate for candidate in deduped if candidate.hash not in {item.hash for item in selected}]
             _append_unique(selected, _diverse_fallback(remaining, count=count, seed=seed), count)
             return selected
         return _diverse_fallback(deduped, count=count, seed=seed)
 
-    predictions = _grid_predictions(deduped, shapes=shapes, models=models, incumbents=incumbents)
+    predictions = _grid_predictions(
+        deduped,
+        shapes=shapes,
+        models=models,
+        incumbents=incumbents,
+        effective_cu_count=effective_cu_count,
+    )
     specialist_count = max(1, int(count * 0.35))
     generalist_count = max(1, int(count * 0.25))
     uncertainty_count = max(1, int(count * 0.15))
@@ -422,7 +457,11 @@ def select_surrogate_pool(
     if unresolved_shapes:
         _append_unique(
             selected,
-            _unresolved_shape_order(deduped, unresolved_shapes),
+            _unresolved_shape_order(
+                deduped,
+                unresolved_shapes,
+                effective_cu_count=effective_cu_count,
+            ),
             specialist_count + generalist_count + uncertainty_count + unresolved_count,
         )
     remaining = [candidate for candidate in deduped if candidate.hash not in {item.hash for item in selected}]

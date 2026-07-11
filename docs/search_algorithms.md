@@ -20,13 +20,13 @@ Search algorithms only propose candidates. They do not select final winners dire
 - Record immediate shape-dependent rule rejections.
 - Plan missing `(shape, candidate)` observations from reusable cache status.
 - Emit TensileLite YAML and manifest files for exact rectangular batches.
-- Run all build/map/diagnostic/correctness work in a parallel prepare queue, optionally ordered longest-predicted-work first.
-- Optionally cap validation-runner concurrency without reducing compilation parallelism.
-- Join every prepare worker, then run benchmark-only work in one serial queue.
+- Run build/map/diagnostic/correctness work in bounded parallel preparation waves, optionally ordered longest-predicted-work first.
+- Cap validation-runner concurrency independently without reducing compilation parallelism.
+- Join every preparation worker in the admitted wave, then run that wave's benchmark-only work in one serial queue before admitting another wave.
 - When adaptive sampling is enabled, top up plausible finalists from the original prepared artifacts only.
 - Write `schedule_metadata.json` with proposal, protocol, linkage, batching, and execution details.
 
-Timing begins only after the complete prepare queue drains. This hard barrier prevents benchmark overlap with compilation or correctness verification on integrated CPU/GPU systems.
+Timing begins only after the currently admitted preparation wave drains. This wave barrier prevents benchmark overlap with compilation or correctness verification on integrated CPU/GPU systems while allowing coordinator feedback and soft-budget admission between waves.
 
 ## Proposal Modes
 
@@ -46,6 +46,8 @@ family-qd
 ```
 
 The default profile proposal is `seed-random-gomea`.
+
+Named search policies are opt-in mechanism bundles, separate from target profiles. `--search-policy gfx1151-grid-v1` selects `family-qd`, an `8x` surrogate pool, adaptive operator/group/donor allocation, micro-exhaustive neighborhoods, covering cold start, measured-cost operator credit, and cost-aware preparation. Explicit low-level flags, including `--no-*` overrides and zero proposal counts, take precedence. Metadata records the policy name and every resolved policy-controlled value. The policy does not change profile resources, validity, measurement identity, or generic defaults.
 
 `family-qd` is the family-aware quality-diversity proposal mode. Its descriptors, archive, and stratified initialization are documented in `docs/search_family_qd.md`.
 
@@ -149,7 +151,7 @@ The scheduler avoids repeating known work with resolved timing and correctness s
 - Latest compatible validation state is `passed` or `failed` under the validation-protocol hash.
 - A resolved benchmark negative or latest compatible validation failure skips the pair. A different validation identity requests fresh correctness verification.
 
-`plan_batches()` first chunks candidates and shapes, then builds exact rectangular batches only for missing observations. Shapes that have the same missing candidate subset and same required sample count are grouped together.
+`plan_batches()` first chunks candidates and shapes, then builds exact rectangular batches only for missing observations. Shapes that have the same missing candidate subset and same required sample count are grouped together. Stable compile caching uses singleton candidate libraries so cache identity is independent of proposal cohort. Exact shape identities remain in the key because GridBased generation is shape-dependent.
 
 ## Batch Execution
 
@@ -158,9 +160,9 @@ Each batch writes:
 - `config.manifest.csv`: intended shape/candidate/solution mapping.
 - `run/` or a unique run directory for build and structured-runner outputs.
 
-The production path requires `--runner-bin` unless using `--dry-run` or `--generate-only`. `--prepare-workers` controls parallel build/map/diagnostic/validation work. `--validation-workers` optionally caps concurrent validators, and `--cost-aware-scheduling` orders heavier predicted preparation batches first. After all prepare workers exit, benchmarks run serially. A shared/exclusive APU gate at `EVOTENSILE_APU_LOCK_PATH` protects this invariant across cooperating processes and direct runner invocations.
+The production path requires `--runner-bin` unless using `--dry-run` or `--generate-only`. `--prepare-workers` controls parallel build/map/diagnostic/validation work. `--validation-workers` caps concurrent validators, `--prepare-wave-batches` bounds each admitted wave, and `--cost-aware-scheduling` orders heavier predicted preparation batches first without changing timing priority. After each wave's preparation workers exit, its benchmarks run serially. A shared/exclusive APU gate at `EVOTENSILE_APU_LOCK_PATH` protects this invariant across cooperating processes and direct runner invocations.
 
-The default candidate batch size is chosen by a throughput heuristic that keeps enough candidate/shape batches to saturate available workers while respecting the profile's max candidate batch size. Use `--candidate-batch-size 1` for debugging or singleton failure attribution.
+Without stable compile caching, the default candidate batch size is chosen by a throughput heuristic that keeps enough candidate/shape batches to saturate available workers while respecting the profile's max candidate batch size. Stable caching forces singleton candidate libraries for composable reuse. The gfx1151 profile uses 32 parallel preparation workers, so singleton libraries retain broad compile parallelism while validation remains capped at one worker.
 
 ## Adaptive Sampling
 

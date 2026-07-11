@@ -35,7 +35,7 @@ The implementation requires `scikit-learn>=1.4`.
 
 ## Training Evidence
 
-Training rows come from `EvoTensileDB.rank_evaluations()` under the requested problem type, benchmark protocol, and target shapes.
+Training rows come from the immutable proposal evidence snapshot, whose ranking summaries were loaded once through `EvoTensileDB.rank_evaluations()` under the requested problem type and benchmark protocol. The surrogate filters those summaries to its target shapes without another DB scan.
 
 Eligible evidence has:
 - `status='ok'` timing samples.
@@ -81,7 +81,10 @@ ExtraTreesRegressor
 n_estimators = 192
 min_samples_leaf = 2
 max_features = 0.7
+n_jobs = target-profile surrogate job limit
 ```
+
+The gfx1151 profile defaults to one ExtraTrees job so proposal fitting cannot consume the entire CPU pool or oversubscribe preparation work in a coordinator.
 
 A `DictVectorizer` converts mixed categorical and numeric feature dictionaries to a dense matrix.
 
@@ -140,7 +143,7 @@ The replay infrastructure in `docs/blind_experiment_infrastructure.md` enforces 
 Current limitations include:
 - two-sample medians can be noisy enough to misrank provisional leaders.
 - the model has no explicit compile-failure or validation-failure classifier.
-- model fitting is rebuilt from the active DB on each proposal call.
+- model fitting is rebuilt from the active immutable evidence snapshot on each proposal call.
 - acquisition weights and shortlist fractions are fixed rather than cost-adaptive.
 - uncertainty is ensemble disagreement, not a calibrated posterior interval.
 - there is no cross-campaign transfer model beyond evidence explicitly present in the DB.

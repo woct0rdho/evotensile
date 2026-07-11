@@ -12,7 +12,7 @@ from evotensile.search.screening_stabilize import (
 )
 from evotensile.shapes import pilot_100_shapes
 from tests.helpers import sample_candidates
-from tests.test_structured_runner import _fake_build_tensile, _fake_structured_runner
+from tests.test_structured_runner import fake_build_tensile, fake_structured_runner
 
 
 def test_screening_topup_requests_require_duration_and_confidence():
@@ -45,8 +45,8 @@ def test_screening_topup_requests_require_duration_and_confidence():
 
 
 def test_screening_stabilization_reuses_prior_artifacts(tmp_path: Path, monkeypatch):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "campaign.sqlite")
     candidates = sample_candidates(2)
     shape = pilot_100_shapes()[0]

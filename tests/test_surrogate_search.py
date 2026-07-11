@@ -4,6 +4,7 @@ from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.scheduler import propose_candidates
+from evotensile.search.evidence import load_proposal_evidence_snapshot
 from evotensile.search.family import family_descriptor_counts
 from evotensile.search.mechanics import (
     candidate_shape_mechanics,
@@ -21,6 +22,18 @@ from evotensile.search.surrogate import (
 )
 from evotensile.search_space import macro_tile, random_candidate
 
+EFFECTIVE_CU_COUNT = DEFAULT_PROFILE.effective_cu_count
+SURROGATE_JOBS = DEFAULT_PROFILE.default_surrogate_jobs
+
+
+def _evidence(db: EvoTensileDB, shapes: list[Shape]):
+    return load_proposal_evidence_snapshot(
+        db,
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        shapes=shapes,
+    )
+
 
 def _shape_candidates(shape: Shape, start_seed: int, count: int):
     out = {}
@@ -36,7 +49,7 @@ def test_candidate_shape_features_include_generic_mechanics():
     shape = Shape(8192, 4096, 1, 2048)
     candidate = random_candidate(random.Random(1151), target_shapes=[shape])
 
-    features = candidate_shape_features(candidate, shape)
+    features = candidate_shape_features(candidate, shape, effective_cu_count=EFFECTIVE_CU_COUNT)
     macro_tile0, macro_tile1 = macro_tile(candidate.canonical_params()["MatrixInstruction"])
 
     assert features["shape:log2_m"] == 13.0
@@ -60,7 +73,7 @@ def test_candidate_shape_features_include_generic_mechanics():
     assert 0.0 < tile_fill_n <= 1.0
     assert lds_bytes > 0.0
 
-    mechanics = candidate_shape_mechanics(candidate, shape)
+    mechanics = candidate_shape_mechanics(candidate, shape, effective_cu_count=EFFECTIVE_CU_COUNT)
     assert mechanics["tiles_per_cu"] > 0.0
     assert mechanics["cu_rounds"] >= mechanics["tiles_per_cu"]
     assert mechanics["arithmetic_intensity"] > 0.0
@@ -73,7 +86,7 @@ def test_surrogate_activation_requires_unique_candidate_variation():
         TrainingObservation(
             candidate_hash=candidate.hash,
             shape_id=shape.id,
-            features=candidate_shape_features(candidate, shape),
+            features=candidate_shape_features(candidate, shape, effective_cu_count=EFFECTIVE_CU_COUNT),
             log_time=float(index + 1),
         )
         for index, shape in enumerate(shapes)
@@ -142,13 +155,13 @@ def test_surrogate_pool_learns_synthetic_tlds_performance_from_queried_rows(tmp_
 
     selected = select_surrogate_pool(
         pool,
-        db=db,
-        problem_type_hash=problem_hash,
-        benchmark_protocol_hash=protocol_hash,
+        evidence=_evidence(db, [shape]),
         shapes=[shape],
         count=32,
         seed=20260710,
         min_evidence=24,
+        surrogate_jobs=SURROGATE_JOBS,
+        effective_cu_count=EFFECTIVE_CU_COUNT,
     )
 
     selected_tlds0 = sum(candidate.canonical_params()["TransposeLDS"] == 0 for candidate in selected)
@@ -166,13 +179,13 @@ def test_surrogate_pool_falls_back_to_family_diversity_without_evidence(tmp_path
 
     selected = select_surrogate_pool(
         pool,
-        db=db,
-        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
-        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        evidence=_evidence(db, [shape]),
         shapes=[shape],
         count=24,
         seed=20260710,
         min_evidence=24,
+        surrogate_jobs=SURROGATE_JOBS,
+        effective_cu_count=EFFECTIVE_CU_COUNT,
     )
 
     assert len(selected) == 24
@@ -189,9 +202,17 @@ def test_mechanical_prior_penalizes_single_instruction_workgroups():
     tiny = Candidate(params=tiny_params)
     broad = Candidate(params=broad_params)
 
-    assert candidate_shape_mechanics(tiny, shape)["dispatch_efficiency"] == 0.0
-    assert candidate_shape_mechanics(broad, shape)["dispatch_efficiency"] > 0.8
-    assert mechanical_prior_score(broad, shape) > mechanical_prior_score(tiny, shape)
+    assert candidate_shape_mechanics(tiny, shape, effective_cu_count=EFFECTIVE_CU_COUNT)["dispatch_efficiency"] == 0.0
+    assert candidate_shape_mechanics(broad, shape, effective_cu_count=EFFECTIVE_CU_COUNT)["dispatch_efficiency"] > 0.8
+    assert mechanical_prior_score(
+        broad,
+        shape,
+        effective_cu_count=EFFECTIVE_CU_COUNT,
+    ) > mechanical_prior_score(
+        tiny,
+        shape,
+        effective_cu_count=EFFECTIVE_CU_COUNT,
+    )
 
 
 def test_covering_cold_start_increases_mechanical_token_coverage(tmp_path):
@@ -202,28 +223,32 @@ def test_covering_cold_start_increases_mechanical_token_coverage(tmp_path):
 
     baseline = select_surrogate_pool(
         pool,
-        db=db,
-        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
-        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        evidence=_evidence(db, [shape]),
         shapes=[shape],
         count=48,
         seed=20260710,
         min_evidence=24,
+        surrogate_jobs=SURROGATE_JOBS,
+        effective_cu_count=EFFECTIVE_CU_COUNT,
     )
     covering = select_surrogate_pool(
         pool,
-        db=db,
-        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
-        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        evidence=_evidence(db, [shape]),
         shapes=[shape],
         count=48,
         seed=20260710,
         min_evidence=24,
         covering_cold_start=True,
+        surrogate_jobs=SURROGATE_JOBS,
+        effective_cu_count=EFFECTIVE_CU_COUNT,
     )
 
-    baseline_tokens = set().union(*(mechanical_coverage_tokens(candidate, shape) for candidate in baseline))
-    covering_tokens = set().union(*(mechanical_coverage_tokens(candidate, shape) for candidate in covering))
+    baseline_tokens = set().union(
+        *(mechanical_coverage_tokens(candidate, shape, effective_cu_count=EFFECTIVE_CU_COUNT) for candidate in baseline)
+    )
+    covering_tokens = set().union(
+        *(mechanical_coverage_tokens(candidate, shape, effective_cu_count=EFFECTIVE_CU_COUNT) for candidate in covering)
+    )
     baseline_instructions = {tuple(candidate.canonical_params()["MatrixInstruction"]) for candidate in baseline}
     covering_instructions = {tuple(candidate.canonical_params()["MatrixInstruction"]) for candidate in covering}
     assert len(covering_tokens) > len(baseline_tokens)

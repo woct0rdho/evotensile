@@ -3,6 +3,7 @@ import random
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search.encoding import candidate_to_genome, hamming_distance
+from evotensile.search.evidence import load_proposal_evidence_snapshot
 from evotensile.search.family import family_descriptor
 from evotensile.search.gomea import gomea_candidates, gomea_neighborhood_candidates
 from evotensile.search.local_search import semantic_mutation_candidates
@@ -10,9 +11,7 @@ from evotensile.search.operator_credit import (
     OperatorCredit,
     allocate_operator_budget,
     credit_ucb_scores,
-    load_donor_mode_credits,
-    load_operator_credits,
-    load_semantic_group_credits,
+    load_operator_credit_views,
 )
 from evotensile.search.semantics import semantic_group_key, semantic_group_names
 from evotensile.search_space import DOMAINS, make_candidate, random_candidate
@@ -169,12 +168,13 @@ def test_operator_credit_and_ucb_allocation_use_only_queried_parent_comparisons(
             validation="PASSED",
         )
 
-    credits = load_operator_credits(
+    snapshot = load_proposal_evidence_snapshot(
         db,
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
         shapes=[shape],
     )
+    credits = load_operator_credit_views(snapshot, shapes=[shape]).operator
 
     assert credits["semantic-mutation"].successes == 1
     assert credits["semantic-mutation"].failures == 0
@@ -228,18 +228,15 @@ def test_group_and_donor_credits_use_persisted_proposal_metadata(tmp_path):
             validation="PASSED",
         )
 
-    semantic_credits = load_semantic_group_credits(
+    snapshot = load_proposal_evidence_snapshot(
         db,
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
         shapes=[shape],
     )
-    donor_credits = load_donor_mode_credits(
-        db,
-        problem_type_hash=problem_hash,
-        benchmark_protocol_hash=protocol_hash,
-        shapes=[shape],
-    )
+    credit_views = load_operator_credit_views(snapshot, shapes=[shape])
+    semantic_credits = dict(credit_views.semantic_group)
+    donor_credits = credit_views.donor_mode
     restored = db.get_candidates([semantic_child.hash, donor_child.hash])
 
     assert semantic_credits["StaggerU"].successes == 1
@@ -291,19 +288,18 @@ def test_operator_credit_aggregates_correlated_shapes_per_occurrence_and_credits
                 validation="PASSED",
             )
 
-    equal_credits = load_operator_credits(
+    snapshot = load_proposal_evidence_snapshot(
         db,
         problem_type_hash=problem_hash,
         benchmark_protocol_hash=protocol_hash,
         shapes=shapes,
     )
-    weighted_credits = load_operator_credits(
-        db,
-        problem_type_hash=problem_hash,
-        benchmark_protocol_hash=protocol_hash,
+    equal_credits = load_operator_credit_views(snapshot, shapes=shapes).operator
+    weighted_credits = load_operator_credit_views(
+        snapshot,
         shapes=shapes,
         shape_weights={shapes[0].id: 4.0, shapes[1].id: 1.0},
-    )
+    ).operator
     restored = db.get_candidates([reproposal.hash])[0]
 
     assert equal_credits["de"].trials == 1

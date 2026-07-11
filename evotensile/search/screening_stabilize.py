@@ -11,6 +11,7 @@ from evotensile.candidate import Shape
 from evotensile.database import EvoTensileDB
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.structured_runner import run_structured_phase, validate_benchmark_samples
+from evotensile.utils import round_up
 
 
 @dataclass(frozen=True)
@@ -85,10 +86,6 @@ class ScreeningStabilizationResult:
         }
 
 
-def _round_up(value: int, step: int) -> int:
-    return int(math.ceil(value / step) * step)
-
-
 def screening_topup_requests(
     stats: list[CandidateTimingStats],
     *,
@@ -111,7 +108,7 @@ def screening_topup_requests(
             policy.min_timed_duration_us / max(contender.median_time_us * launches_per_sample, 1.0)
         )
         target_samples = max(policy.min_samples, duration_target)
-        target_samples = min(policy.max_samples, _round_up(target_samples, policy.sample_step))
+        target_samples = min(policy.max_samples, round_up(target_samples, policy.sample_step))
         if contender.samples >= target_samples:
             continue
         requests.append(
@@ -217,6 +214,9 @@ def stabilize_screening_leaders(
             output_dir=str(output_root / f"group_{group_index:02d}"),
             status="timeout" if output.timed_out else "ok" if output.ok else "failed",
             returncode=output.returncode,
+            candidate_hashes=[pair.candidate_hash for pair in pairs],
+            cost_phase="screening",
+            duration_s=output.duration_s,
             metadata_json=json.dumps(
                 {
                     "command": output.command,
