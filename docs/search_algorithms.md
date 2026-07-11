@@ -122,7 +122,7 @@ For scoped schedules, the scheduler can also seed from nearest previously tuned 
 
 Transfer candidates record the target and source shape IDs that caused selection. Target lanes are ordered by deterministic farthest-point mechanical coverage, then drained round-robin under one global cap so input or lexical shape order cannot monopolize a small transfer budget. They are inserted before random restarts so they are retained when candidate lists are truncated or batch budgets are tight.
 
-A `cluster` proposal scope is an explicit label and shape set. It does not itself discover clusters, select medoids, stage representative-first evaluation, or promote candidates to unmeasured members. Those actions require the production grid controller tracked in `docs/plan.md`.
+A `cluster` proposal scope is an explicit label and shape set. It does not itself discover clusters, select medoids, stage representative-first evaluation, or promote candidates to unmeasured members. Those actions require the production grid controller tracked in `docs/experiment_100_shape.md`.
 
 Installed hipBLASLt discovery creates zero-evidence planning pairs. After those exact pairs run through the normal scheduler, their measured candidates can become elites, transfer seeds, GOMEA parents, and final winners like any other candidate.
 

@@ -2,14 +2,23 @@ import json
 import math
 from dataclasses import asdict, replace
 
+import pytest
+
 from evotensile.campaign.protocols import CAMPAIGN_HOT_PROTOCOL, CAMPAIGN_SCREENING_PROTOCOL
 from evotensile.candidate import Shape
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search import replay as replay_module
 from evotensile.search.hot_confirm import hot_confirm_topk
-from evotensile.search.replay import OracleRecord, ReplayCostModel, merge_oracle_records, simulate_candidate_stream
-from tests.helpers import sample_candidates
+from evotensile.search.replay import (
+    ExactOracleReplayState,
+    OracleRecord,
+    ReplayCostModel,
+    load_db_oracle_matrix,
+    merge_oracle_records,
+    simulate_candidate_stream,
+)
+from tests.helpers import insert_test_benchmark_event, sample_candidates
 
 
 def test_replay_cost_model_recursively_serializes_nested_protocols():
@@ -19,6 +28,143 @@ def test_replay_cost_model_recursively_serializes_nested_protocols():
     assert payload["stabilization_policy"]["min_samples"] == 8
     assert ReplayCostModel().screening_launches == 3
     assert ReplayCostModel().hot_launches == 120
+
+
+def test_load_db_oracle_matrix_indexes_exact_shape_candidate_pairs(tmp_path):
+    shapes = [Shape(512, 128, 1, 256), Shape(640, 256, 1, 512)]
+    candidates = sample_candidates(2, seed=20260730)
+    db_path = tmp_path / "oracle.sqlite"
+    db = EvoTensileDB.connect(db_path)
+    db.init()
+    db.register_shapes(shapes)
+    db.register_candidates(candidates)
+    protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash(CAMPAIGN_SCREENING_PROTOCOL)
+    insert_test_benchmark_event(
+        db,
+        shape_id=shapes[0].id,
+        candidate_hash=candidates[0].hash,
+        run_id="shape-0-ok",
+        status="ok",
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=protocol_hash,
+        time_us=100.0,
+    )
+    insert_test_benchmark_event(
+        db,
+        shape_id=shapes[1].id,
+        candidate_hash=candidates[0].hash,
+        run_id="shape-1-ok",
+        status="ok",
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=protocol_hash,
+        time_us=200.0,
+    )
+    insert_test_benchmark_event(
+        db,
+        shape_id=shapes[1].id,
+        candidate_hash=candidates[1].hash,
+        run_id="shape-1-rejected",
+        status="rejected",
+        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        benchmark_protocol_hash=protocol_hash,
+    )
+
+    matrix = load_db_oracle_matrix(
+        db_path,
+        shapes=shapes,
+        benchmark_protocol_hash=protocol_hash,
+    )
+
+    assert set(matrix) == {
+        (shapes[0].id, candidates[0].hash),
+        (shapes[1].id, candidates[0].hash),
+        (shapes[1].id, candidates[1].hash),
+    }
+    assert (
+        matrix[(shapes[0].id, candidates[0].hash)].screening_gflops
+        != matrix[(shapes[1].id, candidates[0].hash)].screening_gflops
+    )
+    assert matrix[(shapes[1].id, candidates[1].hash)].status == "rejected"
+    assert matrix[(shapes[1].id, candidates[1].hash)].screening_gflops is None
+
+
+def test_multi_shape_replay_state_is_query_causal_and_reuses_preparation(tmp_path):
+    shapes = [Shape(512, 128, 1, 256), Shape(640, 256, 1, 512)]
+    candidates = sample_candidates(3, seed=20260731)
+    oracle = {
+        (shapes[0].id, candidates[0].hash): OracleRecord(
+            candidate=candidates[0],
+            status="ok",
+            screening_gflops=10_000.0,
+        ),
+        (shapes[1].id, candidates[0].hash): OracleRecord(
+            candidate=candidates[0],
+            status="ok",
+            screening_gflops=12_000.0,
+        ),
+        (shapes[0].id, candidates[1].hash): OracleRecord(
+            candidate=candidates[1],
+            status="validation_fail",
+        ),
+        (shapes[1].id, candidates[1].hash): OracleRecord(
+            candidate=candidates[1],
+            status="rejected",
+        ),
+    }
+    state = ExactOracleReplayState(
+        db=EvoTensileDB.connect(tmp_path / "replay.sqlite"),
+        shapes=shapes,
+        oracle=oracle,
+        profile=DEFAULT_PROFILE,
+        source_ref="multi-shape-test",
+    )
+
+    assert state.evidence_snapshot().summaries == ()
+    assert state.prepare_candidates(candidates[:2], workers=2, seconds_per_candidate=8.0) == 8.0
+    assert state.prepare_candidates([candidates[0]], workers=2, seconds_per_candidate=8.0) == 0.0
+
+    first = state.query_pair(shapes[0], candidates[0])
+    assert first.known is True
+    assert first.first_query is True
+    assert [summary.shape_id for summary in state.evidence_snapshot().summaries] == [shapes[0].id]
+
+    state.query_pair(shapes[1], candidates[0], disclose=False)
+    assert [summary.shape_id for summary in state.evidence_snapshot().summaries] == [shapes[0].id]
+    assert state.summary()["unresolved_shape_ids"] == [shapes[1].id]
+    assert state.queried_shape_ids(candidates[0].hash, successful_only=True) == (shapes[0].id,)
+    state.disclose_pair(shapes[1], candidates[0].hash)
+    summaries = state.evidence_snapshot().summaries
+    assert {summary.shape_id for summary in summaries} == {shape.id for shape in shapes}
+    duplicate = state.query_pair(shapes[1], candidates[0])
+    assert duplicate.first_query is False
+    assert state.evidence_snapshot().summaries == summaries
+
+    failed = state.query_pair(shapes[0], candidates[1])
+    assert failed.known is True
+    counts = state.evidence_snapshot(shapes=[shapes[0]]).evidence_status_counts
+    assert counts[candidates[1].hash]["validation_failed"] == 1
+
+    unknown = state.query_pair(shapes[1], candidates[2])
+    assert unknown.known is False
+    assert (shapes[1].id, candidates[2].hash) in state.unknown_pairs
+    assert candidates[2].hash not in state.evidence_snapshot().evidence_status_counts
+
+    with pytest.raises(ValueError, match="before exact query"):
+        state.disclose_pair(shapes[1], candidates[1].hash)
+    state.query_pair(shapes[1], candidates[1])
+    rejected_counts = state.evidence_snapshot(shapes=[shapes[1]]).evidence_status_counts
+    assert rejected_counts[candidates[1].hash]["rejected"] == 1
+
+    state.record_pair_time(shapes[0], candidates[0].hash, 0.2)
+    state.record_pair_time(shapes[1], candidates[0].hash, 0.3)
+    summary = state.summary()
+    assert summary["prepared_candidates"] == 2
+    assert summary["preparation_time_s"] == 8.0
+    assert summary["pair_time_s"] == pytest.approx(0.5)
+    assert summary["simulated_time_s"] == pytest.approx(8.5)
+    assert summary["unresolved_shape_ids"] == []
+    assert state.queried_shape_ids(candidates[0].hash, successful_only=True) == tuple(shape.id for shape in shapes)
+    assert state.shape_state(shapes[1]).incumbent_hash == candidates[0].hash
 
 
 def test_merge_oracle_records_keeps_exact_hash_measurements_and_hot_results():

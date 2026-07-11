@@ -47,18 +47,31 @@ The timing pipeline uses a staged catastrophic probe: one launch for every valid
 
 ## Exact-Hash Replay Oracle
 
-`evotensile/search/replay.py` loads historical evidence into `OracleRecord` objects keyed by canonical candidate hash.
+`evotensile/search/replay.py` loads historical evidence into `OracleRecord` objects. `load_db_oracle()` retains the one-shape hash map used by the blind replay CLI. `load_db_oracle_matrix()` loads any registered shape set in one query and keys records by exact `(shape_id, candidate_hash)` identity.
 
 Sources can include:
-- EvoTensile SQLite databases filtered by shape and benchmark protocol.
+- EvoTensile SQLite databases filtered by shapes and benchmark protocol.
 - CSV files with candidate parameter JSON and measured performance.
 - hot-loop summaries keyed by candidate hash or candidate label.
 
-`merge_oracle_records()` deduplicates exact hashes and attaches hot-loop measurements when available.
+`merge_oracle_records()` deduplicates exact hashes for the one-shape interface and attaches hot-loop measurements when available.
 
-The simulator discloses a row only after the search queries that exact candidate hash. If the hash is absent from the oracle, the query is recorded as unknown and no timing evidence is inserted into the simulated campaign DB.
+`ExactOracleReplayState` is the shared one-shape and multi-shape state owner. It owns:
+- the registered shape set and canonical candidate catalog.
+- the exact shape-by-candidate oracle matrix.
+- one simulated campaign DB under the selected profile and screening protocol identities.
+- ordered queried pairs plus known, unknown, and disclosed pair sets.
+- per-shape successful coverage and disclosed incumbents.
+- candidate coverage across queried shapes.
+- candidate preparation charged once across shapes.
+- pair-timing and total simulated-time ledgers.
+- a serializable summary with unresolved shapes and per-shape state.
 
-Historical directed/control candidates may be used as hidden exact-query responses. Their candidate sequence must not be exposed as a proof-eligible proposal stream.
+`query_pair()` records only the exact requested pair. By default it inserts a known positive, rejection, build failure, or validation failure into the simulated DB. Staged policies may query with `disclose=False`, charge probe time, and call `disclose_pair()` only when the pair earns main-protocol evidence. Positive top-ups use `add_screening_samples()`. All evidence and pair-time methods reject calls for unqueried pairs. Repeated queries and initial disclosures are idempotent.
+
+If an exact pair is absent from the matrix, the query is recorded as unknown and no timing or failure evidence is inserted. No neighboring shape or candidate can answer it. The existing one-shape stream simulator now runs on this same state with a one-member shape set.
+
+Historical directed/control candidates may be used as hidden exact-query responses. Their candidate sequence and the state's complete candidate catalog must not be exposed to a proof-eligible blind proposal policy. Declared non-blind experiments may expose the imported catalog while retaining exact-pair query causality.
 
 ## Proof-Eligible And Diagnostic Streams
 
@@ -78,11 +91,13 @@ CSV candidate streams require `--diagnostic-pool`. Output records `proof_eligibl
 - a reserved hot-confirmation budget.
 - final hot-loop launches.
 
-Preparation wall time is modeled as:
+Preparation wall time for each admitted preparation call is modeled as:
 
 ```text
-ceil(selected_candidates / prepare_workers) * prepare_seconds_per_candidate
+ceil(newly_prepared_candidates / prepare_workers) * prepare_seconds_per_candidate
 ```
+
+A candidate already prepared for another shape has zero additional preparation cost. Candidate preparation and candidate-shape timing remain separate ledgers.
 
 Launch cost is derived from shape FLOPs and the exact measured GFLOP/s of the queried candidate.
 
@@ -99,7 +114,7 @@ Search stops before the confirmation reserve. Finalists are ranked from queried 
 
 ## Query-Causal Search State
 
-Each replay seed uses a fresh temporary SQLite database. Proposal shortlisting can consume only rows inserted earlier in that replay.
+Each replay seed uses a fresh temporary SQLite database owned by `ExactOracleReplayState`. Proposal shortlisting can consume only rows inserted earlier in that replay. Querying with deferred disclosure does not make the pair visible to DB-backed policy components.
 
 This preserves causal ordering for:
 - surrogate training.
@@ -173,7 +188,7 @@ Here `1200s` is the campaign's soft admission budget. The `1800s` outer timeout 
 
 ## Limitations
 
-- Exact replay can score only historical candidate hashes.
+- Exact replay can score only historical candidate-shape pairs.
 - A historical candidate stream evaluates selection policy, not the ability of a new generator to produce unseen candidates.
 - Simulated preparation cost is configurable and should be calibrated from comparable real campaigns.
 - Screening evidence can be noisy. Simulated replay cannot reconstruct unrecorded timing distributions.

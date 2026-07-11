@@ -153,7 +153,7 @@ The repository already provides:
 - staged probing, screening stabilization, adaptive top-ups, and hot confirmation.
 - measured candidate cost attribution and analytical cost-aware preparation ordering.
 - neighbor-seeded `repair-outliers` over the complete grid.
-- exact-hash replay against historical SQLite evidence.
+- shared one-shape and multi-shape exact-oracle replay state with query-causal DB evidence, exact unknown-pair handling, per-shape incumbents, candidate coverage, and one-time candidate preparation across shapes.
 - complete GridBased preview/write checks requiring full shape coverage, current validation, and registered artifacts.
 
 These mechanisms are components. The production multi-shape controller that coordinates them over the entire grid is not yet implemented.
@@ -166,13 +166,7 @@ Use the migrated retained DB as an exact candidate-shape timing oracle. Simulati
 
 A missing candidate-shape pair is unknown. Do not fill it with a neighbor's value, a surrogate prediction, or a hidden incumbent. Predictions may choose the next query but may not become oracle answers.
 
-The existing one-shape replay is insufficient for this experiment because it models one shape and one candidate stream. Multi-shape replay must represent:
-- a shared candidate catalog.
-- a matrix of known, unknown, and queried candidate-shape pairs.
-- cross-shape promotion and transfer decisions.
-- compilation reuse when one candidate is queried on several shapes.
-- per-shape incumbents, regret, uncertainty, and unresolved status.
-- full-grid repair and final confirmation reserves.
+`ExactOracleReplayState` now provides the shared candidate catalog, exact shape-by-candidate matrix, known/unknown/queried/disclosed pair state, query-causal simulated DB, per-shape incumbents and unresolved status, candidate coverage, and separate shared-preparation and pair-timing ledgers. The one-shape simulator uses the same state with one registered shape. Policy drivers still need to implement cross-shape promotion, transfer, budget allocation, regret trajectories, repair reserves, and final-confirmation decisions.
 
 ### Policy Comparisons
 
@@ -205,11 +199,9 @@ Simulation evaluates allocation over the known oracle, not the ability to genera
 
 ## Remaining Implementation
 
-### Multi-Shape Campaign And Replay State
+### Multi-Shape Campaign State
 
-Implement a shared grid campaign state that owns per-shape incumbents, queried pairs, candidate coverage, cluster assignments, promotion queues, budgets, and checkpoints. One-shape execution should use this controller with one shape rather than a separate algorithm.
-
-Extend replay from one shape to an exact candidate-shape matrix with query-causal insertion into a simulated campaign DB. Preserve unknown pairs and account for shared candidate preparation separately from pair timing.
+Implement the policy/controller layer that owns cluster assignments, promotion queues, global and per-phase budgets, regret trajectories, repair and confirmation reserves, and checkpoints. One-shape policy execution should use this controller with one shape rather than a separate algorithm.
 
 ### Staged Shape Evaluation
 
@@ -265,6 +257,6 @@ The final report must distinguish gains from imported candidates, gains from gen
 
 ## Immediate Next Steps
 
-- Implement the multi-shape exact-oracle replay state and independent one-shape baseline.
+- Implement the independent one-shape policy baseline on the shared replay state.
 - Add nearest-shape transfer and representative-cluster policies over the same oracle snapshot.
 - Define equal-budget regret and unresolved-shape reports.
