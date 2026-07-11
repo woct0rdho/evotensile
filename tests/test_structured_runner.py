@@ -4,12 +4,13 @@ import time
 from pathlib import Path
 from textwrap import dedent
 
-from evotensile import scheduler as scheduler_module
 from evotensile.adaptive_retime import AdaptivePolicy, ProbePolicy
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
-from evotensile.scheduler import ScheduleResult, execute_schedule
+from evotensile.scheduler import execute_schedule
+from evotensile.scheduling import preparation as preparation_module
+from evotensile.scheduling.models import ScheduleResult
 from evotensile.shapes import pilot_100_shapes
 from evotensile.structured_runner import (
     RunnablePair,
@@ -21,7 +22,7 @@ from evotensile.structured_runner import (
     validate_validation_samples,
 )
 from evotensile.subprocess_utils import run_logged_process
-from tests.helpers import sample_candidates
+from tests.helpers import fake_build_tensile, fake_structured_runner, sample_candidates
 
 
 def test_timed_out_process_kills_descendants(tmp_path: Path):
@@ -58,152 +59,6 @@ def test_timed_out_process_kills_descendants(tmp_path: Path):
     assert returncode == 124
     assert timed_out
     assert not marker.exists()
-
-
-def _fake_structured_runner(path: Path) -> Path:
-    script = path / "fake_structured_runner.py"
-    script.write_text(
-        dedent(
-            """\
-            #!/usr/bin/env python3
-            import argparse
-            import json
-            import os
-            import time
-            from pathlib import Path
-
-            p = argparse.ArgumentParser()
-            p.add_argument("--mode", choices=("validate", "benchmark"), required=True)
-            p.add_argument("--pairs")
-            p.add_argument("--output")
-            p.add_argument("--library-dir", default=None)
-            args, _ = p.parse_known_args()
-
-            events_path = os.environ.get("EVOTENSILE_TEST_PHASE_EVENTS")
-            if events_path:
-                with Path(events_path).open("a") as events:
-                    events.write(f"{args.mode}_start\\n")
-            active_dir = (
-                os.environ.get("EVOTENSILE_TEST_GPU_ACTIVE_DIR")
-                if args.mode == "benchmark"
-                else os.environ.get("EVOTENSILE_TEST_VALIDATION_ACTIVE_DIR")
-            )
-            active_path = Path(active_dir) if active_dir else None
-            if active_path is not None:
-                try:
-                    active_path.mkdir()
-                except FileExistsError:
-                    active_path.with_suffix(".overlap").write_text("overlap\\n")
-                time.sleep(0.2)
-
-            time_multipliers = json.loads(os.environ.get("EVOTENSILE_TEST_TIME_MULTIPLIERS", "{}"))
-            with open(args.pairs) as src, open(args.output, "w") as out:
-                for line in src:
-                    pair = json.loads(line)
-                    flops = 2.0 * pair["m"] * pair["n"] * pair["batch"] * pair["k"]
-                    if args.mode == "validate":
-                        out.write(
-                            json.dumps(
-                                {
-                                    "shape_id": pair["shape_id"],
-                                    "candidate_hash": pair["candidate_hash"],
-                                    "status": "ok",
-                                    "sample_index": 0,
-                                    "time_us": None,
-                                    "validation": "PASSED",
-                                    "solution_index": pair["library_solution_index"],
-                                },
-                                sort_keys=True,
-                            )
-                            + "\\n"
-                        )
-                    else:
-                        for sample_index in range(pair.get("num_benchmarks", 1)):
-                            multiplier = float(time_multipliers.get(pair["candidate_hash"], 1.0))
-                            time_us = max(1.0, flops / 1.0e9) * multiplier * (1.0 + sample_index * 0.001)
-                            out.write(
-                                json.dumps(
-                                    {
-                                        "shape_id": pair["shape_id"],
-                                        "candidate_hash": pair["candidate_hash"],
-                                        "status": "ok",
-                                        "sample_index": sample_index,
-                                        "time_us": time_us,
-                                        "validation": "NO_CHECK",
-                                        "solution_index": pair["library_solution_index"],
-                                    },
-                                    sort_keys=True,
-                                )
-                                + "\\n"
-                            )
-            if active_path is not None and active_path.exists():
-                active_path.rmdir()
-            if events_path:
-                with Path(events_path).open("a") as events:
-                    events.write(f"{args.mode}_end\\n")
-            """
-        ),
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-    return script
-
-
-def _fake_build_tensile(path: Path) -> Path:
-    script = path / "fake_tensile_build.py"
-    script.write_text(
-        dedent(
-            """\
-            #!/usr/bin/env python3
-            import os
-            import sys
-            import time
-            from pathlib import Path
-
-            import yaml
-
-            events_path = os.environ.get("EVOTENSILE_TEST_PHASE_EVENTS")
-            if events_path:
-                with Path(events_path).open("a") as events:
-                    events.write("compile_start\\n")
-            config_path, out = Path(sys.argv[1]), Path(sys.argv[2])
-            out.mkdir(parents=True, exist_ok=True)
-            time.sleep(float(os.environ.get("EVOTENSILE_TEST_BUILD_SLEEP_S", "0")))
-            if "--build-only" not in sys.argv:
-                sys.exit(9)
-            config = yaml.safe_load(config_path.read_text())
-            problem = config["BenchmarkProblems"][0][1]
-            problem_sizes = problem["BenchmarkFinalParameters"][0]["ProblemSizes"]
-            solutions = []
-            for i, item in enumerate(problem["ForkParameters"][0]["Groups"][0]):
-                sol = dict(item)
-                mi = sol["MatrixInstruction"]
-                sol["MatrixInstruction"] = mi[:4]
-                sol["MIWaveTile"] = [mi[5], mi[6]]
-                sol["MIWaveGroup"] = [mi[7], mi[8]]
-                sol["SolutionIndex"] = i
-                sol["KernelNameMin"] = f"Kernel{i}"
-                solutions.append(sol)
-            final = [{"MinimumRequiredVersion": "5.0.0"}, {"ProblemSizes": problem_sizes}, *solutions]
-            (out / "00_Final.yaml").write_text(yaml.safe_dump(final, sort_keys=False))
-            lib = out / "4_LibraryClient" / "library" / "gfx1151"
-            lib.mkdir(parents=True, exist_ok=True)
-            (lib / "TensileLibrary_gfx1151.yaml").write_text("---\\nsolutions: []\\n")
-            (lib / "Kernels.so-000-gfx1151.hsaco").write_bytes(b"fake")
-            if events_path:
-                with Path(events_path).open("a") as events:
-                    events.write("compile_end\\n")
-            sys.exit(int(os.environ.get("EVOTENSILE_TEST_BUILD_RETURNCODE", "0")))
-            """
-        ),
-        encoding="utf-8",
-    )
-    script.chmod(0o755)
-    return script
-
-
-fake_structured_runner = _fake_structured_runner
-fake_build_tensile = _fake_build_tensile
 
 
 def _pair() -> RunnablePair:
@@ -352,8 +207,8 @@ def test_run_structured_phase_passes_explicit_mode_and_backend(tmp_path: Path):
 
 
 def test_parallel_prepare_finishes_before_serial_benchmark_queue(tmp_path: Path, monkeypatch):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
     shape = pilot_100_shapes()[0]
@@ -388,22 +243,22 @@ def test_parallel_prepare_finishes_before_serial_benchmark_queue(tmp_path: Path,
 
 
 def test_cost_aware_prepare_order_does_not_change_timing_order(tmp_path: Path, monkeypatch):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
     shape = pilot_100_shapes()[0]
     prepared_indices: list[int] = []
-    original_prepare = scheduler_module._prepare_current_batch
+    original_prepare = preparation_module._prepare_current_batch
 
-    def record_prepare(db, batch, **kwargs):
+    def record_prepare(context, batch, **kwargs):
         prepared_indices.append(batch.batch_index)
-        return original_prepare(db, batch, **kwargs)
+        return original_prepare(context, batch, **kwargs)
 
     weights = {candidates[0].hash: 1.0, candidates[1].hash: 2.0}
-    monkeypatch.setattr(scheduler_module, "_prepare_current_batch", record_prepare)
+    monkeypatch.setattr(preparation_module, "_prepare_current_batch", record_prepare)
     monkeypatch.setattr(
-        scheduler_module,
+        preparation_module,
         "predicted_batch_prepare_weight",
         lambda batch_candidates, shapes, workgroup_processor_count: weights[batch_candidates[0].hash],
     )
@@ -429,8 +284,8 @@ def test_cost_aware_prepare_order_does_not_change_timing_order(tmp_path: Path, m
 
 
 def test_prepare_waves_allow_coordinator_to_stop_before_next_wave(tmp_path: Path):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(3)
     shape = pilot_100_shapes()[0]
@@ -460,8 +315,8 @@ def test_prepare_waves_allow_coordinator_to_stop_before_next_wave(tmp_path: Path
 
 
 def test_validation_worker_cap_serializes_gpu_validation(tmp_path: Path, monkeypatch):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(4)
     shape = pilot_100_shapes()[0]
@@ -489,8 +344,8 @@ def test_validation_worker_cap_serializes_gpu_validation(tmp_path: Path, monkeyp
 
 
 def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
     shape = pilot_100_shapes()[0]
@@ -505,7 +360,7 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
         decision_calls += 1
         return [(3, [shape], candidates)] if decision_calls == 1 else []
 
-    monkeypatch.setattr("evotensile.scheduler._adaptive_topup_groups", forced_topup)
+    monkeypatch.setattr("evotensile.scheduling.timing._adaptive_topup_groups", forced_topup)
 
     result = execute_schedule(
         db,
@@ -541,8 +396,8 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
 
 
 def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, monkeypatch):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
     shape = pilot_100_shapes()[0]
@@ -617,8 +472,8 @@ def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, mon
 
 
 def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_path: Path, monkeypatch):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
     shape = pilot_100_shapes()[0]
@@ -689,8 +544,8 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
 
 
 def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
     candidates = sample_candidates(2)
@@ -740,8 +595,8 @@ def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch
 
 
 def test_singleton_nonzero_build_salvages_runnable_artifact(tmp_path: Path, monkeypatch):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     monkeypatch.setenv("EVOTENSILE_TEST_BUILD_RETURNCODE", "2")
 
@@ -768,8 +623,8 @@ def test_singleton_nonzero_build_salvages_runnable_artifact(tmp_path: Path, monk
 
 
 def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path: Path):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
     shapes = pilot_100_shapes()[:2]
@@ -814,8 +669,8 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
 
 
 def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path):
-    fake_tensile = _fake_build_tensile(tmp_path)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]
@@ -904,7 +759,7 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
         encoding="utf-8",
     )
     fake_tensile.chmod(0o755)
-    fake_runner = _fake_structured_runner(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(3)
     shape = pilot_100_shapes()[0]
@@ -954,7 +809,7 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
 
 
 def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
-    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
     runner = tmp_path / "bad_runner.py"
     runner.write_text(
         dedent(
@@ -1007,7 +862,7 @@ def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
 
 
 def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path):
-    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
     runner = tmp_path / "wrong_solution_runner.py"
     runner.write_text(
         dedent(
@@ -1064,7 +919,7 @@ def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path
 
 
 def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
-    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
     runner = tmp_path / "incomplete_runner.py"
     runner.write_text(
         dedent(
@@ -1122,7 +977,7 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
 
 
 def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: Path):
-    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
     runner = tmp_path / "duplicate_runner.py"
     runner.write_text(
         dedent(
@@ -1182,7 +1037,7 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
 
 
 def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(tmp_path: Path):
-    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
     runner = tmp_path / "nonzero_runner.py"
     runner.write_text(
         dedent(
@@ -1243,7 +1098,7 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
 
 
 def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
-    fake_tensile = _fake_build_tensile(tmp_path)
+    fake_tensile = fake_build_tensile(tmp_path)
     runner = tmp_path / "slow_runner.py"
     runner.write_text(
         dedent(
@@ -1352,7 +1207,7 @@ def test_structured_maps_renumbered_normalized_final_yaml_solution(tmp_path: Pat
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         tensilelite_bin=script,
-        runner_bin=_fake_structured_runner(tmp_path),
+        runner_bin=fake_structured_runner(tmp_path),
         keep_going=True,
     )
 
@@ -1417,7 +1272,7 @@ def test_structured_records_rejected_candidate_from_final_yaml(tmp_path: Path):
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         tensilelite_bin=script,
-        runner_bin=_fake_structured_runner(tmp_path),
+        runner_bin=fake_structured_runner(tmp_path),
         keep_going=True,
     )
 

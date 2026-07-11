@@ -10,29 +10,28 @@ from .database import EvoTensileDB
 from .profile import PROFILES, TargetProfile, get_profile
 from .protocol import BenchmarkProtocol
 from .runner import DEFAULT_TENSILELITE_BIN
-from .scheduler import (
-    DEFAULT_COMPILE_THREADS,
+from .scheduler import DEFAULT_COMPILE_THREADS, execute_schedule
+from .scheduling.models import ScheduleResult
+from .scheduling.planning import production_candidate_batch_size
+from .search.acquisition import (
     DEFAULT_LINKAGE_MAX_CLUSTERS,
     DEFAULT_LINKAGE_MIN_SAMPLES,
     DEFAULT_LINKAGE_ORDINAL_BINS,
     DEFAULT_LINKAGE_TRUNCATION_TAU,
     PROPOSAL_MODES,
-    ScheduleResult,
-    detect_underperforming_shapes,
-    execute_schedule,
-    production_candidate_batch_size,
     propose_candidates,
-    repair_seed_candidates,
 )
 from .search.coverage import candidate_coverage
 from .search.evidence import load_proposal_evidence_snapshot
 from .search.family import family_descriptor_counts, load_family_archive
 from .search.grid_evidence import GRID_OBJECTIVES, GridObjective
 from .search.learned_linkage import learn_linkage_models_from_snapshot
+from .search.outlier_repair import detect_underperforming_shapes, repair_seed_candidates
 from .search.random_search import initial_random_batch
 from .search_policy import SEARCH_POLICIES, SearchPolicy, get_search_policy
 from .search_space import DOMAINS, MATRIX_INSTRUCTIONS, macro_tile
 from .shapes import parse_shape
+from .subprocess_utils import resolve_timeout
 from .utils import dedupe_candidates
 
 
@@ -83,14 +82,6 @@ def _timing_policies(args: argparse.Namespace) -> tuple[AdaptivePolicy | None, P
             min_survivors=args.adaptive_probe_min_survivors,
         ),
     )
-
-
-def _timeout_arg(value: float | None, default: float | None) -> float | None:
-    if value is None:
-        return default
-    if value <= 0:
-        return None
-    return value
 
 
 def _resolve_search_policy(args: argparse.Namespace, profile: TargetProfile) -> SearchPolicy | None:
@@ -299,8 +290,8 @@ def _schedule_context(args: argparse.Namespace) -> ScheduleCliContext:
         protocol_hash=profile.benchmark_protocol_hash(protocol),
         shapes=_parse_shapes(args, profile),
         runner_bin=args.runner_bin or profile.default_runner_bin,
-        build_timeout=_timeout_arg(args.build_timeout, profile.default_build_timeout_s),
-        runner_timeout=_timeout_arg(args.runner_timeout, profile.default_runner_timeout_s),
+        build_timeout=resolve_timeout(args.build_timeout, profile.default_build_timeout_s),
+        runner_timeout=resolve_timeout(args.runner_timeout, profile.default_runner_timeout_s),
         adaptive_policy=adaptive_policy,
         probe_policy=probe_policy,
     )

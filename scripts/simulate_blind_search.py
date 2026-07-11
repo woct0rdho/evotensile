@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 from evotensile.profile import DEFAULT_PROFILE
@@ -110,7 +111,7 @@ def main() -> int:
         "proof_eligible": not args.diagnostic_pool,
         "oracle_candidates": len(oracle),
         "stream_candidates": len(stream),
-        "cost_model": cost.__dict__,
+        "cost_model": asdict(cost),
         "results": [result.summary() for result in results],
         "successes": sum(result.reached_target for result in results),
     }

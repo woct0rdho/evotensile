@@ -2,7 +2,7 @@
 
 EvoTensile is a smart-search autotuner for TensileLite. The implemented pilot target is gfx1151 FP16 NT HHS GridBased GEMM tuning for the 100-shape grid in the `gfx1151-nt-hhs` profile.
 
-This file is the live project log and forward plan. Stable design details live in focused docs. The current one-shape and production-grid readiness audit is in `docs/one_shape_workflow_review.md`.
+This file is the live project log and forward plan. Stable design details live in focused docs.
 
 ## Current Status
 

@@ -16,8 +16,7 @@ from evotensile.search.screening_stabilize import (
 )
 from evotensile.shapes import pilot_100_shapes
 from evotensile.structured_runner import RunnablePair, StructuredRunOutput
-from tests.helpers import sample_candidates
-from tests.test_structured_runner import fake_build_tensile, fake_structured_runner
+from tests.helpers import fake_build_tensile, fake_structured_runner, sample_candidates
 
 
 def _screening_protocol():

@@ -88,16 +88,6 @@ class ReplayResult:
         }
 
 
-def _candidate_from_payload(payload: str) -> Candidate:
-    data = json.loads(payload)
-    return Candidate(
-        params=data["params"],
-        source=data.get("source", "oracle"),
-        parent_hashes=tuple(data.get("parent_hashes", [])),
-        proposal_metadata=data.get("proposal_metadata", {}),
-    )
-
-
 def load_db_oracle(
     path: str | Path,
     *,
@@ -140,7 +130,7 @@ def load_db_oracle(
             status = statuses[-1]
         records.append(
             OracleRecord(
-                candidate=_candidate_from_payload(payloads[candidate_hash]),
+                candidate=Candidate.from_mapping(json.loads(payloads[candidate_hash])),
                 status=status,
                 screening_gflops=screening_gflops,
                 order=order[candidate_hash],

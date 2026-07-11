@@ -4,6 +4,12 @@ import subprocess
 from typing import IO
 
 
+def resolve_timeout(value: float | None, default: float | None) -> float | None:
+    if value is None:
+        return default
+    return None if value <= 0 else value
+
+
 def run_logged_process(
     command: list[str],
     *,
