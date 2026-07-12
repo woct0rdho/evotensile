@@ -3,7 +3,11 @@ import math
 import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+
+import numpy as np
+from joblib import Parallel, delayed
+from sklearn.ensemble import ExtraTreesRegressor
+from sklearn.feature_extraction import DictVectorizer
 
 from evotensile.campaign.controller import CampaignControllerState
 from evotensile.campaign.evaluator import PairEvaluationOutcome
@@ -14,10 +18,6 @@ from evotensile.search.evidence import ProposalEvidenceSnapshot
 from evotensile.search.measured_cost import CandidateMeasuredCost
 from evotensile.search.pair_model import ContextualPairModel, PairModelConfiguration, PairPrediction
 from evotensile.search.surrogate import candidate_shape_features
-
-if TYPE_CHECKING:
-    from sklearn.ensemble import ExtraTreesRegressor
-    from sklearn.feature_extraction import DictVectorizer
 
 
 @dataclass(frozen=True)
@@ -265,53 +265,73 @@ class BundleCostModel:
         artifact_shapes: Sequence[Shape] | None = None,
         prepared_shape_ids: set[str],
     ) -> BundleCostEstimate:
-        if not shapes:
+        return self.estimate_many(
+            ((candidate, tuple(shapes), tuple(artifact_shapes or shapes), frozenset(prepared_shape_ids)),)
+        )[0]
+
+    def estimate_many(
+        self,
+        requests: Sequence[tuple[Candidate, tuple[Shape, ...], tuple[Shape, ...], frozenset[str]]],
+    ) -> tuple[BundleCostEstimate, ...]:
+        if any(not shapes for _, shapes, _, _ in requests):
             raise ValueError("bundle cost estimate requires shapes")
-        active_artifact_shapes = tuple(artifact_shapes or shapes)
-        requested_shape_ids = {shape.id for shape in active_artifact_shapes}
-        new_artifact_shapes = requested_shape_ids - prepared_shape_ids
-        preparation_required = bool(new_artifact_shapes)
-        artifact_expansion_required = bool(prepared_shape_ids and new_artifact_shapes)
-        preparation_s = 0.0
-        if preparation_required:
-            preparation_s = self._prepare_model.predict(self._bundle_features(candidate, active_artifact_shapes))
-            if not self._prepare_model.fitted:
+        pair_features: dict[tuple[str, str], dict[str, float | str]] = {}
+        for candidate, shapes, _, _ in requests:
+            for shape in shapes:
+                pair_features.setdefault(
+                    (candidate.hash, shape.id),
+                    candidate_shape_features(
+                        candidate,
+                        shape,
+                        workgroup_processor_count=self.workgroup_processor_count,
+                    ),
+                )
+        pair_keys = tuple(pair_features)
+        validation_values = dict(
+            zip(pair_keys, self._validation_model.predict_many([pair_features[key] for key in pair_keys]), strict=True)
+        )
+        timing_values = dict(
+            zip(pair_keys, self._timing_model.predict_many([pair_features[key] for key in pair_keys]), strict=True)
+        )
+        preparation_indices = []
+        preparation_rows = []
+        preparation_required_by_index = []
+        artifact_expansion_required_by_index = []
+        for index, (candidate, _, artifact_shapes, prepared_shape_ids) in enumerate(requests):
+            requested_shape_ids = {shape.id for shape in artifact_shapes}
+            new_artifact_shapes = requested_shape_ids - prepared_shape_ids
+            preparation_required = bool(new_artifact_shapes)
+            preparation_required_by_index.append(preparation_required)
+            artifact_expansion_required_by_index.append(bool(prepared_shape_ids and new_artifact_shapes))
+            if preparation_required:
+                preparation_indices.append(index)
+                preparation_rows.append(self._bundle_features(candidate, artifact_shapes))
+        preparation_values = dict(
+            zip(preparation_indices, self._prepare_model.predict_many(preparation_rows), strict=True)
+        )
+        estimates = []
+        for index, (candidate, shapes, artifact_shapes, _) in enumerate(requests):
+            preparation_s = preparation_values.get(index, 0.0)
+            if preparation_required_by_index[index] and not self._prepare_model.fitted:
                 weight = statistics.fmean(
                     predicted_candidate_prepare_weight(
                         candidate,
                         shape,
                         workgroup_processor_count=self.workgroup_processor_count,
                     )
-                    for shape in active_artifact_shapes
+                    for shape in artifact_shapes
                 )
                 preparation_s *= weight / max(self._prepare_weight_reference, 1e-12)
-        validation_s = sum(
-            self._validation_model.predict(
-                candidate_shape_features(
-                    candidate,
-                    shape,
-                    workgroup_processor_count=self.workgroup_processor_count,
+            estimates.append(
+                BundleCostEstimate(
+                    preparation_s=max(0.0, preparation_s),
+                    validation_s=max(0.0, sum(validation_values[(candidate.hash, shape.id)] for shape in shapes)),
+                    timing_s=max(0.0, sum(timing_values[(candidate.hash, shape.id)] for shape in shapes)),
+                    preparation_required=preparation_required_by_index[index],
+                    artifact_expansion_required=artifact_expansion_required_by_index[index],
                 )
             )
-            for shape in shapes
-        )
-        timing_s = sum(
-            self._timing_model.predict(
-                candidate_shape_features(
-                    candidate,
-                    shape,
-                    workgroup_processor_count=self.workgroup_processor_count,
-                )
-            )
-            for shape in shapes
-        )
-        return BundleCostEstimate(
-            preparation_s=max(0.0, preparation_s),
-            validation_s=max(0.0, validation_s),
-            timing_s=max(0.0, timing_s),
-            preparation_required=preparation_required,
-            artifact_expansion_required=artifact_expansion_required,
-        )
+        return tuple(estimates)
 
     def _bundle_features(self, candidate: Candidate, shapes: Sequence[Shape]) -> dict[str, float | str]:
         rows = [
@@ -370,11 +390,6 @@ class _CostRegressor:
             self._vectorizer = None
             self._model = None
             return
-        try:
-            from sklearn.ensemble import ExtraTreesRegressor
-            from sklearn.feature_extraction import DictVectorizer
-        except ImportError as exc:  # pragma: no cover - exercised only in minimal installations
-            raise RuntimeError("bundle cost fitting requires scikit-learn") from exc
         self._vectorizer = DictVectorizer(sparse=False)
         matrix = self._vectorizer.fit_transform(rows)
         self._model = ExtraTreesRegressor(
@@ -389,13 +404,24 @@ class _CostRegressor:
         self._model.fit(matrix, targets)
 
     def predict(self, row: Mapping[str, float | str]) -> float:
+        return self.predict_many((row,))[0]
+
+    def predict_many(self, rows: Sequence[Mapping[str, float | str]]) -> tuple[float, ...]:
+        if not rows:
+            return ()
         if self._model is None or self._vectorizer is None:
-            return self._fallback
-        matrix = self._vectorizer.transform([row])
-        tree_values = [float(estimator.predict(matrix)[0]) for estimator in self._model.estimators_]
-        median = statistics.median(tree_values)
-        mad = statistics.median(abs(value - median) for value in tree_values)
-        return max(self._fallback * 0.25, median + 2.0 * mad)
+            return (self._fallback,) * len(rows)
+        matrix = self._vectorizer.transform(rows)
+        tree_values = np.asarray(
+            Parallel(n_jobs=self.jobs, prefer="threads")(
+                delayed(estimator.predict)(matrix) for estimator in self._model.estimators_
+            ),
+            dtype=float,
+        )
+        medians = np.median(tree_values, axis=0)
+        mads = np.median(np.abs(tree_values - medians), axis=0)
+        predictions = np.maximum(self._fallback * 0.25, medians + 2.0 * mads)
+        return tuple(float(value) for value in predictions)
 
 
 def select_singleton_bundle_pool(
@@ -542,7 +568,8 @@ def plan_candidate_bundles(
         if any(not math.isfinite(value) or not 0.0 <= value <= 1.0 for value in repair_probability.values()):
             raise ValueError("bundle repair probabilities must be finite values in [0, 1]")
     prediction_by_key = {(prediction.shape_id, prediction.candidate_hash): prediction for prediction in predictions}
-    options = []
+    option_specs = []
+    cost_requests = []
     for candidate_hash, candidate in sorted(candidate_by_hash.items()):
         pair_predictions = [
             prediction_by_key[(shape.id, candidate_hash)]
@@ -575,20 +602,22 @@ def plan_candidate_bundles(
                 artifact_shape.id for shape in selected_shapes for artifact_shape in artifact_scope[shape.id]
             }
             artifact_shapes = tuple(shape_by_id[shape_id] for shape_id in sorted(artifact_shape_ids))
-            options.append(
-                CandidateBundle(
-                    candidate=candidate,
-                    shapes=selected_shapes,
-                    artifact_shapes=artifact_shapes,
-                    predictions=selected_predictions,
-                    cost=cost_model.estimate(
-                        candidate,
-                        selected_shapes,
-                        artifact_shapes=artifact_shapes,
-                        prepared_shape_ids=prepared_shape_ids,
-                    ),
-                )
-            )
+            option_specs.append((candidate, selected_shapes, artifact_shapes, selected_predictions))
+            cost_requests.append((candidate, selected_shapes, artifact_shapes, frozenset(prepared_shape_ids)))
+    options = [
+        CandidateBundle(
+            candidate=candidate,
+            shapes=selected_shapes,
+            artifact_shapes=artifact_shapes,
+            predictions=selected_predictions,
+            cost=cost,
+        )
+        for (candidate, selected_shapes, artifact_shapes, selected_predictions), cost in zip(
+            option_specs,
+            cost_model.estimate_many(cost_requests),
+            strict=True,
+        )
+    ]
     selected = _lazy_greedy_select(
         controller,
         options,

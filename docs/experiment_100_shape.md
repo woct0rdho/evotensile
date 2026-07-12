@@ -318,7 +318,25 @@ The zero-tolerance assignment uses 45 solutions. Optional consolidation produces
 - 30 solutions at 1% tolerance, with 0.072% mean measured loss and 0.966% worst loss.
 - 27 solutions at 2% tolerance, with 0.133% mean measured loss and 1.408% worst loss.
 
-`finalization/` is superseded by `finalization_v2/` because the first finalization did not force the original compatible winner into every same-session contender group. Its data remains compatible and retained, but production decisions must use `finalization_v2/deployment_*.json`.
+`finalization/` is superseded by `finalization_v2/` because the first finalization did not force the original compatible winner into every same-session contender group. Its data remains compatible and retained.
+
+### Post-Search Outlier Repair
+
+`round26_outlier_repair` used the post-search reserve on 12 shapes selected from the corrected finalization's fresh relative MAD, historical-reference shortfall, and specialist coverage. The optimized planner considered 150 measured and mutated candidates through 289 origin-target predictions rather than a 15,000-pair Cartesian grid. It selected 32 previously unknown exact pairs across 16 candidates. All 32 passed validation. Screening reported ten gains above one percent on six shapes.
+
+A fresh same-session 16-pair contender/control check confirmed positive gains on all six shapes, but this remained a focused check rather than deployment evidence. The complete `finalization_v3` therefore freshly retimed the full grid while forcing both the `finalization_v2` incumbent and original compatible winner into every shape group:
+- 300 exact candidate-shape pairs across 72 candidates.
+- all 300 pairs passed fresh hipBLASLt GPU-oracle validation.
+- 9,000 fresh main-protocol samples, 30 per pair.
+- five repair winners survived the complete session, improving 7.27%, 8.66%, 11.83%, 12.22%, and 14.70% over the mandatory `finalization_v2` controls. The sixth focused-check reversal disappeared and retained its old incumbent.
+- every selected pair in all four deployment artifacts has a registered artifact.
+
+The final zero-tolerance assignment uses 42 solutions and improves 67/100 shapes over fresh same-session original controls, with 47 gains of at least 1%, 3.79% mean gain, 0.57% median gain, and 30.77% maximum gain. Optional consolidation now produces:
+- 33 solutions at 0.5% tolerance, with 0.021% mean measured loss and 0.463% worst loss.
+- 28 solutions at 1% tolerance, with 0.073% mean measured loss and 0.777% worst loss.
+- 24 solutions at 2% tolerance, with 0.177% mean measured loss and 1.822% worst loss.
+
+`finalization_v3/` supersedes `finalization_v2/` for production review. Earlier finalization data remains compatible and retained.
 
 ### Convergence Criteria
 
@@ -340,7 +358,7 @@ The evidence also established important limits:
 - model predictions and screening incumbents are not production evidence.
 - nonzero deployment tolerance is useful only when it actually reduces the confirmed solution bank and its measured loss is acceptable.
 
-The practical configuration search is now converged under the stated criteria. Production decisions should use the fresh `finalization_v2` assignment rather than pooled historical rankings. The zero-tolerance assignment maximizes freshly confirmed speed. The 0.5%, 1%, and 2% artifacts provide explicit solution-count/loss tradeoffs for review. Production logic generation and any hipBLASLt rebuild or installation remain separate operational actions requiring explicit approval.
+The practical configuration search and dedicated outlier-repair reserve are now exhausted under the stated criteria. Production decisions should use the fresh `finalization_v3` assignment rather than pooled historical rankings or earlier finalizations. The zero-tolerance assignment maximizes freshly confirmed speed. The 0.5%, 1%, and 2% artifacts provide explicit solution-count/loss tradeoffs for review. Production logic generation and any hipBLASLt rebuild or installation remain separate operational actions requiring explicit approval.
 
 ## Artifact Index
 
@@ -362,6 +380,9 @@ The practical configuration search is now converged under the stated criteria. P
 - Practical campaign manifest: `out/grid100_production_search_20260712_manifest.json`.
 - Practical round plans/reports and compile cache: `out/grid100_production_search_20260712/`.
 - Superseded first finalization: `out/grid100_production_search_20260712/finalization/report.json`.
-- Production finalization report: `out/grid100_production_search_20260712/finalization_v2/report.json`.
-- Zero-tolerance assignment: `out/grid100_production_search_20260712/finalization_v2/deployment_0.000.json`.
-- Consolidated assignments: `out/grid100_production_search_20260712/finalization_v2/deployment_0.005.json`, `out/grid100_production_search_20260712/finalization_v2/deployment_0.010.json`, and `out/grid100_production_search_20260712/finalization_v2/deployment_0.020.json`.
+- Superseded pre-repair finalization: `out/grid100_production_search_20260712/finalization_v2/report.json`.
+- Outlier-repair report: `out/grid100_production_search_20260712/round26_outlier_repair/report.json`.
+- Focused repair confirmation: `out/grid100_production_search_20260712/round26_outlier_repair/confirmation/report.json`.
+- Production finalization report: `out/grid100_production_search_20260712/finalization_v3/report.json`.
+- Zero-tolerance assignment: `out/grid100_production_search_20260712/finalization_v3/deployment_0.000.json`.
+- Consolidated assignments: `out/grid100_production_search_20260712/finalization_v3/deployment_0.005.json`, `out/grid100_production_search_20260712/finalization_v3/deployment_0.010.json`, and `out/grid100_production_search_20260712/finalization_v3/deployment_0.020.json`.

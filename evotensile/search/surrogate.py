@@ -5,6 +5,9 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from sklearn.ensemble import ExtraTreesRegressor
+from sklearn.feature_extraction import DictVectorizer
+
 from evotensile.candidate import Candidate, Shape
 from evotensile.search.encoding import PARAM_NAMES, candidate_to_genome, hamming_distance
 from evotensile.search.evidence import ProposalEvidenceSnapshot
@@ -59,11 +62,6 @@ class GridCandidatePrediction:
 
 class ExtraTreesSurrogate:
     def __init__(self, *, seed: int = 12345, jobs: int, n_estimators: int = 192) -> None:
-        try:
-            from sklearn.ensemble import ExtraTreesRegressor
-            from sklearn.feature_extraction import DictVectorizer
-        except ImportError as exc:  # pragma: no cover - exercised only in minimal installations
-            raise RuntimeError("surrogate search requires scikit-learn") from exc
         if n_estimators <= 0:
             raise ValueError("surrogate estimator count must be positive")
         self._vectorizer = DictVectorizer(sparse=False)

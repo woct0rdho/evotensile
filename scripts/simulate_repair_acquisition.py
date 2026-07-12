@@ -57,28 +57,28 @@ def _seed(path, *, oracle, shapes, candidates, clustering):
     return evaluator, controller, seed.result
 
 
-def _model(outcomes, *, estimators, seed):
+def _model(outcomes, *, estimators, seed, jobs):
     model = ContextualPairModel(
         workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
         configuration=PairModelConfiguration(
             n_estimators=estimators,
             min_performance_rows=24,
             seed=seed,
-            jobs=DEFAULT_PROFILE.default_surrogate_jobs,
+            jobs=jobs,
         ),
     )
     model.fit(outcomes)
     return model
 
 
-def _cost_model(seed):
+def _cost_model(seed, *, jobs):
     return BundleCostModel(
         workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
         fallback_preparation_s=0.1,
         fallback_validation_s=0.0,
         fallback_timing_s=0.001,
         seed=seed,
-        jobs=DEFAULT_PROFILE.default_surrogate_jobs,
+        jobs=jobs,
     )
 
 
@@ -117,10 +117,18 @@ def main():
     parser.add_argument("--pair-budget", type=int, default=385)
     parser.add_argument("--repair-pairs", type=int, default=12)
     parser.add_argument("--estimators", type=int, default=96)
+    parser.add_argument(
+        "--surrogate-jobs",
+        type=int,
+        default=DEFAULT_PROFILE.default_surrogate_jobs,
+        help="Parallel model jobs; use -1 for all available CPUs",
+    )
     parser.add_argument("--seed", type=int, default=12345)
     args = parser.parse_args()
     if args.repair_pairs <= 0 or args.repair_pairs >= args.pair_budget:
         raise ValueError("repair pair reserve must be positive and smaller than total pair budget")
+    if args.surrogate_jobs == 0:
+        raise ValueError("surrogate jobs cannot be zero")
     shapes = pilot_100_shapes()
     oracle = load_db_oracle_matrix(args.db, shapes=shapes)
     candidate_by_hash = {record.candidate.hash: record.candidate for record in oracle.values()}
@@ -151,14 +159,19 @@ def main():
                 clustering=clustering,
             )
             initial_pairs = len(controller.queried_pairs)
-            model = _model(seed_result.outcomes, estimators=args.estimators, seed=args.seed)
+            model = _model(
+                seed_result.outcomes,
+                estimators=args.estimators,
+                seed=args.seed,
+                jobs=args.surrogate_jobs,
+            )
             predictions = model.predict([(candidate, shape) for candidate in candidates for shape in shapes])
             broad_plan = plan_candidate_bundles(
                 controller,
                 candidates=candidates,
                 shapes=shapes,
                 predictions=predictions,
-                cost_model=_cost_model(args.seed + 1),
+                cost_model=_cost_model(args.seed + 1, jobs=args.surrogate_jobs),
                 policy=_broad_policy(broad_pairs),
             )
             broad_result = evaluator.evaluate(
@@ -167,7 +180,12 @@ def main():
             )
             broad_result.apply(controller)
             observations = (*seed_result.outcomes, *broad_result.outcomes)
-            continuation_model = _model(observations, estimators=args.estimators, seed=args.seed + 2)
+            continuation_model = _model(
+                observations,
+                estimators=args.estimators,
+                seed=args.seed + 2,
+                jobs=args.surrogate_jobs,
+            )
             extra = {
                 "broad_pairs": len(broad_plan.timing_requests),
                 "reserve_pairs": args.repair_pairs,
@@ -181,7 +199,7 @@ def main():
                     candidates=candidates,
                     shapes=shapes,
                     predictions=continuation_predictions,
-                    cost_model=_cost_model(args.seed + 3),
+                    cost_model=_cost_model(args.seed + 3, jobs=args.surrogate_jobs),
                     policy=_broad_policy(args.repair_pairs),
                 )
                 continuation_result = evaluator.evaluate(
@@ -218,9 +236,7 @@ def main():
                     broad_candidates=broad_candidates,
                     policy=repair_policy,
                 )
-                repair_predictions = repair_model.predict(
-                    [(candidate, shape) for candidate in pool.candidates for shape in shapes]
-                )
+                repair_predictions = repair_model.predict(pool.prediction_requests(shapes))
                 prepared_before = {
                     candidate_hash: set(shape_ids)
                     for candidate_hash, shape_ids in controller.prepared_artifact_shapes.items()
@@ -231,7 +247,7 @@ def main():
                     shapes=shapes,
                     deficits=deficits,
                     predictions=repair_predictions,
-                    cost_model=_cost_model(args.seed + 3),
+                    cost_model=_cost_model(args.seed + 3, jobs=args.surrogate_jobs),
                     acquisition_policy=BundleAcquisitionPolicy(
                         improvement_weight=0.0,
                         coverage_weight=0.0,
