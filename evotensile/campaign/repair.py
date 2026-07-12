@@ -123,6 +123,15 @@ class RepairCandidatePool:
     candidates: tuple[Candidate, ...]
     origins: tuple[RepairCandidateOrigin, ...]
 
+    def prediction_requests(self, shapes: Sequence[Shape]) -> tuple[tuple[Candidate, Shape], ...]:
+        shape_by_id = {shape.id: shape for shape in shapes}
+        candidate_by_hash = {candidate.hash: candidate for candidate in self.candidates}
+        requests = []
+        for origin in self.origins:
+            candidate = candidate_by_hash[origin.candidate_hash]
+            requests.extend((candidate, shape_by_id[shape_id]) for shape_id in origin.target_shape_ids)
+        return tuple(requests)
+
     def to_dict(self) -> dict[str, object]:
         return {
             "candidate_hashes": [candidate.hash for candidate in self.candidates],

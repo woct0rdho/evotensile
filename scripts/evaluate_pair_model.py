@@ -7,6 +7,8 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
+
 from evotensile.campaign.evaluator import PairEvaluationOutcome
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.scheduling.models import PairRequest
@@ -164,8 +166,6 @@ def _nearest_predictions(train, test):
 
 
 def _low_rank_predictions(train, test, *, rank=8, iterations=8):
-    import numpy as np
-
     candidate_ids = sorted({outcome.request.candidate.hash for outcome in (*train, *test)})
     shape_ids = sorted({outcome.request.shape.id for outcome in (*train, *test)})
     candidate_index = {candidate_hash: index for index, candidate_hash in enumerate(candidate_ids)}

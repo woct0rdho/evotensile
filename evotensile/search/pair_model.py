@@ -5,15 +5,16 @@ import statistics
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypedDict
+from typing import TypedDict
+
+import numpy as np
+from joblib import Parallel, delayed
+from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
+from sklearn.feature_extraction import DictVectorizer
 
 from evotensile.campaign.evaluator import PairEvaluationOutcome
 from evotensile.candidate import Candidate, Shape
 from evotensile.search.surrogate import candidate_shape_features
-
-if TYPE_CHECKING:
-    from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
-    from sklearn.feature_extraction import DictVectorizer
 
 
 class ExtraTreesRegressorParameters(TypedDict):
@@ -201,11 +202,6 @@ class ContextualPairModel:
         return self._fit_summary
 
     def fit(self, outcomes: Sequence[PairEvaluationOutcome]) -> PairModelFitSummary:
-        try:
-            from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
-            from sklearn.feature_extraction import DictVectorizer
-        except ImportError as exc:  # pragma: no cover - exercised only in minimal installations
-            raise RuntimeError("contextual pair model requires scikit-learn") from exc
         visible = _latest_visible_outcomes(outcomes)
         validity_rows = [outcome for outcome in visible if outcome.known and outcome.disclosed]
         performance_rows = [
@@ -246,10 +242,10 @@ class ContextualPairModel:
         if len(calibration_indices) >= 8 and len(fit_indices) >= self.configuration.min_performance_rows:
             calibration_model = ExtraTreesRegressor(**self._regressor_parameters(seed=self.configuration.seed + 2))
             calibration_model.fit(performance_matrix[fit_indices], [targets[index] for index in fit_indices])
-            calibration_tree_predictions = [
-                estimator.predict(performance_matrix[calibration_indices])
+            calibration_tree_predictions = Parallel(n_jobs=self.configuration.jobs, prefer="threads")(
+                delayed(estimator.predict)(performance_matrix[calibration_indices])
                 for estimator in calibration_model.estimators_
-            ]
+            )
             calibration_means, calibration_stds = _column_moments(calibration_tree_predictions)
             residuals = [
                 abs(targets[index] - mean) for index, mean in zip(calibration_indices, calibration_means, strict=True)
@@ -321,7 +317,9 @@ class ContextualPairModel:
         if self._fit_summary is None or self._vectorizer is None or self._performance_model is None:
             raise ValueError("pair model has not been fitted")
         matrix = self._vectorizer.transform([self._features(candidate, shape) for candidate, shape in requests])
-        tree_predictions = [estimator.predict(matrix) for estimator in self._performance_model.estimators_]
+        tree_predictions = Parallel(n_jobs=self.configuration.jobs, prefer="threads")(
+            delayed(estimator.predict)(matrix) for estimator in self._performance_model.estimators_
+        )
         means, raw_stds = _column_moments(tree_predictions)
         if self._constant_validity is not None:
             validity = [self._constant_validity] * len(requests)
@@ -496,14 +494,8 @@ def _quantile(values: Sequence[float], probability: float) -> float:
 
 
 def _column_moments(columns: Sequence[Sequence[float]]) -> tuple[list[float], list[float]]:
-    means = []
-    standard_deviations = []
-    for values in zip(*columns, strict=True):
-        numeric = [float(value) for value in values]
-        mean = statistics.fmean(numeric)
-        means.append(mean)
-        standard_deviations.append(math.sqrt(statistics.fmean((value - mean) ** 2 for value in numeric)))
-    return means, standard_deviations
+    matrix = np.asarray(columns, dtype=float)
+    return matrix.mean(axis=0).tolist(), matrix.std(axis=0).tolist()
 
 
 def _rank_correlation(actual: Sequence[float], predicted: Sequence[float]) -> float:

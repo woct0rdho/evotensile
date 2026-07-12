@@ -9,6 +9,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict, cast
 
 from evotensile.artifacts import load_artifact_mappings
 from evotensile.campaign.deployment import select_deployment_solution_bank
@@ -23,6 +24,10 @@ from evotensile.shapes import pilot_100_shapes
 DEFAULT_DB = Path("out/grid100_production_search_20260712.sqlite")
 DEFAULT_OUTPUT_DIR = Path("out/grid100_production_search_20260712/finalization")
 DEFAULT_BASELINE_DB = Path("out/grid100_compatible_20260712.sqlite")
+
+
+class DeploymentAssignmentsPayload(TypedDict):
+    assignments: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -134,6 +139,7 @@ def _select_contenders(
     maximum_contenders: int,
     relative_tolerance: float,
     mandatory_candidate_by_shape: Mapping[str, str] | None = None,
+    additional_mandatory_candidates_by_shape: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, tuple[str, ...]]:
     selected = {}
     for shape_id, rows in rankings.items():
@@ -146,9 +152,14 @@ def _select_contenders(
                 break
             if len(contenders) < 2 or row.median_gflops >= winner.median_gflops * (1.0 - relative_tolerance):
                 contenders.append(row.candidate_hash)
+        mandatory_candidates = []
         mandatory_candidate = (mandatory_candidate_by_shape or {}).get(shape_id)
-        if mandatory_candidate is not None and mandatory_candidate not in contenders:
-            contenders.append(mandatory_candidate)
+        if mandatory_candidate is not None:
+            mandatory_candidates.append(mandatory_candidate)
+        mandatory_candidates.extend((additional_mandatory_candidates_by_shape or {}).get(shape_id, ()))
+        for candidate_hash in mandatory_candidates:
+            if candidate_hash not in contenders:
+                contenders.append(candidate_hash)
         selected[shape_id] = tuple(contenders)
     return selected
 
@@ -194,6 +205,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--baseline-db", type=Path, default=DEFAULT_BASELINE_DB)
+    parser.add_argument(
+        "--incumbent-deployment",
+        type=Path,
+        help="Deployment artifact whose incumbent remains mandatory for every shape",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--maximum-contenders", type=int, default=3)
     parser.add_argument("--contender-tolerance", type=float, default=0.02)
@@ -214,11 +230,23 @@ def main() -> None:
     baseline_candidate_by_shape = {
         shape_id: rankings[0].candidate_hash for shape_id, rankings in baseline_rankings.items()
     }
+    incumbent_candidate_by_shape: dict[str, str] = {}
+    if args.incumbent_deployment is not None:
+        incumbent_payload = cast(
+            DeploymentAssignmentsPayload,
+            json.loads(args.incumbent_deployment.read_text(encoding="utf-8")),
+        )
+        incumbent_candidate_by_shape = dict(incumbent_payload["assignments"])
+        if set(incumbent_candidate_by_shape) != set(shape_by_id):
+            raise ValueError("incumbent deployment assignments must cover the finalization shapes")
     contenders = _select_contenders(
         before_rankings,
         maximum_contenders=args.maximum_contenders,
         relative_tolerance=args.contender_tolerance,
         mandatory_candidate_by_shape=baseline_candidate_by_shape,
+        additional_mandatory_candidates_by_shape={
+            shape_id: (candidate_hash,) for shape_id, candidate_hash in incumbent_candidate_by_shape.items()
+        },
     )
     candidate_hashes = sorted({candidate_hash for values in contenders.values() for candidate_hash in values})
     db = EvoTensileDB.connect(
@@ -247,6 +275,7 @@ def main() -> None:
     plan = {
         "database": str(args.db),
         "baseline_database": str(args.baseline_db),
+        "incumbent_deployment": None if args.incumbent_deployment is None else str(args.incumbent_deployment),
         "maximum_contenders": args.maximum_contenders,
         "contender_tolerance": args.contender_tolerance,
         "samples": args.samples,

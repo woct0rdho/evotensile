@@ -430,7 +430,7 @@ def _run_increment(
         broad_candidates=[score.bundle.candidate for score in broad_plan.selected],
         policy=replay_repair_policy,
     )
-    repair_predictions = repair_model.predict([(candidate, shape) for candidate in pool.candidates for shape in shapes])
+    repair_predictions = repair_model.predict(pool.prediction_requests(shapes))
     repair = plan_repair_acquisition(
         controller,
         candidates=pool.candidates,

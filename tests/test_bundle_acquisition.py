@@ -65,6 +65,29 @@ def test_bundle_cost_counts_preparation_once_and_pair_cost_per_exact_request():
     assert bundle.timing_s == pytest.approx(first.timing_s + second.timing_s)
 
 
+def test_batched_cost_estimates_match_individual_estimates():
+    shapes = pilot_100_shapes()[:3]
+    candidates = sample_candidates(2)
+    model = _cost_model()
+    requests = (
+        (candidates[0], tuple(shapes[:1]), tuple(shapes[:2]), frozenset()),
+        (candidates[1], tuple(shapes[1:]), tuple(shapes[1:]), frozenset({shapes[1].id})),
+    )
+
+    batched = model.estimate_many(requests)
+    individual = tuple(
+        model.estimate(
+            candidate,
+            selected_shapes,
+            artifact_shapes=artifact_shapes,
+            prepared_shape_ids=set(prepared_shape_ids),
+        )
+        for candidate, selected_shapes, artifact_shapes, prepared_shape_ids in requests
+    )
+
+    assert batched == individual
+
+
 def test_lazy_greedy_uses_posterior_samples_to_avoid_duplicate_shape_gain():
     shapes = pilot_100_shapes()[:2]
     candidates = sample_candidates(3)

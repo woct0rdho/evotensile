@@ -4,6 +4,8 @@ from evotensile.campaign.acquisition import BundleAcquisitionPolicy, BundleCostM
 from evotensile.campaign.controller import CampaignControllerState
 from evotensile.campaign.evaluator import PairEvaluationOutcome
 from evotensile.campaign.repair import (
+    RepairCandidateOrigin,
+    RepairCandidatePool,
     RepairPolicy,
     assess_repair_deficits,
     build_repair_candidate_pool,
@@ -164,6 +166,27 @@ def test_repair_candidate_pool_audits_all_seed_lanes_and_mutations():
     lanes = {lane for origin in pool.origins for lane in origin.lanes}
     assert {"incumbent", "neighbor", "cluster", "broad", "mutation"} <= lanes
     assert all(origin.target_shape_ids == (shapes[0].id,) for origin in pool.origins)
+    assert {(candidate.hash, shape.id) for candidate, shape in pool.prediction_requests(shapes)} == {
+        (candidate.hash, shapes[0].id) for candidate in pool.candidates
+    }
+
+
+def test_repair_prediction_requests_preserve_multi_target_origins():
+    shapes = pilot_100_shapes()[:3]
+    candidates = sample_candidates(2)
+    pool = RepairCandidatePool(
+        candidates=tuple(candidates),
+        origins=(
+            RepairCandidateOrigin(candidates[0].hash, ("neighbor",), (shapes[0].id, shapes[2].id), ()),
+            RepairCandidateOrigin(candidates[1].hash, ("mutation",), (shapes[1].id,), (candidates[0].hash,)),
+        ),
+    )
+
+    assert [(candidate.hash, shape.id) for candidate, shape in pool.prediction_requests(shapes)] == [
+        (candidates[0].hash, shapes[0].id),
+        (candidates[0].hash, shapes[2].id),
+        (candidates[1].hash, shapes[1].id),
+    ]
 
 
 def test_repair_report_tracks_reuse_resolution_gain_and_false_cost():
