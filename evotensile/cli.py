@@ -151,7 +151,7 @@ def _add_profile_arg(parser: argparse.ArgumentParser) -> None:
 
 def _add_candidate_shape_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--num-random", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--limit-shapes", type=int, default=None)
     parser.add_argument("--shapes", nargs="*")
 
@@ -1012,7 +1012,7 @@ def build_parser() -> argparse.ArgumentParser:
     cmd = sub.add_parser("summarize-space", help="Print search-space and generated-candidate summary")
     _add_profile_arg(cmd)
     cmd.add_argument("--num-random", type=int, default=None)
-    cmd.add_argument("--seed", type=int, default=1)
+    cmd.add_argument("--seed", type=int, default=12345)
     cmd.set_defaults(func=cmd_summarize_space)
 
     cmd = sub.add_parser("proposal-coverage", help="Summarize generated proposal coverage without executing")

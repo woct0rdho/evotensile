@@ -34,7 +34,7 @@ def differential_evolution_candidates(
     parents: list[Candidate],
     *,
     count: int,
-    seed: int = 1,
+    seed: int = 12345,
     crossover_rate: float = 0.8,
     random_gene_rate: float = 0.1,
     exclude: set[str] | None = None,

@@ -984,7 +984,7 @@ def random_candidate(
     raise RuntimeError("failed to generate a valid random candidate")
 
 
-def random_candidates(count: int, *, seed: int = 1) -> list[Candidate]:
+def random_candidates(count: int, *, seed: int = 12345) -> list[Candidate]:
     rng = random.Random(seed)
     out: dict[str, Candidate] = {}
     while len(out) < count:

@@ -19,7 +19,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--shape", default="8192,8192,1,8192")
     parser.add_argument("--profile", choices=sorted(PROFILES), default=None)
-    parser.add_argument("--seed", type=int, default=20260710)
+    parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--time-budget", type=float, default=1200.0)
     parser.add_argument("--hot-reserve", type=float, default=DEFAULT_HOT_RESERVE_S)
     parser.add_argument("--max-feedback-rounds", type=int, default=DEFAULT_MAX_FEEDBACK_ROUNDS)

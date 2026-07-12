@@ -49,7 +49,7 @@ def _shape_candidates(shape: Shape, start_seed: int, count: int):
 
 def test_candidate_shape_features_include_generic_mechanics():
     shape = Shape(8192, 4096, 1, 2048)
-    candidate = random_candidate(random.Random(1151), target_shapes=[shape])
+    candidate = random_candidate(random.Random(12345), target_shapes=[shape])
 
     features = candidate_shape_features(candidate, shape, workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT)
     macro_tile0, macro_tile1 = macro_tile(candidate.canonical_params()["MatrixInstruction"])
@@ -86,7 +86,7 @@ def test_gfx1151_dispatch_mechanics_use_wgps_not_physical_cus():
     assert DEFAULT_PROFILE.workgroup_processor_count == 20
     assert DEFAULT_PROFILE.compute_units_per_workgroup_processor == 2
 
-    base = random_candidate(random.Random(1151))
+    base = random_candidate(random.Random(12345))
     params = base.canonical_params()
     params["GlobalSplitU"] = 1
     candidate = Candidate(params=params)
@@ -107,7 +107,7 @@ def test_gfx1151_dispatch_mechanics_use_wgps_not_physical_cus():
 
 def test_surrogate_activation_requires_unique_candidate_variation():
     shapes = [Shape(512, 128, 1, 256), Shape(1024, 1024, 1, 1024)]
-    candidate = _shape_candidates(shapes[0], 1000, 1)[0]
+    candidate = _shape_candidates(shapes[0], 12345, 1)[0]
     observations = [
         TrainingObservation(
             candidate_hash=candidate.hash,
@@ -123,7 +123,7 @@ def test_surrogate_activation_requires_unique_candidate_variation():
 
 
 def test_grid_acquisition_preserves_complementary_shape_specialists():
-    candidates = _shape_candidates(Shape(512, 128, 1, 256), 2000, 3)
+    candidates = _shape_candidates(Shape(512, 128, 1, 256), 12345, 3)
     first_shape = "m512_n128_b1_k256"
     second_shape = "m1024_n1024_b1_k1024"
     predictions = [
@@ -161,7 +161,7 @@ def test_surrogate_pool_learns_synthetic_tlds_performance_from_queried_rows(tmp_
     shape = Shape(8192, 8192, 1, 8192)
     problem_hash = DEFAULT_PROFILE.problem_type_hash
     protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
-    training = _shape_candidates(shape, 1000, 64)
+    training = _shape_candidates(shape, 12345, 64)
     db.register_candidates(training)
     db.register_shapes([shape])
     for candidate in training:
@@ -177,14 +177,14 @@ def test_surrogate_pool_learns_synthetic_tlds_performance_from_queried_rows(tmp_
             benchmark_protocol_hash=protocol_hash,
             time_us=time_us,
         )
-    pool = _shape_candidates(shape, 5000, 160)
+    pool = _shape_candidates(shape, 12345, 160)
 
     selected = select_surrogate_pool(
         pool,
         evidence=_evidence(db, [shape]),
         shapes=[shape],
         count=32,
-        seed=20260710,
+        seed=12346,
         min_evidence=24,
         surrogate_jobs=SURROGATE_JOBS,
         workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT,
@@ -201,14 +201,14 @@ def test_surrogate_pool_falls_back_to_family_diversity_without_evidence(tmp_path
     db = EvoTensileDB.connect(tmp_path / "surrogate.sqlite")
     db.init()
     shape = Shape(8192, 8192, 1, 8192)
-    pool = _shape_candidates(shape, 9000, 96)
+    pool = _shape_candidates(shape, 12345, 96)
 
     selected = select_surrogate_pool(
         pool,
         evidence=_evidence(db, [shape]),
         shapes=[shape],
         count=24,
-        seed=20260710,
+        seed=12346,
         min_evidence=24,
         surrogate_jobs=SURROGATE_JOBS,
         workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT,
@@ -220,7 +220,7 @@ def test_surrogate_pool_falls_back_to_family_diversity_without_evidence(tmp_path
 
 def test_mechanical_prior_penalizes_single_instruction_workgroups():
     shape = Shape(8192, 8192, 1, 8192)
-    base = _shape_candidates(shape, 11_000, 1)[0]
+    base = _shape_candidates(shape, 12345, 1)[0]
     tiny_params = base.canonical_params()
     tiny_params["MatrixInstruction"] = [16, 16, 16, 1, 1, 1, 1, 1, 1]
     broad_params = base.canonical_params()
@@ -255,14 +255,14 @@ def test_covering_cold_start_increases_mechanical_token_coverage(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "surrogate.sqlite")
     db.init()
     shape = Shape(8192, 8192, 1, 8192)
-    pool = _shape_candidates(shape, 12_000, 256)
+    pool = _shape_candidates(shape, 12345, 256)
 
     baseline = select_surrogate_pool(
         pool,
         evidence=_evidence(db, [shape]),
         shapes=[shape],
         count=48,
-        seed=20260710,
+        seed=12346,
         min_evidence=24,
         surrogate_jobs=SURROGATE_JOBS,
         workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT,
@@ -272,7 +272,7 @@ def test_covering_cold_start_increases_mechanical_token_coverage(tmp_path):
         evidence=_evidence(db, [shape]),
         shapes=[shape],
         count=48,
-        seed=20260710,
+        seed=12346,
         min_evidence=24,
         covering_cold_start=True,
         surrogate_jobs=SURROGATE_JOBS,
@@ -320,7 +320,7 @@ def test_scheduler_surrogate_multiplier_preserves_cold_measurement_budget(tmp_pa
             cost_aware_operator_credit=False,
         ),
         target_shapes=[shape],
-        seed=20260710,
+        seed=12345,
     )
 
     assert len(proposal.generated) == 6

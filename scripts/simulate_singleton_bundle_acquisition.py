@@ -67,6 +67,7 @@ def main():
     rows = []
     with tempfile.TemporaryDirectory(prefix="evotensile-singleton-acquisition-") as directory:
         for shape_index, shape in enumerate(selected_shapes):
+            shape_seed = 12345 + shape_index * 3
             shape_oracle = {key: record for key, record in full_oracle.items() if key[0] == shape.id}
             candidates = sorted(
                 {
@@ -76,7 +77,7 @@ def main():
                 }.values(),
                 key=lambda candidate: candidate.hash,
             )
-            random.Random(20260712 + shape_index).shuffle(candidates)
+            random.Random(shape_seed).shuffle(candidates)
             seed_candidates = candidates[: args.seed_evidence]
             pool = candidates[args.seed_evidence :]
             oracle_best = max(record.screening_gflops or 0.0 for record in shape_oracle.values())
@@ -100,7 +101,7 @@ def main():
                 evidence=snapshot,
                 shapes=[shape],
                 count=min(args.shortlist, len(pool)),
-                seed=20260712 + shape_index,
+                seed=shape_seed + 1,
                 min_evidence=24,
                 surrogate_jobs=DEFAULT_PROFILE.default_surrogate_jobs,
                 workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
@@ -120,7 +121,7 @@ def main():
                 configuration=PairModelConfiguration(
                     n_estimators=args.estimators,
                     min_performance_rows=24,
-                    seed=20260712 + shape_index,
+                    seed=shape_seed + 2,
                     jobs=DEFAULT_PROFILE.default_surrogate_jobs,
                 ),
             )

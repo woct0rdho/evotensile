@@ -350,7 +350,7 @@ def test_explain_invalid_nt_hhs_reports_shape_gsu_workspace_rule():
 
 
 def test_repair_linked_overrides_keeps_broad_domain_samples_rule_valid():
-    rng = random.Random(1151)
+    rng = random.Random(12346)
     for _ in range(512):
         params = defaulted_params({name: rng.choice(values) for name, values in DOMAINS.items()})
         repaired = repair_linked_overrides(params)
@@ -359,7 +359,7 @@ def test_repair_linked_overrides_keeps_broad_domain_samples_rule_valid():
 
 
 def test_random_candidate_uses_constraint_aware_broad_sampling():
-    candidates = [random_candidate(random.Random(seed)) for seed in range(64)]
+    candidates = [random_candidate(random.Random(seed)) for seed in range(12345, 12409)]
     hashes = {candidate.hash for candidate in candidates}
     matrix_instructions = {tuple(candidate.canonical_params()["MatrixInstruction"]) for candidate in candidates}
     lds_profiles = {
@@ -389,7 +389,7 @@ def test_random_candidate_uses_constraint_aware_broad_sampling():
 
 
 def test_random_tlds_branches_do_not_change_domains_or_constraints():
-    candidates = [random_candidate(random.Random(seed)) for seed in range(128, 256)]
+    candidates = [random_candidate(random.Random(seed)) for seed in range(12345, 12473)]
     branch_counts = {
         value: sum(candidate.canonical_params()["TransposeLDS"] == value for candidate in candidates)
         for value in (0, 2)
@@ -406,7 +406,7 @@ def test_random_candidate_can_target_each_valid_tlds_branch():
     for transpose_lds in (0, 2):
         candidates = [
             random_candidate(random.Random(seed), target_shapes=[shape], transpose_lds=transpose_lds)
-            for seed in range(16)
+            for seed in range(12345, 12361)
         ]
         assert {candidate.canonical_params()["TransposeLDS"] for candidate in candidates} == {transpose_lds}
         assert all(cheap_constraints(candidate.canonical_params(), shape=shape) for candidate in candidates)
@@ -471,8 +471,10 @@ def test_encoding_accepts_nt_hhs_values():
 
 
 def test_differential_evolution_generates_valid_candidates():
-    parents = random_candidates(4, seed=7)
-    proposed = differential_evolution_candidates(parents, count=8, seed=11, exclude={parent.hash for parent in parents})
+    parents = random_candidates(4, seed=12345)
+    proposed = differential_evolution_candidates(
+        parents, count=8, seed=12346, exclude={parent.hash for parent in parents}
+    )
 
     assert proposed
     assert len(proposed) <= 8
@@ -481,15 +483,15 @@ def test_differential_evolution_generates_valid_candidates():
 
 
 def test_differential_evolution_requires_four_supplied_parents():
-    parents = random_candidates(3, seed=7)
+    parents = random_candidates(3, seed=12345)
 
-    assert differential_evolution_candidates(parents, count=8, seed=11) == []
+    assert differential_evolution_candidates(parents, count=8, seed=12346) == []
 
 
 def test_gomea_uses_nt_hhs_linkage_groups_with_random_parents():
-    parents = random_candidates(12, seed=1151)
+    parents = random_candidates(12, seed=12345)
     shape = Shape(8192, 8192, 1, 8192)
-    proposed = gomea_candidates(parents, count=12, seed=1152, target_shapes=[shape])
+    proposed = gomea_candidates(parents, count=12, seed=12346, target_shapes=[shape])
 
     assert proposed
     assert ("TransposeLDS", "LdsBlockSizePerPadA", "LdsBlockSizePerPadB", "LdsPadA", "LdsPadB") in NT_HHS_LINKAGE_GROUPS
@@ -500,7 +502,7 @@ def test_gomea_uses_nt_hhs_linkage_groups_with_random_parents():
 
 
 def test_gomea_accepts_learned_linkage_models():
-    parents = random_candidates(12, seed=1151)
+    parents = random_candidates(12, seed=12345)
     leader = candidate_to_genome(parents[0])
     model = LinkageModel(
         leader_genome=leader,
@@ -510,7 +512,7 @@ def test_gomea_accepts_learned_linkage_models():
         evidence_count=12,
     )
 
-    proposed = gomea_candidates(parents, count=8, seed=1153, linkage_models=[model])
+    proposed = gomea_candidates(parents, count=8, seed=12346, linkage_models=[model])
 
     assert proposed
     assert all(candidate.source == "gomea" for candidate in proposed)

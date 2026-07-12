@@ -35,10 +35,10 @@ def _family_variants(base, count: int):
 
 def test_semantic_mutation_uses_small_valid_steps():
     shape = Shape(8192, 8192, 1, 8192)
-    parents = [random_candidate(random.Random(seed), target_shapes=[shape]) for seed in range(20260710, 20260718)]
+    parents = [random_candidate(random.Random(seed), target_shapes=[shape]) for seed in range(12345, 12353)]
     parent_by_hash = {candidate.hash: candidate for candidate in parents}
 
-    children = semantic_mutation_candidates(parents, count=16, seed=20260711, target_shapes=[shape])
+    children = semantic_mutation_candidates(parents, count=16, seed=12353, target_shapes=[shape])
 
     assert len(children) == 16
     assert {candidate.source for candidate in children} == {"semantic-mutation"}
@@ -55,7 +55,7 @@ def test_semantic_mutation_uses_small_valid_steps():
 
 def test_semantic_mutation_records_and_uses_group_credit():
     shape = Shape(8192, 8192, 1, 8192)
-    parents = [random_candidate(random.Random(seed), target_shapes=[shape]) for seed in range(20260720, 20260732)]
+    parents = [random_candidate(random.Random(seed), target_shapes=[shape]) for seed in range(12345, 12357)]
     target_group = ("StaggerU",)
     weights = {semantic_group_key(group): 0.0 for group in semantic_group_names()}
     weights[semantic_group_key(target_group)] = 100.0
@@ -63,7 +63,7 @@ def test_semantic_mutation_records_and_uses_group_credit():
     children = semantic_mutation_candidates(
         parents,
         count=8,
-        seed=20260713,
+        seed=12357,
         target_shapes=[shape],
         max_changed_genes=1,
         group_weights=weights,
@@ -84,7 +84,7 @@ def test_micro_exhaustive_neighborhood_enumerates_small_group():
         [parent],
         count=16,
         max_elites=None,
-        seed=20260714,
+        seed=12346,
         source="gomea-neighborhood",
         group_weights=weights,
         micro_exhaustive=True,
@@ -98,7 +98,7 @@ def test_micro_exhaustive_neighborhood_enumerates_small_group():
 
 def test_gomea_family_local_donors_stay_in_the_base_family():
     first_family = _family_variants(REFERENCE_CANDIDATE, 4)
-    rng = random.Random(20260710)
+    rng = random.Random(12345)
     other = random_candidate(rng)
     while family_descriptor(other) == family_descriptor(REFERENCE_CANDIDATE):
         other = random_candidate(rng)
@@ -109,7 +109,7 @@ def test_gomea_family_local_donors_stay_in_the_base_family():
     children = gomea_candidates(
         parents,
         count=12,
-        seed=20260712,
+        seed=12346,
         family_local_probability=1.0,
         source="gomea-mixing",
     )
@@ -324,7 +324,7 @@ def test_adaptive_donor_selection_records_quality_diversity_strategy():
     children = gomea_candidates(
         parents,
         count=8,
-        seed=20260715,
+        seed=12345,
         source="gomea-mixing",
         adaptive_donor_selection=True,
         donor_mode_weights={"quality": 100.0, "diverse": 0.0, "random": 0.0},

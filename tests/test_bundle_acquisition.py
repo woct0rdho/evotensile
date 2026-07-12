@@ -213,7 +213,7 @@ def test_singleton_bundle_reduces_to_expected_improvement_per_cost():
 
 def test_cost_model_fits_measured_preparation_validation_and_timing_components():
     shapes = pilot_100_shapes()[:2]
-    candidates = sample_candidates(14, seed=16384)
+    candidates = sample_candidates(14, seed=12345)
     candidate_by_hash = {candidate.hash: candidate for candidate in candidates}
     shapes_by_candidate = {candidate.hash: shapes for candidate in candidates}
     measured = {

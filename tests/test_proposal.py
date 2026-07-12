@@ -16,7 +16,7 @@ from tests.helpers import REFERENCE_CANDIDATE
 
 
 def test_public_proposal_building_blocks_are_importable():
-    assert len(random_candidates(2, seed=1151)) == 2
+    assert len(random_candidates(2, seed=12345)) == 2
 
 
 def test_custom_script_records_best_effort_provenance_and_warns(tmp_path: Path, capsys):

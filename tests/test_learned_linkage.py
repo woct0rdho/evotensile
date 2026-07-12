@@ -107,7 +107,7 @@ def test_minimum_evidence_for_truncation_satisfies_selected_sample_floor():
 def test_linkage_db_loader_expands_evidence_for_truncation(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "linkage.sqlite")
     db.init()
-    candidates = sample_candidates(20, seed=1153)
+    candidates = sample_candidates(20, seed=12345)
     shape = pilot_100_shapes()[0]
     problem_hash = DEFAULT_PROFILE.problem_type_hash
     protocol_hash = DEFAULT_PROFILE.benchmark_protocol_hash()

@@ -44,7 +44,7 @@ def test_family_descriptor_accepts_candidate_params_mapping():
 
 
 def test_family_descriptor_counts_candidates_by_key():
-    candidates = sample_candidates(5, seed=1151)
+    candidates = sample_candidates(5, seed=12345)
     counts = family_descriptor_counts([*candidates, candidates[0]])
 
     assert sum(counts.values()) == 6
@@ -59,7 +59,7 @@ def test_family_stratified_random_candidates_balance_target_aspect_and_broad_cel
     candidates = family_stratified_random_candidates(
         _evidence(db, [shape]),
         16,
-        seed=1151,
+        seed=12345,
         target_shapes=[shape],
     )
     fields = [dict(family_descriptor(candidate).fields) for candidate in candidates]
@@ -80,7 +80,7 @@ def test_family_stratified_random_candidates_retry_failed_family(tmp_path):
     initial = family_stratified_random_candidates(
         _evidence(db, [shape]),
         8,
-        seed=1151,
+        seed=12345,
         target_shapes=[shape],
     )
     failed_family = family_descriptor(initial[0])
@@ -104,7 +104,7 @@ def test_family_stratified_random_candidates_retry_failed_family(tmp_path):
     followup = family_stratified_random_candidates(
         _evidence(db, [shape]),
         32,
-        seed=1152,
+        seed=12346,
         target_shapes=[shape],
     )
 
@@ -115,7 +115,7 @@ def test_family_stratified_random_candidates_retry_failed_family(tmp_path):
 def test_load_family_archive_keeps_best_leader_per_family(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "families.sqlite")
     db.init()
-    candidates = sample_candidates(3, seed=1151)
+    candidates = sample_candidates(3, seed=12345)
     shapes = pilot_100_shapes()[:2]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()
@@ -265,7 +265,7 @@ def test_load_family_archive_keeps_diverse_quality_bounded_elites_per_family(tmp
 def test_load_family_archive_filters_protocol_and_min_samples(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "families.sqlite")
     db.init()
-    candidates = sample_candidates(2, seed=1152)
+    candidates = sample_candidates(2, seed=12345)
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()

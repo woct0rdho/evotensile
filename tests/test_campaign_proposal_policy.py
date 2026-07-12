@@ -17,7 +17,7 @@ def test_merged_proposal_separates_archive_and_novel_candidates(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "merged.sqlite")
     db.init()
     shape = pilot_100_shapes()[0]
-    archive_candidates = sample_candidates(12, seed=20260712)
+    archive_candidates = sample_candidates(12, seed=12345)
     db.register_candidates(archive_candidates)
     db.register_shapes([shape])
     for index, candidate in enumerate(archive_candidates):
@@ -38,7 +38,7 @@ def test_merged_proposal_separates_archive_and_novel_candidates(tmp_path: Path):
         CampaignConfigurationRequest(
             runner_bin=tool,
             tensilelite_bin=tool,
-            seed=20260713,
+            seed=12346,
             time_budget_s=1200.0,
             hot_reserve_s=60.0,
             max_feedback_rounds=100,
@@ -59,7 +59,7 @@ def test_merged_proposal_separates_archive_and_novel_candidates(tmp_path: Path):
         profile=DEFAULT_PROFILE,
         configuration=configuration,
         protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
-        seed=20260713,
+        seed=12346,
         proposal_args={
             "num_random": 2,
             "elite_count": 2,
@@ -98,7 +98,7 @@ def test_parent_override_prevents_cross_island_parent_selection(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "parents.sqlite")
     db.init()
     shape = pilot_100_shapes()[0]
-    all_candidates = sample_candidates(12, seed=20260710)
+    all_candidates = sample_candidates(12, seed=12345)
     island_parents = all_candidates[:8]
     db.register_candidates(all_candidates)
     db.register_shapes([shape])
@@ -136,7 +136,7 @@ def test_parent_override_prevents_cross_island_parent_selection(tmp_path: Path):
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
         benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
         parent_candidates=island_parents,
-        seed=20260711,
+        seed=12346,
     ).selected
 
     parent_hashes = {candidate.hash for candidate in island_parents}

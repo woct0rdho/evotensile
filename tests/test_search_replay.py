@@ -33,7 +33,7 @@ def test_replay_cost_model_recursively_serializes_nested_protocols():
 
 def test_load_db_oracle_matrix_indexes_exact_shape_candidate_pairs(tmp_path):
     shapes = [Shape(512, 128, 1, 256), Shape(640, 256, 1, 512)]
-    candidates = sample_candidates(2, seed=20260730)
+    candidates = sample_candidates(2, seed=12345)
     db_path = tmp_path / "oracle.sqlite"
     db = EvoTensileDB.connect(db_path)
     db.init()
@@ -91,7 +91,7 @@ def test_load_db_oracle_matrix_indexes_exact_shape_candidate_pairs(tmp_path):
 
 def test_multi_shape_replay_state_is_query_causal_and_reuses_preparation(tmp_path):
     shapes = [Shape(512, 128, 1, 256), Shape(640, 256, 1, 512)]
-    candidates = sample_candidates(3, seed=20260731)
+    candidates = sample_candidates(3, seed=12345)
     oracle = {
         (shapes[0].id, candidates[0].hash): OracleRecord(
             candidate=candidates[0],
@@ -169,7 +169,7 @@ def test_multi_shape_replay_state_is_query_causal_and_reuses_preparation(tmp_pat
 
 
 def test_merge_oracle_records_keeps_exact_hash_measurements_and_hot_results():
-    candidates = sample_candidates(2, seed=20260710)
+    candidates = sample_candidates(2, seed=12345)
     records = [
         OracleRecord(candidate=candidates[0], status="ok", screening_gflops=10_000.0, order=2.0),
         OracleRecord(candidate=candidates[0], status="ok", screening_gflops=11_000.0, order=1.0),
@@ -216,7 +216,7 @@ def test_replay_uses_explicit_profile_identity_and_mechanics(tmp_path, monkeypat
         shape=shape,
         profile=profile,
         cost=ReplayCostModel(time_budget_s=1.0, prepare_seconds_per_candidate=0.0, hot_reserve_s=0.0),
-        seed=1,
+        seed=12345,
         surrogate_min_evidence=24,
         batch_size=1,
         pool_window=1,
@@ -232,7 +232,7 @@ def test_replay_uses_explicit_profile_identity_and_mechanics(tmp_path, monkeypat
 
 def test_replay_discloses_only_queried_exact_hashes_and_confirms_hot_target():
     shape = Shape(8192, 8192, 1, 8192)
-    candidates = sample_candidates(3, seed=20260711)
+    candidates = sample_candidates(3, seed=12345)
     oracle = {
         candidates[0].hash: OracleRecord(
             candidate=candidates[0],
@@ -262,7 +262,7 @@ def test_replay_discloses_only_queried_exact_hashes_and_confirms_hot_target():
         shape=shape,
         profile=DEFAULT_PROFILE,
         cost=cost,
-        seed=20260710,
+        seed=12346,
         batch_size=3,
         pool_window=3,
         surrogate_min_evidence=24,
@@ -280,7 +280,7 @@ def test_replay_discloses_only_queried_exact_hashes_and_confirms_hot_target():
 
 def test_replay_models_covering_islands_and_leader_stabilization():
     shape = Shape(8192, 8192, 1, 8192)
-    candidates = sample_candidates(16, seed=20260720)
+    candidates = sample_candidates(16, seed=12345)
     oracle = {
         candidate.hash: OracleRecord(
             candidate=candidate,
@@ -304,7 +304,7 @@ def test_replay_models_covering_islands_and_leader_stabilization():
         shape=shape,
         profile=DEFAULT_PROFILE,
         cost=cost,
-        seed=20260710,
+        seed=12346,
         surrogate_min_evidence=24,
         batch_size=8,
         pool_window=16,
@@ -325,7 +325,7 @@ def test_replay_models_covering_islands_and_leader_stabilization():
 
 def test_replay_staged_probe_charges_one_launch_for_catastrophic_rows():
     shape = Shape(8192, 8192, 1, 8192)
-    candidates = sample_candidates(3, seed=20260721)
+    candidates = sample_candidates(3, seed=12345)
     gflops = [20_000.0, 10_000.0, 1_000.0]
     oracle = {
         candidate.hash: OracleRecord(candidate=candidate, status="ok", screening_gflops=value)
@@ -348,7 +348,7 @@ def test_replay_staged_probe_charges_one_launch_for_catastrophic_rows():
         shape=shape,
         profile=DEFAULT_PROFILE,
         cost=cost,
-        seed=20260710,
+        seed=12346,
         surrogate_min_evidence=24,
         batch_size=3,
         pool_window=3,
@@ -367,7 +367,7 @@ def test_replay_staged_probe_charges_one_launch_for_catastrophic_rows():
 
 def test_replay_soft_deadline_allows_an_admitted_round_to_overrun():
     shape = Shape(512, 128, 1, 256)
-    candidate = sample_candidates(1, seed=20260801)[0]
+    candidate = sample_candidates(1, seed=12345)[0]
     oracle = {
         candidate.hash: OracleRecord(
             candidate=candidate,
@@ -391,7 +391,7 @@ def test_replay_soft_deadline_allows_an_admitted_round_to_overrun():
         shape=shape,
         profile=DEFAULT_PROFILE,
         cost=cost,
-        seed=1,
+        seed=12346,
         surrogate_min_evidence=24,
         batch_size=1,
         pool_window=1,
@@ -405,7 +405,7 @@ def test_replay_soft_deadline_allows_an_admitted_round_to_overrun():
 
 def test_independent_shape_baseline_uses_isolated_singleton_controllers():
     shapes = [Shape(512, 128, 1, 256), Shape(640, 256, 1, 512)]
-    candidates = sample_candidates(2, seed=20260802)
+    candidates = sample_candidates(2, seed=12345)
     oracle = {
         (shapes[0].id, candidates[0].hash): OracleRecord(
             candidate=candidates[0],
@@ -444,7 +444,7 @@ def test_independent_shape_baseline_uses_isolated_singleton_controllers():
         shapes=shapes,
         profile=DEFAULT_PROFILE,
         cost=cost,
-        seed=20260802,
+        seed=12346,
         surrogate_min_evidence=24,
         batch_size=2,
         pool_window=2,
@@ -487,7 +487,7 @@ def test_hot_confirmation_handles_an_empty_validated_ranking(tmp_path):
 
 def test_replay_probe_screens_catastrophic_exact_rows_before_main_evidence():
     shape = Shape(8192, 8192, 1, 8192)
-    candidates = sample_candidates(3, seed=20260712)
+    candidates = sample_candidates(3, seed=12345)
     oracle = {
         candidates[0].hash: OracleRecord(candidate=candidates[0], status="ok", screening_gflops=20_000.0),
         candidates[1].hash: OracleRecord(candidate=candidates[1], status="ok", screening_gflops=10_000.0),
@@ -509,7 +509,7 @@ def test_replay_probe_screens_catastrophic_exact_rows_before_main_evidence():
         shape=shape,
         profile=DEFAULT_PROFILE,
         cost=cost,
-        seed=20260710,
+        seed=12346,
         surrogate_min_evidence=24,
         batch_size=3,
         pool_window=3,
