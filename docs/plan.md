@@ -97,10 +97,10 @@ Explicit non-goals and safety boundaries:
 ## Broader Future Plan
 
 Near-term:
-- Review the converged practical 100-shape result in `out/grid100_production_search_20260712/finalization_v3/`. Zero tolerance maximizes freshly confirmed speed with 42 solutions. 0.5%, 1%, and 2% alternatives explicitly trade up to 0.463%, 0.777%, and 1.822% worst-shape loss for 33, 28, and 24 solutions.
-- Treat the 26-round practical search, including the dedicated outlier-repair reserve, as complete under its convergence criteria. Resume native configuration search only for new evidence, a changed workload/target/environment, or a focused unresolved correctness/performance hypothesis rather than rerunning the campaign.
+- Review the converged practical 100-shape result in `out/grid100_production_search_20260712/finalization_v4/`. Zero tolerance maximizes freshly confirmed speed with 42 solutions. 0.5%, 1%, and 2% alternatives explicitly trade up to 0.399%, 0.980%, and 1.884% worst-shape loss for 36, 31, and 26 solutions.
+- Treat the 47-round practical search, including integrated repair, measured promotion, focused trust regions, and the final staging restart, as complete under its convergence criteria. Resume native configuration search only for new evidence, a changed workload/target/environment, or a focused unresolved correctness/performance hypothesis rather than rerunning the campaign.
 - Use an explicit workload when practical call frequencies are available, while retaining unweighted tail and worst-shape reporting.
-- Use only the post-repair fresh `finalization_v3` assignment for production review. Require complete registered artifacts before generating GridBased logic, and rebuild/install only after explicit approval.
+- Use only the post-convergence fresh `finalization_v4` assignment for production review. Require complete registered artifacts before generating GridBased logic, and rebuild/install only after explicit approval.
 - Broaden installed-library correctness cases beyond the six curated verifier cases.
 - Apply the validated mechanisms to larger or finer NT HHS grids only after the practical 100-shape deployment is reviewed.
 

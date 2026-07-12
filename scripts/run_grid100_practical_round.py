@@ -8,12 +8,19 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TypedDict, cast
 
 from evotensile.adaptive_retime import AdaptivePolicy, ProbePolicy
 from evotensile.artifacts import load_artifact_mappings
 from evotensile.campaign.acquisition import BundleAcquisitionPolicy, BundleCostModel, plan_candidate_bundles
 from evotensile.campaign.controller import CampaignControllerState
 from evotensile.campaign.evaluator import PairEvaluationOutcome, RealEvaluator, RealEvaluatorContext
+from evotensile.campaign.repair import (
+    RepairPolicy,
+    ShapeRepairDeficit,
+    build_repair_candidate_pool,
+    repair_pair_close_probabilities,
+)
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
@@ -21,12 +28,35 @@ from evotensile.scheduling.models import EvidenceStage, PairRequest
 from evotensile.search.evidence import load_proposal_evidence_snapshot
 from evotensile.search.pair_model import ContextualPairModel, PairModelConfiguration, PairPrediction
 from evotensile.search.replay import OracleRecord, load_db_oracle_matrix
+from evotensile.search.shape_clustering import ShapeClusteringConfiguration, cluster_shapes
 from evotensile.search.trust_region import interaction_grid_candidates
 from evotensile.shapes import pilot_100_shapes
 
 DEFAULT_DB = Path("out/grid100_production_search_20260712.sqlite")
 DEFAULT_INITIAL_DB = Path("out/grid100_compatible_20260712.sqlite")
 DEFAULT_CAMPAIGN_ROOT = Path("out/grid100_production_search_20260712")
+DEFAULT_INCUMBENT_DEPLOYMENT = DEFAULT_CAMPAIGN_ROOT / "finalization_v3/deployment_0.000.json"
+DEFAULT_INCUMBENT_REPORT = DEFAULT_CAMPAIGN_ROOT / "finalization_v3/report.json"
+
+
+class DeploymentPayload(TypedDict):
+    assignments: dict[str, str]
+    confirmed_performance: dict[str, float]
+
+
+class FinalizationReportPayload(TypedDict):
+    zero_tolerance_improvement: dict[str, object]
+    historical_reference_delta: dict[str, object]
+
+
+class IntegratedRepairEvidencePayload(TypedDict):
+    shape_id: str
+    candidate_hash: str
+    score: float
+    headroom_fraction: float
+    historical_shortfall_fraction: float
+    singleton_bonus: float
+    low_gain_bonus: float
 
 
 def _initialize_database(path: Path, source: Path) -> bool:
@@ -71,6 +101,7 @@ def _seed_controller(
     *,
     shapes: Sequence[Shape],
     time_budget_s: float,
+    deployment: DeploymentPayload | None = None,
 ) -> CampaignControllerState:
     controller = CampaignControllerState(
         shape_ids=tuple(shape.id for shape in shapes),
@@ -79,12 +110,76 @@ def _seed_controller(
     )
     for outcome in outcomes:
         controller.record_query(outcome.request.shape.id, outcome.request.candidate.hash, known=True)
-        controller.disclose(
-            outcome.request.shape.id,
-            outcome.request.candidate.hash,
-            performance=outcome.performance,
-        )
+        if deployment is None:
+            controller.disclose(
+                outcome.request.shape.id,
+                outcome.request.candidate.hash,
+                performance=outcome.performance,
+            )
+    if deployment is not None:
+        if set(deployment["assignments"]) != set(controller.shape_ids):
+            raise ValueError("incumbent deployment must cover the practical-round shapes")
+        for shape_id, candidate_hash in deployment["assignments"].items():
+            controller.disclose(
+                shape_id,
+                candidate_hash,
+                performance=deployment["confirmed_performance"][shape_id],
+            )
     return controller
+
+
+def _integrated_repair_deficits(
+    deployment: DeploymentPayload,
+    report: FinalizationReportPayload,
+    *,
+    target_count: int,
+) -> tuple[dict[str, ShapeRepairDeficit], tuple[IntegratedRepairEvidencePayload, ...]]:
+    if target_count <= 0:
+        return {}, ()
+    assignments = deployment["assignments"]
+    performance = deployment["confirmed_performance"]
+    coverage = Counter(assignments.values())
+    fresh_gains = cast(dict[str, float], report["zero_tolerance_improvement"]["per_shape"])
+    historical_deltas = cast(dict[str, float], report["historical_reference_delta"]["per_shape"])
+    ranked = []
+    for shape_id, candidate_hash in assignments.items():
+        historical_shortfall = max(0.0, -historical_deltas[shape_id])
+        singleton_bonus = 0.03 if coverage[candidate_hash] == 1 else 0.0
+        low_gain_bonus = max(0.0, 0.01 - fresh_gains[shape_id])
+        score = historical_shortfall + singleton_bonus + low_gain_bonus
+        if score > 0.0:
+            ranked.append((score, shape_id, candidate_hash, historical_shortfall, singleton_bonus, low_gain_bonus))
+    ranked.sort(key=lambda row: (-row[0], row[1]))
+    deficits = {}
+    evidence: list[IntegratedRepairEvidencePayload] = []
+    for score, shape_id, candidate_hash, historical_shortfall, singleton_bonus, low_gain_bonus in ranked[:target_count]:
+        headroom_fraction = min(0.15, max(0.03, score))
+        incumbent_performance = performance[shape_id]
+        deficit_log = math.log1p(headroom_fraction)
+        deficits[shape_id] = ShapeRepairDeficit(
+            shape_id=shape_id,
+            incumbent_candidate_hash=candidate_hash,
+            incumbent_performance=incumbent_performance,
+            reference_target=incumbent_performance * (1.0 + headroom_fraction),
+            neighbor_target=None,
+            cluster_target=None,
+            uncertainty_log=0.0,
+            evidence_target=incumbent_performance * (1.0 + headroom_fraction),
+            raw_deficit_log=deficit_log,
+            capped_deficit_log=deficit_log,
+        )
+        evidence.append(
+            {
+                "shape_id": shape_id,
+                "candidate_hash": candidate_hash,
+                "score": score,
+                "headroom_fraction": headroom_fraction,
+                "historical_shortfall_fraction": historical_shortfall,
+                "singleton_bonus": singleton_bonus,
+                "low_gain_bonus": low_gain_bonus,
+            }
+        )
+    return deficits, tuple(evidence)
 
 
 def _mark_registered_artifacts(
@@ -115,6 +210,7 @@ def _candidate_targets(
     parent_count: int,
     near_incumbent_fraction: float,
     max_target_shapes: int,
+    requested_parent_hashes: Sequence[str] = (),
 ) -> tuple[list[Candidate], dict[str, tuple[Shape, ...]], dict[str, int]]:
     performance_by_pair = {
         outcome.key: outcome.performance
@@ -123,17 +219,27 @@ def _candidate_targets(
     }
     candidate_by_hash = {outcome.request.candidate.hash: outcome.request.candidate for outcome in outcomes}
     winner_counts = Counter(incumbent.candidate_hash for incumbent in controller.incumbents.values())
-    parent_hashes = sorted(
-        winner_counts,
-        key=lambda candidate_hash: (-winner_counts[candidate_hash], candidate_hash),
-    )[:parent_count]
+    if requested_parent_hashes:
+        parent_hashes = list(dict.fromkeys(requested_parent_hashes))
+        missing = [candidate_hash for candidate_hash in parent_hashes if candidate_hash not in candidate_by_hash]
+        if missing:
+            raise ValueError(f"interaction parents are unavailable: {missing}")
+    else:
+        parent_hashes = sorted(
+            winner_counts,
+            key=lambda candidate_hash: (-winner_counts[candidate_hash], candidate_hash),
+        )[:parent_count]
     parents = [candidate_by_hash[candidate_hash] for candidate_hash in parent_hashes]
     targets = {}
     for parent in parents:
         rows = []
         for shape in shapes:
             incumbent = controller.incumbents[shape.id]
-            parent_performance = performance_by_pair.get((shape.id, parent.hash))
+            parent_performance = (
+                incumbent.performance
+                if incumbent.candidate_hash == parent.hash
+                else performance_by_pair.get((shape.id, parent.hash))
+            )
             if parent_performance is None:
                 continue
             ratio = parent_performance / incumbent.performance
@@ -167,7 +273,7 @@ def _interaction_pool(
             "ScheduleIterAlg": (2, 3),
             "StorePriorityOpt": (True, False),
             "NumElementsPerBatchStore": tuple(store_batch_values),
-            "StoreVectorWidth": (-1, 1),
+            "StoreVectorWidth": (-1, 1, 2),
         }
         repair_linked = False
         max_changed_genes = 4
@@ -198,6 +304,13 @@ def _interaction_pool(
         }
         repair_linked = True
         max_changed_genes = 8
+    elif profile == "lds":
+        parameter_values = {
+            "LdsPadA": (0, 4, 8, 16),
+            "LdsPadB": (0, 4, 8, 16),
+        }
+        repair_linked = False
+        max_changed_genes = 2
     else:
         raise ValueError(f"unknown interaction profile: {profile}")
 
@@ -252,10 +365,15 @@ def _promotion_pool(
         for shape in shapes:
             if (shape.id, candidate_hash) in controller.queried_pairs:
                 continue
-            parent_performance = performance_by_pair.get((shape.id, parent_hash))
+            incumbent = controller.incumbents[shape.id]
+            parent_performance = (
+                incumbent.performance
+                if incumbent.candidate_hash == parent_hash
+                else performance_by_pair.get((shape.id, parent_hash))
+            )
             if parent_performance is None:
                 continue
-            ratio = parent_performance / controller.incumbents[shape.id].performance
+            ratio = parent_performance / incumbent.performance
             if ratio + 1e-12 < parent_floor:
                 continue
             rows.append((ratio, shape.id, shape))
@@ -273,7 +391,8 @@ def _candidate_prediction_score(
     *,
     controller: CampaignControllerState,
     minimum_gain_fraction: float,
-) -> tuple[float, float, float]:
+    repair_utility_by_pair: Mapping[tuple[str, str], float] | None = None,
+) -> tuple[float, float, float, float]:
     probabilities = []
     predicted_gains = []
     for prediction in predictions:
@@ -287,11 +406,42 @@ def _candidate_prediction_score(
         predicted = prediction.predicted_performance
         predicted_gains.append(-math.inf if predicted is None else predicted / incumbent - 1.0)
     ranked_probabilities = sorted(probabilities, reverse=True)
+    repair_utility = repair_utility_by_pair or {}
     return (
         ranked_probabilities[0],
         sum(ranked_probabilities[: min(3, len(ranked_probabilities))]),
         max(predicted_gains),
+        max(
+            (repair_utility.get((prediction.shape_id, prediction.candidate_hash), 0.0) for prediction in predictions),
+            default=0.0,
+        ),
     )
+
+
+def _parent_diverse_selection(
+    ranked_candidates: Sequence[Candidate],
+    *,
+    general_candidate_hashes: set[str],
+    limit: int,
+) -> tuple[Candidate, ...]:
+    reserved_hashes: set[str] = set()
+    reserved_parents: set[str] = set()
+    for candidate in ranked_candidates:
+        if candidate.hash not in general_candidate_hashes or not candidate.parent_hashes:
+            continue
+        parent_hash = candidate.parent_hashes[0]
+        if parent_hash in reserved_parents:
+            continue
+        reserved_hashes.add(candidate.hash)
+        reserved_parents.add(parent_hash)
+        if len(reserved_hashes) == limit:
+            break
+    selected_hashes = set(reserved_hashes)
+    for candidate in ranked_candidates:
+        if len(selected_hashes) == limit:
+            break
+        selected_hashes.add(candidate.hash)
+    return tuple(candidate for candidate in ranked_candidates if candidate.hash in selected_hashes)
 
 
 def _shortlist_candidates(
@@ -301,7 +451,9 @@ def _shortlist_candidates(
     controller: CampaignControllerState,
     limit: int,
     minimum_gain_fraction: float,
-) -> tuple[tuple[Candidate, ...], tuple[PairPrediction, ...], dict[str, tuple[float, float, float]]]:
+    general_candidate_hashes: set[str],
+    repair_utility_by_pair: Mapping[tuple[str, str], float] | None = None,
+) -> tuple[tuple[Candidate, ...], tuple[PairPrediction, ...], dict[str, tuple[float, float, float, float]]]:
     predictions_by_candidate: dict[str, list[PairPrediction]] = defaultdict(list)
     for prediction in predictions:
         predictions_by_candidate[prediction.candidate_hash].append(prediction)
@@ -310,18 +462,25 @@ def _shortlist_candidates(
             predictions_by_candidate[candidate.hash],
             controller=controller,
             minimum_gain_fraction=minimum_gain_fraction,
+            repair_utility_by_pair=repair_utility_by_pair,
         )
         for candidate in candidates
     }
-    selected = sorted(
+    ranked = sorted(
         candidates,
         key=lambda candidate: (
-            -scores[candidate.hash][0],
+            -(scores[candidate.hash][0] + scores[candidate.hash][3]),
+            -scores[candidate.hash][3],
             -scores[candidate.hash][1],
             -scores[candidate.hash][2],
             candidate.hash,
         ),
-    )[:limit]
+    )
+    selected = _parent_diverse_selection(
+        ranked,
+        general_candidate_hashes=general_candidate_hashes,
+        limit=limit,
+    )
     selected_hashes = {candidate.hash for candidate in selected}
     return (
         tuple(selected),
@@ -369,6 +528,8 @@ def main() -> None:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--initialize-from", type=Path, default=DEFAULT_INITIAL_DB)
     parser.add_argument("--campaign-root", type=Path, default=DEFAULT_CAMPAIGN_ROOT)
+    parser.add_argument("--incumbent-deployment", type=Path, default=DEFAULT_INCUMBENT_DEPLOYMENT)
+    parser.add_argument("--incumbent-report", type=Path, default=DEFAULT_INCUMBENT_REPORT)
     parser.add_argument("--round-id", required=True)
     parser.add_argument("--strategy", choices=("interaction", "promotion"), default="interaction")
     parser.add_argument(
@@ -382,8 +543,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--parent-count", type=int, default=16)
     parser.add_argument(
+        "--interaction-parent",
+        action="append",
+        default=[],
+        metavar="CANDIDATE_HASH",
+        help="Restrict interaction generation to named measured parents",
+    )
+    parser.add_argument(
         "--interaction-profile",
-        choices=("store", "staging", "mapping", "vector"),
+        choices=("store", "staging", "mapping", "vector", "lds"),
         default="store",
     )
     parser.add_argument(
@@ -400,6 +568,15 @@ def main() -> None:
     parser.add_argument("--soft-budget-s", type=float, default=300.0)
     parser.add_argument("--minimum-model-gain", type=float, default=0.005)
     parser.add_argument("--information-weight", type=float, default=0.03)
+    parser.add_argument("--integrated-repair-targets", type=int, default=0)
+    parser.add_argument("--integrated-repair-weight", type=float, default=0.0)
+    parser.add_argument("--integrated-repair-mutations", type=int, default=4)
+    parser.add_argument(
+        "--surrogate-jobs",
+        type=int,
+        default=DEFAULT_PROFILE.default_surrogate_jobs,
+        help="Parallel model jobs; use -1 for all available CPUs",
+    )
     parser.add_argument("--plan-only", action="store_true")
     args = parser.parse_args()
     if args.parent_count <= 0 or args.max_target_shapes <= 0 or args.candidate_pool_limit <= 0:
@@ -414,10 +591,16 @@ def main() -> None:
         raise ValueError("promotion parent floor must be in [0, 1]")
     if args.strategy == "promotion" and not args.promote:
         raise ValueError("promotion strategy requires at least one --promote specification")
+    if args.strategy == "promotion" and args.interaction_parent:
+        raise ValueError("--interaction-parent is only valid with the interaction strategy")
     if args.strategy == "interaction" and args.promote:
         raise ValueError("--promote is only valid with the promotion strategy")
     if args.minimum_model_gain < 0.0 or args.information_weight < 0.0:
         raise ValueError("model gain and information weight must be nonnegative")
+    if args.integrated_repair_targets < 0 or args.integrated_repair_mutations < 0:
+        raise ValueError("integrated repair counts must be nonnegative")
+    if args.integrated_repair_weight < 0.0 or args.surrogate_jobs == 0:
+        raise ValueError("integrated repair weight must be nonnegative and surrogate jobs nonzero")
 
     round_dir = args.campaign_root / args.round_id
     if round_dir.exists():
@@ -440,7 +623,20 @@ def main() -> None:
         benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
     )
     outcomes = _oracle_outcomes(oracle, shape_by_id=shape_by_id)
-    controller = _seed_controller(outcomes, shapes=shapes, time_budget_s=args.soft_budget_s)
+    deployment = cast(
+        DeploymentPayload,
+        json.loads(args.incumbent_deployment.read_text(encoding="utf-8")),
+    )
+    incumbent_report = cast(
+        FinalizationReportPayload,
+        json.loads(args.incumbent_report.read_text(encoding="utf-8")),
+    )
+    controller = _seed_controller(
+        outcomes,
+        shapes=shapes,
+        time_budget_s=args.soft_budget_s,
+        deployment=deployment,
+    )
     before_incumbents = {
         shape_id: {
             "candidate_hash": incumbent.candidate_hash,
@@ -453,6 +649,16 @@ def main() -> None:
         args.db,
         environment_compatibility_tag=DEFAULT_PROFILE.environment_compatibility_tag,
     )
+    promotion_hashes = {
+        candidate_hash
+        for specification in args.promote
+        for candidate_hash in specification.split(":", 1)
+        if ":" in specification
+    }
+    if promotion_hashes:
+        candidate_by_hash.update(
+            (candidate.hash, candidate) for candidate in db.get_candidates(sorted(promotion_hashes))
+        )
     _mark_registered_artifacts(
         db,
         controller,
@@ -470,6 +676,7 @@ def main() -> None:
             parent_count=args.parent_count,
             near_incumbent_fraction=args.near_incumbent_fraction,
             max_target_shapes=args.max_target_shapes,
+            requested_parent_hashes=args.interaction_parent,
         )
         pool = _interaction_pool(
             parents,
@@ -497,24 +704,85 @@ def main() -> None:
     if not pool:
         raise ValueError(f"{args.strategy} strategy produced no candidate-shape opportunities")
 
+    repair_deficits, repair_evidence = _integrated_repair_deficits(
+        deployment,
+        incumbent_report,
+        target_count=args.integrated_repair_targets,
+    )
+    repair_policy = RepairPolicy(
+        neighbor_count=8,
+        neighbor_candidates_per_shape=3,
+        cluster_candidates=4,
+        mutation_candidates_per_shape=args.integrated_repair_mutations,
+        mutation_max_changed_genes=2,
+        uncertainty_weight=0.0,
+        minimum_close_probability=0.10,
+        seed=args.seed + 2,
+    )
+    repair_pool = None
+    repair_candidate_hashes: set[str] = set()
+    general_candidate_hashes = {candidate.hash for candidate in pool}
+    if repair_deficits:
+        clustering = cluster_shapes(
+            shapes,
+            ShapeClusteringConfiguration(
+                workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
+                cluster_count=16,
+            ),
+        )
+        repair_pool = build_repair_candidate_pool(
+            controller,
+            shapes=shapes,
+            clustering=clustering,
+            deficits=repair_deficits,
+            observations=outcomes,
+            candidate_catalog=candidate_by_hash,
+            policy=repair_policy,
+        )
+        repair_candidate_hashes = {origin.candidate_hash for origin in repair_pool.origins}
+        merged_pool = {candidate.hash: candidate for candidate in pool}
+        merged_targets = {
+            candidate_hash: {shape.id: shape for shape in target_shapes}
+            for candidate_hash, target_shapes in targets_by_candidate.items()
+        }
+        for candidate, shape in repair_pool.prediction_requests(shapes):
+            merged_pool.setdefault(candidate.hash, candidate)
+            merged_targets.setdefault(candidate.hash, {})[shape.id] = shape
+        pool = tuple(merged_pool.values())
+        targets_by_candidate = {
+            candidate_hash: tuple(targets.values()) for candidate_hash, targets in merged_targets.items()
+        }
+
     model = ContextualPairModel(
         workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
         configuration=PairModelConfiguration(
             n_estimators=192,
             min_performance_rows=24,
             seed=args.seed,
-            jobs=DEFAULT_PROFILE.default_surrogate_jobs,
+            jobs=args.surrogate_jobs,
         ),
     )
     fit_summary = model.fit(outcomes)
     prediction_requests = [(candidate, shape) for candidate in pool for shape in targets_by_candidate[candidate.hash]]
     all_predictions = model.predict(prediction_requests)
+    repair_probabilities = repair_pair_close_probabilities(
+        controller,
+        deficits=repair_deficits,
+        predictions=all_predictions,
+        policy=repair_policy,
+    )
+    repair_utility_by_pair = {
+        (shape_id, candidate_hash): repair_deficits[shape_id].capped_deficit_log * probability
+        for (shape_id, candidate_hash), probability in repair_probabilities.items()
+    }
     candidates, predictions, prediction_scores = _shortlist_candidates(
         pool,
         all_predictions,
         controller=controller,
         limit=args.candidate_pool_limit,
         minimum_gain_fraction=args.minimum_model_gain,
+        general_candidate_hashes=general_candidate_hashes,
+        repair_utility_by_pair=repair_utility_by_pair,
     )
 
     evidence = load_proposal_evidence_snapshot(
@@ -532,13 +800,14 @@ def main() -> None:
         fallback_validation_s=0.15,
         fallback_timing_s=0.05,
         seed=args.seed + 1,
-        jobs=DEFAULT_PROFILE.default_surrogate_jobs,
+        jobs=args.surrogate_jobs,
     )
     cost_fit = cost_model.fit(
         candidates=candidate_by_hash,
         shapes_by_candidate=shapes_by_candidate,
         measured_costs=evidence.candidate_costs,
     )
+    shortlisted_prediction_keys = {(prediction.shape_id, prediction.candidate_hash) for prediction in predictions}
     acquisition = plan_candidate_bundles(
         controller,
         candidates=candidates,
@@ -549,6 +818,7 @@ def main() -> None:
             improvement_weight=1.0,
             coverage_weight=0.0,
             information_weight=args.information_weight,
+            repair_weight=args.integrated_repair_weight,
             bundle_sizes=(1, 2, 4, 8, 12),
             max_pairs=args.max_pairs,
             max_bundles=args.max_bundles,
@@ -556,6 +826,13 @@ def main() -> None:
             min_samples=DEFAULT_PROFILE.default_protocol.num_benchmarks,
             evidence_stage=EvidenceStage.SCREENING,
         ),
+        repair_values={
+            shape.id: repair_deficits[shape.id].capped_deficit_log if shape.id in repair_deficits else 0.0
+            for shape in shapes
+        },
+        repair_probabilities={
+            key: value for key, value in repair_probabilities.items() if key in shortlisted_prediction_keys
+        },
     )
     plan_payload = {
         "round_id": args.round_id,
@@ -568,6 +845,7 @@ def main() -> None:
             "promote": list(args.promote),
             "promotion_parent_floor": args.promotion_parent_floor,
             "parent_count": args.parent_count,
+            "interaction_parents": list(args.interaction_parent),
             "interaction_profile": args.interaction_profile,
             "store_batch_values": list(args.store_batch_values),
             "near_incumbent_fraction": args.near_incumbent_fraction,
@@ -578,6 +856,10 @@ def main() -> None:
             "soft_budget_s": args.soft_budget_s,
             "minimum_model_gain": args.minimum_model_gain,
             "information_weight": args.information_weight,
+            "integrated_repair_targets": args.integrated_repair_targets,
+            "integrated_repair_weight": args.integrated_repair_weight,
+            "integrated_repair_mutations": args.integrated_repair_mutations,
+            "surrogate_jobs": args.surrogate_jobs,
             "seed": args.seed,
         },
         "compatible_oracle_pairs": len(oracle),
@@ -590,12 +872,21 @@ def main() -> None:
         "generated_candidate_count": generated_candidate_count,
         "candidate_pool_count": len(pool),
         "shortlisted_candidate_count": len(candidates),
+        "incumbent_deployment": str(args.incumbent_deployment),
+        "incumbent_report": str(args.incumbent_report),
+        "integrated_repair_evidence": list(repair_evidence),
+        "integrated_repair_candidate_pool": None if repair_pool is None else repair_pool.to_dict(),
+        "general_candidate_hashes": sorted(general_candidate_hashes),
         "model_fit": fit_summary.to_dict(),
         "cost_fit": cost_fit.to_dict(),
         "acquisition": acquisition.to_dict(),
         "selected_candidate_predictions": {
             score.bundle.candidate.hash: {
-                "parent_hash": score.bundle.candidate.parent_hashes[0],
+                "parent_hashes": list(score.bundle.candidate.parent_hashes),
+                "proposal_lanes": [
+                    *(["general"] if score.bundle.candidate.hash in general_candidate_hashes else []),
+                    *(["integrated-repair"] if score.bundle.candidate.hash in repair_candidate_hashes else []),
+                ],
                 "model_score": list(prediction_scores[score.bundle.candidate.hash]),
                 "params": score.bundle.candidate.canonical_params(),
             }
@@ -671,7 +962,7 @@ def main() -> None:
             {
                 "shape_id": outcome.request.shape.id,
                 "candidate_hash": outcome.request.candidate.hash,
-                "parent_hash": outcome.request.candidate.parent_hashes[0],
+                "parent_hashes": list(outcome.request.candidate.parent_hashes),
                 "status": outcome.status,
                 "samples": outcome.samples,
                 "performance": outcome.performance,

@@ -338,6 +338,78 @@ The final zero-tolerance assignment uses 42 solutions and improves 67/100 shapes
 
 `finalization_v3/` supersedes `finalization_v2/` for production review. Earlier finalization data remains compatible and retained.
 
+### Resumed Integrated Search
+
+The campaign resumes after `finalization_v3` at the user's request. New rounds use the `finalization_v3` assignment as explicit controller incumbents rather than reconstructing pooled cross-session maxima. General interaction candidates and weak-shape transfer/mutation candidates share one contextual model, one cost model, one shortlist, one bundle acquisition, and one exact-pair budget. Repair contributes candidate-specific deficit-closing utility inside ordinary acquisition rather than running as a second scheduler phase. Proposal lineage and general/repair lane membership remain persisted for later multi-round policy development.
+
+The resumed stopping rule requires at least two diverse mixed rounds without a freshly stabilized gain above one percent, no supported high-value integrated-repair pair, and another complete fresh finalist/control session if any assignment changes.
+
+`round27_integrated_staging_repair` measured 48 previously unknown pairs across six staging children. Forty-seven passed validation and one failed. Three shapes improved by more than one percent against `finalization_v3` screening baselines: a `PrefetchGlobalRead 2->1` child of `cand_1bc4830878278fc3` gained 2.00% and 3.26% on the two square targets, while a three-change staging child gained 1.71% only on `m1024_n128_b1_k256`. The round also exposed an allocation flaw: adding every general child as a broad repair seed expanded unrelated staging children across all weak targets. Subsequent rounds remove this cross-product. General candidates retain their parent-competitive scopes, while integrated repair uses measured neighbor/cluster transfer and target-local mutations.
+
+`round28_integrated_promotion_repair` used the corrected scopes and measured 36 valid pairs across 16 candidates. Screening found four gains above one percent, including three apparent 12-16% repair gains and one 2.89% promotion gain. A new reusable focused-confirmation utility then retimed eight contender/control pairs with 30 samples each and cache-independent timing. Only two gains survived: `PrefetchLocalRead 1->0` on `m1024_n512_b1_k512` at 24.47%, and `cand_1e0eac72324b02b2` on `m512_n512_b1_k4096` at 1.22%. Apparent 14.55% and 2.89% screening gains reversed to -1.76% and -12.75%. Subsequent rounds use the persisted confirmed checkpoint rather than screening incumbents.
+
+`round29_confirmed_promotion_repair` measured 28 pairs across 16 candidates, with 27 valid pairs and one build failure. Focused confirmation retimed eight pairs. Two material gains survived: a `ScheduleIterAlg 1->3` plus `SourceSwap False->True` child improved `m1024_n128_b1_k4096` by 58.52%, and a vector/store transfer improved `m1024_n1024_b1_k256` by 4.48%. A 16.75% screening transfer reversed to -13.95%. A 0.25% reversal on `m512_n512_b1_k4096` is retained only as non-material checkpoint evidence pending full finalization.
+
+`round30_specialist_promotion_repair` measured 17 valid pairs across 16 candidates. Its three screening gains above one percent came from independent repair rather than the promoted specialists. Focused confirmation retained one material result: `LdsPadB 16->4` improved `m1024_n128_b1_k256` by 8.23%. The other screening gains collapsed to +0.47% and -0.34%. This clean one-parameter transition motivated a bounded LDS-padding interaction profile and explicit interaction-parent scoping so singleton specialists can be deepened without widening every incumbent family.
+
+`round31_targeted_lds_repair` measured 16 pairs: two explicit LDS-padding children and 14 independently acquired repair proposals. Fifteen pairs validated and one repair pair failed. Focused confirmation retained the targeted `LdsPadA=4, LdsPadB=16` child at +5.88% over the round-30 checkpoint incumbent. Three repair screening gains collapsed to +0.88%, +0.27%, and -0.40%. The result shows a genuine two-dimensional padding interaction and justifies one final focused sweep around the new LDS winner before diverse convergence probes.
+
+`round32_lds_closure_repair` measured 20 pairs across 16 candidates. All three remaining high-ranked LDS variants were approximately 40% slower, closing that focused trust region. One repair transfer survived fresh confirmation at +1.35% on `m1024_n1024_b1_k1024`. A 17.77% screening gain on `m512_n512_b1_k4096` reversed to -0.45%. Because the square-shape winner changes vector width, store batching, and stagger mapping together, the next round switches to a targeted vector profile rather than counting round 32 toward convergence.
+
+`round33_targeted_vector_repair` measured 31 valid pairs across 16 candidates. The first focused session showed large gains for several vector children, but an audit found that focused confirmation had previously retained only each shape's screening leader. The confirmer now retimes every successful outcome above threshold. Corrected historical sessions recovered a missed `cand_887993a97346e3ff` winner on `m512_n512_b1_k4096` and exposed severe square-shape session variability. A third all-contender session selected `cand_19c8caca7b875ac5` at +2.96% on `m1024_n1024_b1_k1024`. Its only delta from the prior checkpoint is `StoreVectorWidth 1->2`. `cand_8ad811d50cbf75c2` remains the confirmed `m896_n1024_b1_k2048` winner. The next round therefore targets store interactions around `cand_19c8caca7b875ac5`.
+
+`round34_targeted_store_repair` measured 12 timed pairs and validated four additional store candidates whose timing was not admitted before the soft deadline. Its only screening winner changed `NumElementsPerBatchStore 20->24`, but fresh confirmation reduced the gain to +0.25%. This is non-material and does not reset convergence. The four validation-only pairs remain explicitly unknown and are carried into the next promotion/re-admission round rather than treated as failed or silently discarded.
+
+`round35_promotion_readmission_repair` hydrated validation-only candidates from the durable candidate table, re-admitted all four exact store pairs, and measured 12 new parent-competitive shapes for `cand_8ad811d50cbf75c2`. Fresh all-contender confirmation rejected every square re-admission and retained one material transfer: `cand_8ad811d50cbf75c2` improved `m640_n1024_b1_k4096` by 21.97%. Two other fresh changes were below one percent. Because measured promotion still has supported unmeasured scope, convergence has not started.
+
+`round36_promotion_exhaustion_repair` measured the four remaining `cand_8ad811d50cbf75c2` promotion pairs and 16 repair pairs. The promoted candidate lost on all four targets, closing that transfer family. Repair found two contenders on `m1024_n128_b1_k256`. Fresh confirmation selected `cand_f697b9fb7ce8dd02` at +33.31% against the immediate checkpoint. Its only delta from that checkpoint is `GlobalReadVectorWidthA 1->8`, so the next round performs a targeted vector closure rather than starting convergence.
+
+`round37_targeted_vector_closure_repair` measured 37 pairs across 16 candidates. Thirty-six passed and one failed validation. Three remaining vector variants were tested across eight parent-competitive narrow shapes while repair covered six weak targets. No outcome exceeded one percent. The best was +0.14%. This closes the focused `cand_f697b9fb7ce8dd02` vector region and starts the no-material-gain counter at one.
+
+`round38_mapping_convergence_probe` measured 48 valid pairs from 12 mapping candidates spanning 11 incumbent parent families. Fresh confirmation rejected five of six screening gains but retained `cand_3e0bd93b69d0a084` at +17.40% on `m640_n1024_b1_k1024`. Its only deltas from `cand_8ad811d50cbf75c2` are `StaggerU 32->64` and `StaggerUMapping 0->1`. This resets convergence and motivates a targeted mapping closure.
+
+`round39_targeted_mapping_closure` measured 48 valid pairs from four mapping children across 11 parent-competitive shapes plus four repair probes. Fresh confirmation retained `cand_e7c6e98ff8cfa7b8` on `m1024_n1024_b1_k1024` (+8.80%) and `m640_n1024_b1_k4096` (+21.21%). Its only delta from the round-38 parent is `StaggerUMapping 1->0`. `cand_79fafe9244a37d51`, which changes `StaggerU 64->0`, improved `m896_n1024_b1_k2048` by 21.15%. A final measured-promotion audit found zero remaining parent-competitive opportunities even at a 0.85 floor, closing the mapping family.
+
+`round40_staging_convergence_probe` measured 48 valid pairs from eight staging candidates spanning seven parent families. Every candidate lost. The best outcome was -0.72%. This is the first consecutive diverse no-material-gain round after mapping closure.
+
+`round41_store_convergence_probe` measured 48 valid pairs from 10 store candidates spanning nine parent families. Fresh confirmation retained `cand_a6fae0ed8911ecbb` on three shapes at +2.21% to +4.30% and `cand_67845d12c0e26681` on `m896_n1024_b1_k2048` at +5.27%. One additional change was +0.49%. The material store gains reset convergence and are promoted into remaining parent-competitive scope next.
+
+`round42_store_promotion_repair` measured 20 parent-competitive `cand_a6fae0ed8911ecbb` pairs, one remaining `cand_67845d12c0e26681` pair, and 15 repair pairs. Fresh confirmation retained `cand_a6fae0ed8911ecbb` on `m1024_n128_b1_k512` (+1.98%) and `m896_n512_b1_k1024` (+20.40%). Three other screening gains reversed. One final promotion widens the measured-parent floor from 0.85 to 0.80 to exhaust supported transfer scope.
+
+`round43_store_promotion_exhaustion` measured seven remaining admitted `cand_a6fae0ed8911ecbb` transfers and 15 repair pairs. No outcome exceeded one percent. The best was +0.37%, and repair produced no positive contender. The widened store family is exhausted. A new convergence sequence begins with broad vector and LDS probes.
+
+`round44_vector_convergence_probe` measured 48 valid pairs from 12 vector candidates spanning nine parent families. Fresh confirmation rejected five of six screening gains but retained `cand_1c5e148e9775e0fc` at +21.69% on `m896_n1024_b1_k2048`. Relative to the immediate checkpoint, it changes `NumElementsPerBatchStore 10->20` and `VectorWidthB 2->1`. This resets convergence. Measured promotion is audited before the planned LDS probe.
+
+`round45_vector_promotion_exhaustion` measured the only remaining `cand_1c5e148e9775e0fc` transfer plus 17 repair pairs. The transfer lost. One 18.95% repair screening gain reversed to -0.56% under fresh confirmation. This closes the vector family and starts the no-material-gain counter at one.
+
+`round46_lds_convergence_probe` measured 48 valid pairs from 11 LDS candidates spanning 10 parent families. Its two screening gains reversed to -1.49% and -16.31% under fresh confirmation. This is the second consecutive mixed no-material-gain round. A final staging restart checks only new exact pairs before full finalization.
+
+`round47_staging_convergence_restart` measured 48 new valid pairs from eight staging candidates spanning seven parent families. Every candidate lost. The best outcome was -0.03%. With active promotion families exhausted, repair producing no stabilized gain in rounds 45-47, and three consecutive fresh no-material-gain rounds across promotion/repair, LDS, and staging strategies, the resumed search is converged.
+
+`finalization_v4` is the authoritative post-convergence deployment evidence. It freshly retimed 320 contender/control pairs across 95 candidates with 30 samples each. All 320 pairs passed validation, producing 9,600 fresh samples in 62.52 seconds. Original compatible winners and current checkpoint incumbents were mandatory for every shape. The zero-tolerance assignment improves 72 shapes over fresh original controls, 56 by at least one percent, with 4.71% mean, 1.26% median, and 47.43% maximum gain. Against fresh same-session checkpoint controls, it improves 36 shapes, 19 by at least one percent, with 1.26% mean and 23.94% maximum gain, and no regressions.
+
+The final solution-bank tradeoffs are:
+- 42 solutions at zero tolerance.
+- 36 solutions at 0.5% tolerance, with 0.017% mean measured loss and 0.399% worst loss.
+- 31 solutions at 1% tolerance, with 0.058% mean measured loss and 0.980% worst loss.
+- 26 solutions at 2% tolerance, with 0.184% mean measured loss and 1.884% worst loss.
+
+### Installed Zero-Tolerance Deployment
+
+After explicit approval, the zero-tolerance `finalization_v4` assignment was exported into all four required gfx1151 GridBased variants. Every generated file contains 42 solutions and 100 exact shape mappings with no missing or duplicate shape. The reviewed files were copied into hipBLASLt, rebuilt for gfx1151, and installed into `/home/wd/venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel`. The external source diff contains only those four GridBased YAML files.
+
+Installed-library validation produced:
+- 6/6 default target and off-grid verifier cases passed.
+- Five alternating 100-shape verified passes across the new and preserved untuned installations passed all 500/500 cases, with maximum normalized error `9.12e-05`.
+- Thirty additional high-iteration checks on six noisy shapes passed.
+- All 100 current deployment rows dispatched the exact generated local solution in each of three full-grid passes. The installed global solution index minus generated local solution ID was consistently `1825`. This stronger index check avoids ambiguity from six pairs of solutions that share runtime names.
+
+Using the same 10-cold/100-iteration query command as the retained pre-update tuned installation, the median of three current passes improves 97/100 shapes, 94 by at least 1%, and 85 by at least 5%. Mean and median shape gains are 24.76% and 22.30%, with a 125.48% maximum gain. The three measured regressions are 4.61%, 2.94%, and 1.85%. None reaches 5%.
+
+A separate same-session comparison interleaved three current and two preserved-untuned verified passes. Six noisy shapes were stabilized with alternating 100-cold/1000-iteration checks. The resulting comparison improves 89/100 shapes, 84 by at least 1%, and 65 by at least 5%, with 26.02% mean and 19.57% median gain. Two shapes remain at least 5% below the untuned package in this hipblaslt-bench oracle: `m512_n128_b1_k1024` at -15.66% and `m640_n256_b1_k256` at -8.95%.
+
+Tensile finalization and installed hipblaslt-bench timing are distinct exact oracles, so their absolute throughput values are not compared directly. The installed deployment report, source and installed artifact hashes, build log, raw verifier outputs, and query results are under `out/gridbased_logic_finalization_v4/`.
+
 ### Convergence Criteria
 
 Configuration search is considered converged only after all of the following hold:
@@ -358,7 +430,7 @@ The evidence also established important limits:
 - model predictions and screening incumbents are not production evidence.
 - nonzero deployment tolerance is useful only when it actually reduces the confirmed solution bank and its measured loss is acceptable.
 
-The practical configuration search and dedicated outlier-repair reserve are now exhausted under the stated criteria. Production decisions should use the fresh `finalization_v3` assignment rather than pooled historical rankings or earlier finalizations. The zero-tolerance assignment maximizes freshly confirmed speed. The 0.5%, 1%, and 2% artifacts provide explicit solution-count/loss tradeoffs for review. Production logic generation and any hipBLASLt rebuild or installation remain separate operational actions requiring explicit approval.
+The practical configuration search, integrated repair, measured promotions, focused trust regions, and final restart are now exhausted under the stated criteria. Production decisions should use the fresh `finalization_v4` assignment rather than pooled historical rankings or earlier finalizations. The zero-tolerance assignment maximizes freshly confirmed speed. The 0.5%, 1%, and 2% artifacts provide explicit solution-count/loss tradeoffs for review. The approved zero-tolerance production logic generation, hipBLASLt rebuild, installation, and installed-library verification are complete. The two remaining same-session untuned regressions are retained as explicit deployment evidence rather than folded back into search evidence.
 
 ## Artifact Index
 
@@ -383,6 +455,9 @@ The practical configuration search and dedicated outlier-repair reserve are now 
 - Superseded pre-repair finalization: `out/grid100_production_search_20260712/finalization_v2/report.json`.
 - Outlier-repair report: `out/grid100_production_search_20260712/round26_outlier_repair/report.json`.
 - Focused repair confirmation: `out/grid100_production_search_20260712/round26_outlier_repair/confirmation/report.json`.
-- Production finalization report: `out/grid100_production_search_20260712/finalization_v3/report.json`.
-- Zero-tolerance assignment: `out/grid100_production_search_20260712/finalization_v3/deployment_0.000.json`.
-- Consolidated assignments: `out/grid100_production_search_20260712/finalization_v3/deployment_0.005.json`, `out/grid100_production_search_20260712/finalization_v3/deployment_0.010.json`, and `out/grid100_production_search_20260712/finalization_v3/deployment_0.020.json`.
+- Superseded post-repair finalization: `out/grid100_production_search_20260712/finalization_v3/report.json`.
+- Production finalization report: `out/grid100_production_search_20260712/finalization_v4/report.json`.
+- Zero-tolerance assignment: `out/grid100_production_search_20260712/finalization_v4/deployment_0.000.json`.
+- Consolidated assignments: `out/grid100_production_search_20260712/finalization_v4/deployment_0.005.json`, `out/grid100_production_search_20260712/finalization_v4/deployment_0.010.json`, and `out/grid100_production_search_20260712/finalization_v4/deployment_0.020.json`.
+- Staged GridBased export and build/install evidence: `out/gridbased_logic_finalization_v4/`.
+- Installed deployment report: `out/gridbased_logic_finalization_v4/installed_validation_report.json`.

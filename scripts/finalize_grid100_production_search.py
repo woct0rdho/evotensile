@@ -368,6 +368,26 @@ def main() -> None:
         shape_id: zero_selection.confirmed_performance[shape_id] / fresh_baseline_performance[shape_id] - 1.0
         for shape_id in zero_selection.shape_ids
     }
+    current_incumbent_improvement = None
+    if incumbent_candidate_by_shape:
+        fresh_incumbent_performance = {
+            shape_id: fresh_performance_by_key[(shape_id, incumbent_candidate_by_shape[shape_id])]
+            for shape_id in zero_selection.shape_ids
+        }
+        incumbent_improvement_by_shape = {
+            shape_id: zero_selection.confirmed_performance[shape_id] / fresh_incumbent_performance[shape_id] - 1.0
+            for shape_id in zero_selection.shape_ids
+        }
+        current_incumbent_improvement = {
+            "comparison": "fresh same-session current deployment incumbent",
+            "improved_shapes": sum(value > 0.0 for value in incumbent_improvement_by_shape.values()),
+            "improved_over_one_percent": sum(value >= 0.01 for value in incumbent_improvement_by_shape.values()),
+            "mean_improvement_fraction": statistics.fmean(incumbent_improvement_by_shape.values()),
+            "median_improvement_fraction": statistics.median(incumbent_improvement_by_shape.values()),
+            "maximum_improvement_fraction": max(incumbent_improvement_by_shape.values()),
+            "minimum_improvement_fraction": min(incumbent_improvement_by_shape.values()),
+            "per_shape": dict(sorted(incumbent_improvement_by_shape.items())),
+        }
     historical_reference_performance = {
         shape_id: rankings[0].median_gflops for shape_id, rankings in baseline_rankings.items()
     }
@@ -406,6 +426,7 @@ def main() -> None:
             "minimum_improvement_fraction": min(improvement_by_shape.values()),
             "per_shape": dict(sorted(improvement_by_shape.items())),
         },
+        "current_incumbent_improvement": current_incumbent_improvement,
         "historical_reference_delta": {
             "comparison": "cross-session historical pooled median; diagnostic only",
             "mean_fraction": statistics.fmean(historical_reference_delta.values()),

@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from typing import TypedDict
 
 import numpy as np
-from joblib import Parallel, delayed
 from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 from sklearn.feature_extraction import DictVectorizer
+from sklearn.utils.parallel import Parallel, delayed
 
 from evotensile.campaign.evaluator import PairEvaluationOutcome
 from evotensile.candidate import Candidate, Shape
