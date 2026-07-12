@@ -218,6 +218,118 @@ Zero-tolerance deployment selected 11-12 exact confirmed winners, averaging:
 
 Tolerances from 1% through 5% produced no additional reduction because the exact winners were already broadly shared. The artifact is `out/grid100_deployment_selection_20260712.json`. Production confirmation and export requirements are in `docs/deployment_selection.md`.
 
+## Practical Production-Improvement Campaign
+
+The controlled P01-P14 experiment remains complete. A separate practical campaign is now active to improve the retained 100-shape result until additional configuration search no longer produces significant robust gains.
+
+### Operating Rules
+
+- Start every round from all compatible retained and newly measured evidence. Do not restart the search or densely remeasure the existing candidate catalog.
+- Use `out/grid100_production_search_20260712.sqlite` as the mutable campaign database. It starts as a copy of `out/grid100_compatible_20260712.sqlite`, which already consolidates the historical, untuned/tuned baseline, and both policy-hybrid evidence overlays.
+- Submit explicit sparse `(candidate, shape)` requests. Preparing one candidate for several shapes may share work, but artifact scope must not imply unrequested timing pairs.
+- Give new candidates short exact screening on shapes where their parent or model makes them plausible. Promote only measured improvements or statistically close candidates to additional shapes and samples.
+- Keep ordinary rounds near a five-minute soft budget. Admitted builds, validation, and timing drain normally so timeout pressure does not discard evidence or corrupt ingestion.
+- Preserve full GPU-oracle validation as a hard gate. Historical timing may guide proposals and define comparison thresholds, but production assignment still requires current compatible validation and fresh confirmation.
+- Keep production GridBased generation, source overwrite, and hipBLASLt rebuild/install as separate approval-gated actions after convergence.
+
+### Round Strategy
+
+- Establish the consolidated incumbent and uncertainty report from retained exact evidence, including winner frequency, candidate coverage, close gaps, and noisy shapes.
+- Run incumbent-centered trust-region interaction sweeps. Freeze each strong structural family and vary a bounded set of scheduling/store parameters, initially emphasizing `ScheduleIterAlg`, `StorePriorityOpt`, `NumElementsPerBatchStore`, and `StoreVectorWidth`.
+- Fit the contextual pair model to all disclosed compatible exact evidence and use shared-cost acquisition to choose only high-value unknown child-shape pairs. Limit each child initially to shapes where its parent is incumbent or close to incumbent.
+- Promote measured improvements across mechanically nearby or parent-competitive shapes. Do not infer transfer performance from shared artifacts or neighboring results.
+- Repair weak or noisy shapes with focused structural and interaction neighborhoods, then retime close finalists with paired or blocked controls when ordinary pooled timing is insufficient.
+- Refit and repeat after every round. Change parameter neighborhoods, acquisition weights, or proposal mechanics when round evidence identifies a systematic blind spot or execution inefficiency.
+- After search convergence, freshly validate and confirm the final candidate bank on all assigned exact shapes, then produce a reviewed deployment-selection artifact. Do not generate production logic without explicit approval.
+
+### Initial Evidence Audit
+
+The pre-round audit of the compatible database found:
+- `224` candidates, `100` shapes, `17,171` benchmark events, `168,214` samples, and `8,858` positive exact pairs.
+- `24` distinct historical per-shape winners. The most frequent winner covered `14` shapes, so the retained optimum is not one homogeneous configuration family.
+- several winner candidates have exact timing on only `16-37` shapes, leaving useful targeted transfer pairs without justifying dense 100-shape evaluation.
+- several top-two gaps are below one percent, while some current winners have relative MAD above two percent. These shapes require stabilization rather than treating a pooled median ordering as final.
+
+### Implemented Round Infrastructure
+
+The practical campaign added:
+- `evotensile/search/trust_region.py`, which deterministically enumerates bounded interaction grids around complete measured parents while preserving lineage, scope eligibility, and optional linked repair.
+- `scripts/run_grid100_practical_round.py`, which initializes one consolidated mutable DB, reconstructs all compatible exact evidence, builds parent-competitive target sets, fits the contextual pair model, excludes known pairs, selects shared-cost bundles, executes exact GPU-validated requests, and appends auditable plans/reports to the campaign manifest.
+- interaction profiles for store/scheduling, staging/prefetch, mapping/stagger, and read/vectorization neighborhoods, plus a promotion mode for measured children and their explicit comparison parents.
+- an explicit random seed default of `12345`. Later round seeds use visibly deliberate incremental values rather than date-like or architecture-like values.
+- `scripts/finalize_grid100_production_search.py`, which freshly validates and measures current contenders plus the original compatible winner control, requires complete selected artifacts, and writes zero- and nonzero-tolerance deployment assignments without generating production logic.
+
+### Native Search Rounds
+
+All 25 rounds operated on `out/grid100_production_search_20260712.sqlite`, selected only previously unknown exact pairs, and retained all positive and negative evidence. They requested 899 pairs from 105 candidate-round bundles. Ordinary rounds completed well below five minutes. Admitted work always drained and was ingested.
+
+| Round | Strategy | Pairs | Candidates | OK | Validation failed | >1% shapes | Maximum gain |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `round01_store_interactions` | store interaction | 48 | 6 | 40 | 8 | 8 | 9.39% |
+| `round02_promote_nepbs20` | measured promotion | 12 | 1 | 12 | 0 | 2 | 2.09% |
+| `round03_expanded_store_sweep` | expanded store interaction | 48 | 5 | 48 | 0 | 2 | 3.09% |
+| `round04_promote_nepbs24` | measured promotion | 13 | 1 | 13 | 0 | 1 | 1.40% |
+| `round05_staging_interactions` | staging interaction | 48 | 7 | 48 | 0 | 19 | 12.43% |
+| `round06_promote_staging_winners` | measured promotion | 45 | 4 | 45 | 0 | 4 | 14.61% |
+| `round07_mapping_interactions` | mapping interaction | 48 | 6 | 48 | 0 | 3 | 2.45% |
+| `round08_promote_mapping_winners` | measured promotion | 25 | 2 | 25 | 0 | 1 | 6.31% |
+| `round09_vector_interactions` | vector interaction | 48 | 5 | 36 | 12 | 1 | 1.11% |
+| `round10_store_after_staging` | conditional store interaction | 48 | 6 | 48 | 0 | 0 | 0.43% |
+| `round11_staging_convergence_probe` | staging interaction | 48 | 6 | 48 | 0 | 4 | 2.04% |
+| `round12_promote_pgr1_variant` | measured promotion | 4 | 1 | 4 | 0 | 0 | 0.98% |
+| `round13_mapping_convergence_probe` | mapping interaction | 48 | 6 | 48 | 0 | 0 | 1.00% |
+| `round14_vector_convergence_probe` | vector interaction | 48 | 6 | 36 | 12 | 11 | 3.75% |
+| `round15_promote_vector_winners` | measured promotion | 24 | 2 | 24 | 0 | 5 | 4.04% |
+| `round16_vector_refit_probe` | vector refit | 48 | 5 | 36 | 12 | 1 | 1.34% |
+| `round17_promote_grvwb4_vwb2` | measured promotion | 16 | 1 | 16 | 0 | 2 | 4.10% |
+| `round18_vector_final_refit` | vector refit | 48 | 5 | 48 | 0 | 2 | 4.84% |
+| `round19_promote_final_vector_children` | measured promotion | 20 | 2 | 20 | 0 | 1 | 2.76% |
+| `round20_vector_exhaustion_probe` | vector refit | 48 | 7 | 37 | 11 | 2 | 5.11% |
+| `round21_promote_grvwa4` | measured promotion | 8 | 1 | 8 | 0 | 0 | 0.00% |
+| `round22_final_store_probe` | conditional store interaction | 48 | 5 | 48 | 0 | 1 | 1.39% |
+| `round23_promote_nepbs24_vector_family` | measured promotion | 12 | 1 | 12 | 0 | 0 | 0.69% |
+| `round24_mapping_convergence_restart` | mapping convergence | 48 | 7 | 48 | 0 | 0 | 0.68% |
+| `round25_staging_convergence_restart` | staging convergence | 48 | 7 | 48 | 0 | 0 | 0.00% |
+
+The most important findings were conditional rather than universal:
+- changing `NumElementsPerBatchStore` from 10 to 20 in one strong family improved several `N=512-1024` shapes by 1-9%, but was substantially slower on square and some `M=512` cases.
+- staging changes were the largest source of improvement. `PrefetchGlobalRead 1->2` and one `DepthU 32->16` child produced gains up to 14.61%. Promotion confirmed other shape-specific gains but also large regressions outside their regimes.
+- mapping/stagger changes mostly produced sub-percent effects, with isolated gains through 6.31% after promotion.
+- the late vector basin required conditional combinations. `GlobalReadVectorWidthB 8->4` with `VectorWidthB 2->4`, then `VectorWidthB 4->2`, and later `VectorWidthA=2` produced distinct shape-local gains. None was safe to generalize across families.
+- the final conditional store change on the vector family produced one 1.39% gain, but promotion found no further gain above 0.69%.
+
+Correctness failures were also conditional. Four generated children failed validation on every requested pair, totaling 43 failed exact pairs. The observed patterns included one `ScheduleIterAlg=3`/NEPBS8 child and several `VectorWidthA=2` children in specific families, while `VectorWidthA=2` was valid and fast in another family. These remain structured anomaly evidence. The campaign did not convert them into global validity rules or patch TensileLite.
+
+### Convergence And Final Confirmation
+
+After the last measured promotion, two diverse current-incumbent proposal rounds established broad-search convergence:
+- `round24_mapping_convergence_restart` measured 48 new valid pairs and found no gain above 0.68%.
+- `round25_staging_convergence_restart` measured 48 new valid pairs and found no improvement.
+
+The corrected final run at `out/grid100_production_search_20260712/finalization_v2/` freshly measured the current contenders and mandatory original-compatible-winner control for every shape in one session:
+- 298 exact candidate-shape pairs across 73 candidates.
+- all 298 pairs passed fresh hipBLASLt GPU-oracle validation.
+- 8,940 fresh main-protocol samples, 30 per pair.
+- every selected pair has a registered artifact.
+- zero-tolerance selection improved 69/100 shapes against the freshly measured original winner controls, with 43 gains of at least 1%, 3.19% mean gain, 0.45% median gain, and 24.58% maximum gain. The minimum same-session gain is zero because the original control remains eligible.
+
+The zero-tolerance assignment uses 45 solutions. Optional consolidation produces:
+- 34 solutions at 0.5% tolerance, with 0.036% mean measured loss and 0.445% worst loss.
+- 30 solutions at 1% tolerance, with 0.072% mean measured loss and 0.966% worst loss.
+- 27 solutions at 2% tolerance, with 0.133% mean measured loss and 1.408% worst loss.
+
+`finalization/` is superseded by `finalization_v2/` because the first finalization did not force the original compatible winner into every same-session contender group. Its data remains compatible and retained, but production decisions must use `finalization_v2/deployment_*.json`.
+
+### Convergence Criteria
+
+Configuration search is considered converged only after all of the following hold:
+- at least two consecutive diverse proposal rounds produce no fresh validated improvement above one percent on any shape after stabilization.
+- no unmeasured high-probability pair remains above the configured practical-improvement threshold in the contextual model or focused trust regions.
+- weak/noisy shapes have stable finalists or an explicit evidence-backed explanation for remaining uncertainty.
+- a final fresh confirmation round finds no material winner reversal and covers every intended deployment assignment with registered artifacts.
+
+Sub-one-percent changes may still be retained when repeated paired evidence is stable and they do not increase deployment risk, but they do not by themselves reset the broad-search convergence counter.
+
 ## Experiment Conclusion
 
 The experiment established that the retained 100-shape result can be managed as one exact, cost-aware campaign rather than 100 isolated searches. The selected mechanisms support sparse exact evaluation, shared artifact preparation, measured promotion, contextual allocation, bounded repair, explicit workload priorities, fresh final confirmation, and deterministic deployment assignment.
@@ -228,7 +340,7 @@ The evidence also established important limits:
 - model predictions and screening incumbents are not production evidence.
 - nonzero deployment tolerance is useful only when it actually reduces the confirmed solution bank and its measured loss is acceptable.
 
-Practical improvement should start from the existing candidates, compatible oracle, selected anchored policies, workload information when available, and current deployment assignment. New native work should be targeted at exact weak-shape, missing-pair, stabilization, confirmation, and artifact-completion needs rather than repeating the full campaign. Production logic generation and any hipBLASLt rebuild or installation remain separate operational actions requiring explicit approval.
+The practical configuration search is now converged under the stated criteria. Production decisions should use the fresh `finalization_v2` assignment rather than pooled historical rankings. The zero-tolerance assignment maximizes freshly confirmed speed. The 0.5%, 1%, and 2% artifacts provide explicit solution-count/loss tradeoffs for review. Production logic generation and any hipBLASLt rebuild or installation remain separate operational actions requiring explicit approval.
 
 ## Artifact Index
 
@@ -246,3 +358,10 @@ Practical improvement should start from the existing candidates, compatible orac
 - Singleton policy tuning: `out/grid100_singleton_policy_tuning_20260712.json`.
 - Workload weighting: `out/grid100_workload_weighting_20260712.json`.
 - Deployment selection: `out/grid100_deployment_selection_20260712.json`.
+- Practical mutable evidence DB: `out/grid100_production_search_20260712.sqlite`.
+- Practical campaign manifest: `out/grid100_production_search_20260712_manifest.json`.
+- Practical round plans/reports and compile cache: `out/grid100_production_search_20260712/`.
+- Superseded first finalization: `out/grid100_production_search_20260712/finalization/report.json`.
+- Production finalization report: `out/grid100_production_search_20260712/finalization_v2/report.json`.
+- Zero-tolerance assignment: `out/grid100_production_search_20260712/finalization_v2/deployment_0.000.json`.
+- Consolidated assignments: `out/grid100_production_search_20260712/finalization_v2/deployment_0.005.json`, `out/grid100_production_search_20260712/finalization_v2/deployment_0.010.json`, and `out/grid100_production_search_20260712/finalization_v2/deployment_0.020.json`.

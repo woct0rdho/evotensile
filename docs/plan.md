@@ -97,10 +97,10 @@ Explicit non-goals and safety boundaries:
 ## Broader Future Plan
 
 Near-term:
-- Improve the existing 100-shape result for practical deployment rather than rerunning the completed controlled campaign from scratch.
-- Start from retained candidates, compatible exact evidence, frozen anchored policies, and explicit deployment assignments. Spend new native work only on exact weak-shape, missing-pair, stabilization, and confirmation needs.
+- Review the converged practical 100-shape result in `out/grid100_production_search_20260712/finalization_v2/`. Zero tolerance maximizes freshly confirmed speed with 45 solutions. 0.5%, 1%, and 2% alternatives explicitly trade up to 0.445%, 0.966%, and 1.408% worst-shape loss for 34, 30, and 27 solutions.
+- Treat the 25-round practical search as complete under its convergence criteria. Resume native configuration search only for new evidence, a changed workload/target/environment, or a focused unresolved correctness/performance hypothesis rather than rerunning the campaign.
 - Use an explicit workload when practical call frequencies are available, while retaining unweighted tail and worst-shape reporting.
-- Require fresh production confirmation and complete registered artifacts before generating GridBased logic. Rebuild/install only after explicit approval.
+- Use only the corrected fresh `finalization_v2` assignment for production review. Require complete registered artifacts before generating GridBased logic, and rebuild/install only after explicit approval.
 - Broaden installed-library correctness cases beyond the six curated verifier cases.
 - Apply the validated mechanisms to larger or finer NT HHS grids only after the practical 100-shape deployment is reviewed.
 

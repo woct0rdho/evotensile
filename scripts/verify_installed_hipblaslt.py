@@ -227,7 +227,7 @@ def _run_case(
                 "hipblaslt_version": _match(HIPBLASLT_VERSION_RE, proc.stdout),
                 "hipblaslt_git_version": _match(HIPBLASLT_GIT_VERSION_RE, proc.stdout),
             }
-        except Exception as exc:  # noqa: BLE001 - include parse failure in CSV/JSON output.
+        except Exception as exc:
             error = f"parse_error: {exc}"
     else:
         error = f"returncode={proc.returncode}"
