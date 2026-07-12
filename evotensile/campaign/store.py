@@ -1,11 +1,46 @@
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TypedDict, cast
 
+from evotensile.campaign.controller import (
+    CampaignControllerState,
+    CampaignSummaryPayload,
+    ControllerCheckpointPayload,
+)
 from evotensile.campaign.models import CampaignConfiguration, RoundProposal
 from evotensile.candidate import Candidate
 from evotensile.search.campaign_control import ProposalEvent
+
+
+class CampaignRecord(TypedDict, total=False):
+    blind: bool
+    configuration: dict[str, object]
+    configuration_hash: str
+    screening_protocol_hash: str
+    validation_protocol_hash: str
+    hot_protocol_hash: str
+    rounds: list[Mapping[str, object]]
+    restart_counters: dict[str, int]
+    stop_reason: str | None
+    controller: CampaignSummaryPayload
+    confirmation_reserve_s: float
+    elapsed_s: float
+    budget_overrun_s: float
+    screening_leader: object
+    hot_leader: object
+    hot_confirmed: int
+
+
+class StoredCampaignCheckpoint(TypedDict, total=False):
+    controller: ControllerCheckpointPayload
+    round_seed: int | None
+    candidate_hashes: list[str]
+    configuration_hash: str
+    restart_counters: dict[str, int]
+    deterministic_rng: str
+    operator_credit_state: str
+    surrogate_state: str
 
 
 class CampaignStore:
@@ -39,8 +74,13 @@ class CampaignStore:
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(path)
 
-    def load_checkpoint(self) -> dict[str, Any]:
-        return json.loads(self.checkpoint_path.read_text(encoding="utf-8")) if self.checkpoint_path.exists() else {}
+    def load_checkpoint(self) -> StoredCampaignCheckpoint:
+        if not self.checkpoint_path.exists():
+            return {}
+        return cast(
+            StoredCampaignCheckpoint,
+            json.loads(self.checkpoint_path.read_text(encoding="utf-8")),
+        )
 
     def load_or_create(
         self,
@@ -48,7 +88,7 @@ class CampaignStore:
         *,
         resume: bool,
         island_ids: Sequence[str],
-    ) -> tuple[dict[str, Any], bool]:
+    ) -> tuple[CampaignRecord, bool]:
         configuration_path = self.root / "campaign_configuration.json"
         progress_path = self.root / "campaign_progress.json"
         expected_configuration = configuration.to_dict()
@@ -60,8 +100,11 @@ class CampaignStore:
             frozen_configuration = json.loads(configuration_path.read_text(encoding="utf-8"))
             if frozen_configuration != expected_configuration:
                 raise SystemExit("resume configuration mismatch; start a new campaign root")
-            record = json.loads(
-                (progress_path if progress_path.exists() else configuration_path).read_text(encoding="utf-8")
+            record = cast(
+                CampaignRecord,
+                json.loads(
+                    (progress_path if progress_path.exists() else configuration_path).read_text(encoding="utf-8")
+                ),
             )
             if record.get("configuration_hash") != configuration.identity_hash:
                 raise SystemExit("resume configuration hash mismatch; start a new campaign root")
@@ -69,7 +112,7 @@ class CampaignStore:
 
         self.root.mkdir(parents=True)
         self._write_json(configuration_path, expected_configuration)
-        record: dict[str, Any] = {
+        record: CampaignRecord = {
             "blind": True,
             "configuration": expected_configuration,
             "configuration_hash": configuration.identity_hash,
@@ -78,8 +121,6 @@ class CampaignStore:
             "hot_protocol_hash": configuration.hot_protocol.protocol_hash(),
             "rounds": [],
             "restart_counters": {**{island_id: 0 for island_id in island_ids}, "merged": 0},
-            "search_elapsed_s": 0.0,
-            "active_elapsed_s": 0.0,
             "stop_reason": None,
         }
         self.write_progress(record)
@@ -119,20 +160,16 @@ class CampaignStore:
         self,
         *,
         record: Mapping[str, object],
-        phase: str,
-        round_index: int,
+        controller: CampaignControllerState,
         round_seed: int | None,
         candidate_hashes: Sequence[str],
     ) -> None:
         self._write_json(
             self.checkpoint_path,
             {
-                "phase": phase,
-                "round": round_index,
+                "controller": controller.to_checkpoint(),
                 "round_seed": round_seed,
                 "candidate_hashes": list(candidate_hashes),
-                "search_elapsed_s": record.get("search_elapsed_s", 0.0),
-                "active_elapsed_s": record.get("active_elapsed_s", 0.0),
                 "configuration_hash": record["configuration_hash"],
                 "restart_counters": record["restart_counters"],
                 "deterministic_rng": "round and proposal-event seeds fully determine generator and surrogate RNG state",

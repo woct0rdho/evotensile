@@ -5,11 +5,12 @@ import copy
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
 from evotensile.artifacts import load_artifact_mappings
+from evotensile.campaign.deployment import DeploymentSelection, DeploymentSelectionPayload
 from evotensile.database import BenchmarkSummary, EvoTensileDB
 from evotensile.profile import PROFILES, TargetProfile, get_profile
 from evotensile.protocol import BenchmarkProtocol, apply_benchmark_protocol_overrides
@@ -138,6 +139,53 @@ def _load_winners_from_db(
     )
     if missing:
         raise ValueError(f"winners lack current passed validation evidence: {', '.join(missing)}")
+    return winners
+
+
+def _load_winners_from_assignments(
+    db: EvoTensileDB,
+    *,
+    assignments: dict[str, str],
+    profile: TargetProfile,
+    protocol: BenchmarkProtocol,
+    min_samples: int,
+) -> list[Winner]:
+    summaries = {
+        (summary.shape_id, summary.candidate_hash): summary
+        for summary in db.rank_benchmarks(
+            problem_type_hash=profile.problem_type_hash,
+            benchmark_protocol_hash=profile.benchmark_protocol_hash(protocol),
+            min_samples=min_samples,
+        )
+    }
+    missing = sorted(
+        f"{shape_id}:{candidate_hash}"
+        for shape_id, candidate_hash in assignments.items()
+        if (shape_id, candidate_hash) not in summaries
+    )
+    if missing:
+        raise ValueError("selected production pairs lack complete confirmation timing: " + ", ".join(missing))
+    validated = db.validated_cache_entries(
+        problem_type_hash=profile.problem_type_hash,
+        validation_protocol_hash=protocol.validation_protocol_hash(),
+        shape_ids=list(assignments),
+        candidate_hashes=list(dict.fromkeys(assignments.values())),
+    )
+    unvalidated = sorted(
+        f"{shape_id}:{candidate_hash}"
+        for shape_id, candidate_hash in assignments.items()
+        if (shape_id, candidate_hash) not in validated
+    )
+    if unvalidated:
+        raise ValueError("selected production pairs lack current passed validation: " + ", ".join(unvalidated))
+    winners = []
+    for shape_id, candidate_hash in sorted(assignments.items()):
+        median_gflops = summaries[(shape_id, candidate_hash)].median_gflops
+        if median_gflops is None or median_gflops <= 0.0:
+            raise ValueError(
+                f"selected production pair lacks positive confirmation throughput: {shape_id}:{candidate_hash}"
+            )
+        winners.append(Winner(shape_id, candidate_hash, median_gflops))
     return winners
 
 
@@ -350,6 +398,7 @@ def update_logic_files(
     variant_names: list[str],
     destination_dir: Path | None = None,
     allow_partial: bool = False,
+    winner_assignments: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     db = EvoTensileDB.connect(
         db_path,
@@ -361,7 +410,17 @@ def update_logic_files(
     if unknown:
         raise ValueError(f"unknown variants: {', '.join(unknown)}")
 
-    winners = _load_winners_from_db(db, profile=profile, protocol=protocol, min_samples=min_samples)
+    winners = (
+        _load_winners_from_db(db, profile=profile, protocol=protocol, min_samples=min_samples)
+        if winner_assignments is None
+        else _load_winners_from_assignments(
+            db,
+            assignments=winner_assignments,
+            profile=profile,
+            protocol=protocol,
+            min_samples=min_samples,
+        )
+    )
     shape_set = _validate_winner_shape_set(winners, profile=profile, allow_partial=allow_partial)
     candidate_params = _candidate_params_by_hash(db, winners)
     candidate_hashes = list(candidate_params)
@@ -430,6 +489,7 @@ def update_logic_files(
         if destination_dir is not None and destination_dir != logic_dir
         else ("source" if destination_dir is not None else "preview"),
         "allow_partial": allow_partial,
+        "winner_source": "database-rank" if winner_assignments is None else "deployment-selection",
         "expected_shape_count": len(shape_set["expected"]),
         "missing_shape_ids": shape_set["missing"],
         "shape_count": len(winners),
@@ -458,6 +518,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--write-source", action="store_true")
     parser.add_argument("--allow-partial", action="store_true")
+    parser.add_argument("--selection-json", type=Path)
     parser.add_argument("--variant", action="append", choices=sorted(VARIANTS), default=[])
     args = parser.parse_args()
 
@@ -468,6 +529,17 @@ def main() -> int:
     profile = get_profile(args.profile)
     protocol = _protocol_from_args(args, profile)
     variant_names = args.variant or ["hhs", "hhs_auxh", "bbs", "bbs_auxb"]
+    winner_assignments = None
+    if args.selection_json is not None:
+        payload = json.loads(args.selection_json.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("deployment selection JSON must contain one object")
+        selection_payload = payload.get("selection", payload)
+        if not isinstance(selection_payload, dict):
+            raise ValueError("deployment selection payload must contain one object")
+        winner_assignments = DeploymentSelection.from_dict(
+            cast(DeploymentSelectionPayload, selection_payload)
+        ).assignments
     result = update_logic_files(
         db_path=args.db,
         profile=profile,
@@ -477,6 +549,7 @@ def main() -> int:
         variant_names=variant_names,
         destination_dir=args.logic_dir if args.write_source else args.output_dir,
         allow_partial=args.allow_partial,
+        winner_assignments=winner_assignments,
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0

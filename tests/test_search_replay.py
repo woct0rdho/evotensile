@@ -17,6 +17,7 @@ from evotensile.search.replay import (
     load_db_oracle_matrix,
     merge_oracle_records,
     simulate_candidate_stream,
+    simulate_independent_shape_baseline,
 )
 from tests.helpers import insert_test_benchmark_event, sample_candidates
 
@@ -362,6 +363,105 @@ def test_replay_staged_probe_charges_one_launch_for_catastrophic_rows():
     )
     assert math.isclose(result.simulated_time_s, expected)
     assert result.screened == [candidates[2].hash]
+
+
+def test_replay_soft_deadline_allows_an_admitted_round_to_overrun():
+    shape = Shape(512, 128, 1, 256)
+    candidate = sample_candidates(1, seed=20260801)[0]
+    oracle = {
+        candidate.hash: OracleRecord(
+            candidate=candidate,
+            status="ok",
+            screening_gflops=0.001,
+        )
+    }
+    cost = ReplayCostModel(
+        time_budget_s=1.0,
+        prepare_seconds_per_candidate=0.0,
+        probe_launches=1,
+        initial_probe_launches=1,
+        hot_reserve_s=0.0,
+        screening_protocol=CAMPAIGN_SCREENING_PROTOCOL.with_overrides(num_warmups=0),
+        probe_min_survivors=1,
+    )
+
+    result = simulate_candidate_stream(
+        [candidate],
+        oracle=oracle,
+        shape=shape,
+        profile=DEFAULT_PROFILE,
+        cost=cost,
+        seed=1,
+        surrogate_min_evidence=24,
+        batch_size=1,
+        pool_window=1,
+        hot_finalists=0,
+    )
+
+    assert result.queried == [candidate.hash]
+    assert result.simulated_time_s > cost.time_budget_s
+    assert result.controller_summary["budget_overrun_s"] == pytest.approx(result.simulated_time_s - cost.time_budget_s)
+
+
+def test_independent_shape_baseline_uses_isolated_singleton_controllers():
+    shapes = [Shape(512, 128, 1, 256), Shape(640, 256, 1, 512)]
+    candidates = sample_candidates(2, seed=20260802)
+    oracle = {
+        (shapes[0].id, candidates[0].hash): OracleRecord(
+            candidate=candidates[0],
+            status="ok",
+            screening_gflops=20_000.0,
+        ),
+        (shapes[0].id, candidates[1].hash): OracleRecord(
+            candidate=candidates[1],
+            status="ok",
+            screening_gflops=10_000.0,
+        ),
+        (shapes[1].id, candidates[0].hash): OracleRecord(
+            candidate=candidates[0],
+            status="ok",
+            screening_gflops=10_000.0,
+        ),
+        (shapes[1].id, candidates[1].hash): OracleRecord(
+            candidate=candidates[1],
+            status="ok",
+            screening_gflops=20_000.0,
+        ),
+    }
+    cost = ReplayCostModel(
+        time_budget_s=1200.0,
+        prepare_workers=1,
+        prepare_seconds_per_candidate=8.0,
+        probe_launches=0,
+        hot_reserve_s=0.0,
+        screening_protocol=CAMPAIGN_SCREENING_PROTOCOL.with_overrides(num_warmups=0),
+        probe_min_survivors=1,
+    )
+
+    result = simulate_independent_shape_baseline(
+        candidates,
+        oracle=oracle,
+        shapes=shapes,
+        profile=DEFAULT_PROFILE,
+        cost=cost,
+        seed=20260802,
+        surrogate_min_evidence=24,
+        batch_size=2,
+        pool_window=2,
+        hot_finalists=0,
+    )
+    summary = result.summary()
+
+    assert result.shape_results[shapes[0].id].best_screening_hash == candidates[0].hash
+    assert result.shape_results[shapes[1].id].best_screening_hash == candidates[1].hash
+    assert summary["total_prepared_candidates"] == 4
+    assert summary["resolved_shapes"] == 2
+    assert summary["unresolved_shapes"] == 0
+    assert summary["mean_log_regret"] == 0.0
+    assert all(
+        shape_result.controller_summary["shape_ids"] == [shape_id]
+        for shape_id, shape_result in result.shape_results.items()
+    )
 
 
 def test_hot_confirmation_handles_an_empty_validated_ranking(tmp_path):

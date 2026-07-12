@@ -65,6 +65,15 @@ class BaselineSelectionInsert:
 
 
 @dataclass(frozen=True)
+class BaselineDiscovery:
+    discovery_id: int
+    problem_type_hash: str
+    context: dict[str, object]
+    duration_s: float
+    created_at: float
+
+
+@dataclass(frozen=True)
 class ArtifactBundleInsert:
     build_run_id: str
     build_output_dir: str
@@ -813,6 +822,31 @@ class EvoTensileDB:
                 ],
             )
             return discovery_id
+
+    def baseline_discoveries(self, *, baseline_label: str | None = None) -> list[BaselineDiscovery]:
+        with self.connection() as con:
+            rows = con.execute(
+                """
+                SELECT bd.discovery_id, pt.problem_type_hash, bd.context_json,
+                       bd.duration_s, bd.created_at
+                FROM baseline_discoveries AS bd
+                JOIN problem_types AS pt USING (problem_type_id)
+                ORDER BY bd.discovery_id
+                """
+            ).fetchall()
+        discoveries = [
+            BaselineDiscovery(
+                discovery_id=int(row["discovery_id"]),
+                problem_type_hash=str(row["problem_type_hash"]),
+                context=dict(json.loads(row["context_json"])),
+                duration_s=float(row["duration_s"]),
+                created_at=float(row["created_at"]),
+            )
+            for row in rows
+        ]
+        if baseline_label is None:
+            return discoveries
+        return [discovery for discovery in discoveries if discovery.context.get("baseline_label") == baseline_label]
 
     def baseline_selection_pairs(self, discovery_id: int) -> list[tuple[Shape, Candidate]]:
         with self.connection() as con:
@@ -1578,6 +1612,13 @@ class EvoTensileDB:
                 params,
             ).fetchall()
             return {row["status"]: int(row["n"]) for row in rows}
+
+    def native_run_phase_durations(self) -> dict[str, float]:
+        with self.connection() as con:
+            rows = con.execute(
+                "SELECT phase, SUM(duration_s) AS duration_s FROM native_runs GROUP BY phase ORDER BY phase"
+            ).fetchall()
+        return {str(row["phase"]): float(row["duration_s"]) for row in rows}
 
     def counts(self) -> dict[str, int]:
         with self.connection() as con:

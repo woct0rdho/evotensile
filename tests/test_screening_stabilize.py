@@ -16,7 +16,7 @@ from evotensile.search.screening_stabilize import (
 )
 from evotensile.shapes import pilot_100_shapes
 from evotensile.structured_runner import RunnablePair, StructuredRunOutput
-from tests.helpers import fake_build_tensile, fake_structured_runner, sample_candidates
+from tests.helpers import fake_build_tensile, fake_structured_runner, pair_requests, sample_candidates
 
 
 def _screening_protocol():
@@ -210,8 +210,7 @@ def test_screening_stabilization_reuses_prior_artifacts(tmp_path: Path, monkeypa
 
     execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "round_00",
         protocol=protocol,
         candidate_batch_size=2,

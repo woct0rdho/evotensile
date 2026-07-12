@@ -1,4 +1,6 @@
+import math
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
 from evotensile.candidate import Candidate, Shape
@@ -7,27 +9,98 @@ from evotensile.runner import RunResult
 from evotensile.structured_runner import RunnablePair, StructuredRunOutput
 
 
+class EvidenceStage(str, Enum):
+    PROBE = "probe"
+    SCREENING = "screening"
+    STABILIZATION = "stabilization"
+    CONFIRMATION = "confirmation"
+
+
+@dataclass(frozen=True)
+class PairRequest:
+    candidate: Candidate
+    shape: Shape
+    evidence_stage: EvidenceStage = EvidenceStage.SCREENING
+    min_samples: int = 1
+    priority: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.min_samples <= 0:
+            raise ValueError("pair-request minimum samples must be positive")
+        if not math.isfinite(self.priority):
+            raise ValueError("pair-request priority must be finite")
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.shape.id, self.candidate.hash
+
+
+@dataclass(frozen=True)
+class PlannedPair:
+    request: PairRequest
+    samples_to_collect: int
+    requires_validation: bool
+
+    def __post_init__(self) -> None:
+        if self.samples_to_collect <= 0:
+            raise ValueError("planned pair samples must be positive")
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.request.key
+
+
 @dataclass(frozen=True)
 class PlannedBatch:
     batch_index: int
-    candidates: list[Candidate]
-    shapes: list[Shape]
-    missing_pairs: int
-    nominal_pairs: int
-    samples_per_pair: int
-    requires_validation: bool = True
+    pairs: tuple[PlannedPair, ...]
+    artifact_candidates: tuple[Candidate, ...]
+    artifact_shapes: tuple[Shape, ...]
+    evidence_stage: EvidenceStage
+
+    def __post_init__(self) -> None:
+        if not self.pairs:
+            raise ValueError("planned batch requires at least one exact pair")
+        if not self.artifact_candidates:
+            raise ValueError("planned batch requires at least one artifact candidate")
+        if not self.artifact_shapes:
+            raise ValueError("planned batch requires at least one artifact shape")
+        candidate_hashes = {candidate.hash for candidate in self.artifact_candidates}
+        shape_ids = {shape.id for shape in self.artifact_shapes}
+        keys = [pair.key for pair in self.pairs]
+        if len(keys) != len(set(keys)):
+            raise ValueError("planned batch exact pairs must be unique")
+        for pair in self.pairs:
+            if pair.request.evidence_stage != self.evidence_stage:
+                raise ValueError("planned batch evidence stages must match")
+            if pair.request.candidate.hash not in candidate_hashes or pair.request.shape.id not in shape_ids:
+                raise ValueError("planned pair must be covered by the artifact scope")
 
     @property
-    def extra_pairs(self) -> int:
-        return self.nominal_pairs - self.missing_pairs
+    def requested_pairs(self) -> int:
+        return len(self.pairs)
 
     @property
-    def missing_samples(self) -> int:
-        return self.missing_pairs * self.samples_per_pair
+    def requested_samples(self) -> int:
+        return sum(pair.samples_to_collect for pair in self.pairs)
 
     @property
-    def nominal_samples(self) -> int:
-        return self.nominal_pairs * self.samples_per_pair
+    def requires_validation(self) -> bool:
+        return any(pair.requires_validation for pair in self.pairs)
+
+    @property
+    def priority(self) -> float:
+        return max(pair.request.priority for pair in self.pairs)
+
+    @property
+    def pair_keys(self) -> set[tuple[str, str]]:
+        return {pair.key for pair in self.pairs}
+
+    def planned_pair(self, key: tuple[str, str]) -> PlannedPair:
+        for pair in self.pairs:
+            if pair.key == key:
+                return pair
+        raise KeyError(key)
 
 
 @dataclass(frozen=True)
@@ -93,9 +166,9 @@ class ScheduleResult:
     probe_preprepare_screened_pairs: int = 0
 
     @property
-    def missing_pairs(self) -> int:
-        return sum(batch.missing_pairs for batch in self.planned_batches)
+    def requested_pairs(self) -> int:
+        return sum(batch.requested_pairs for batch in self.planned_batches)
 
     @property
-    def nominal_pairs(self) -> int:
-        return sum(batch.nominal_pairs for batch in self.planned_batches)
+    def requested_samples(self) -> int:
+        return sum(batch.requested_samples for batch in self.planned_batches)

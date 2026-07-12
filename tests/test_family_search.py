@@ -27,8 +27,7 @@ def test_nt_hhs_family_descriptor_is_stable_for_reference_candidate():
     descriptor = family_descriptor(REFERENCE_CANDIDATE)
 
     assert descriptor.profile == "gfx1151-nt-hhs"
-    assert descriptor.version == "nt_hhs_v2"
-    assert descriptor.key.startswith("gfx1151-nt-hhs:nt_hhs_v2:")
+    assert descriptor.key.startswith("gfx1151-nt-hhs:TileAreaLog2=")
     assert descriptor.as_dict()["fields"] == {
         "TileAreaLog2": 10,
         "TileAspect": "balanced",
@@ -193,14 +192,21 @@ def test_family_archive_objectives_distinguish_sparse_specialists_and_broad_gene
             time_us=time_us,
         )
 
+    snapshot = _evidence(db, shapes)
     leaders = {
         objective: load_family_archive(
-            _evidence(db, shapes),
+            snapshot,
             shapes=shapes,
             objective=objective,
         )[0]
         for objective in GRID_OBJECTIVES
     }
+    weighted_generalist = load_family_archive(
+        snapshot,
+        shapes=shapes,
+        objective=GridObjective.GENERALIST,
+        shape_weights={shapes[0].id: 1.8, shapes[1].id: 0.2},
+    )[0]
 
     assert leaders[GridObjective.SPECIALIST].leader_candidate_hash == specialist.hash
     assert leaders[GridObjective.GENERALIST].leader_candidate_hash == generalist.hash
@@ -208,6 +214,8 @@ def test_family_archive_objectives_distinguish_sparse_specialists_and_broad_gene
     assert leaders[GridObjective.UNCERTAINTY].leader_candidate_hash == specialist.hash
     assert leaders[GridObjective.GENERALIST].coverage_fraction == 1.0
     assert leaders[GridObjective.UNCERTAINTY].unresolved_shape_count == 1
+    assert weighted_generalist.leader_candidate_hash == specialist.hash
+    assert weighted_generalist.shape_weighted
 
 
 def test_load_family_archive_keeps_diverse_quality_bounded_elites_per_family(tmp_path):

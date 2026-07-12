@@ -1,6 +1,6 @@
 # Search Cost Modeling
 
-This document describes the measured candidate-cost attribution and proposal-side preparation-weight heuristic in `evotensile/search/cost_model.py`. Operator allocation is documented in `docs/search_operator_portfolio.md`. Campaign round admission is documented in `docs/blind_campaign_control.md`.
+This document describes measured candidate-cost attribution and the proposal-side preparation-weight heuristic in `evotensile/search/cost_model.py`. The campaign-level fitted preparation/validation/timing predictor and bundle marginal-cost contract are documented in `docs/shared_bundle_acquisition.md`. Operator allocation is documented in `docs/search_operator_portfolio.md`. Shared admission estimation and soft-budget accounting are documented in `docs/multi_shape_campaign_control.md`. The current one-shape state machine is documented in `docs/blind_campaign_control.md`.
 
 ## Purpose And Boundary
 
@@ -69,15 +69,15 @@ Minimum exploration is applied before proportional allocation, so a high estimat
 + 0.05 * log2(max(1, WMMA_wave_group_size))
 ```
 
-A batch weight sums candidate weights averaged over its shapes.
+A batch weight sums candidate weights averaged over its explicit artifact-shape scope. Requested evaluation pairs remain separate and exact.
 
-With `--cost-aware-scheduling`, the scheduler submits higher-weight preparation batches first. This is a longest-predicted-work-first heuristic intended to reduce the tail before each hard preparation/timing barrier. It does not change batch contents, timing order, or permit timing overlap.
+With `--cost-aware-scheduling`, the scheduler submits higher-weight preparation batches first. This is a longest-predicted-work-first heuristic intended to reduce the tail before each hard preparation/timing barrier. It does not change artifact scope, requested pair contents, timing order, or permit timing overlap.
 
-Preparation and timing order are independent. After preparation drains, stable planned order is the default serialized timing order. A production controller may supply an explicit allocator based on expected improvement, information gain, unresolved-shape priority, or soft-deadline fit. The preparation predictor remains analytical rather than fitted from observed build and validation history.
+Preparation and timing order are independent. After preparation drains, stable planned order is the default serialized timing order. The shared bundle allocator now emits longest-predicted-preparation order separately from utility-per-cost exact timing priority. Its phase predictors fit typed measured history when available and retain conservative analytical/fixed fallbacks for cold candidates.
 
 ## Campaign Round Admission
 
-The one-shape campaign does not use the analytical preparation weight as its wall-time estimate. It computes recent measured seconds per missing pair and applies a robust margin before admitting another round. The campaign budget is a soft admission deadline: an admitted schedule retains normal build and runner timeouts and may finish afterward. The confirmation reserve is recalculated from measured finalist launch cost with a configured minimum floor. That policy is described in `docs/blind_campaign_control.md`.
+The one-shape campaign does not use the analytical preparation weight as its wall-time estimate. It converts recent rounds to measured duration and exact requested-pair observations, then calls the shared robust estimator in `evotensile/campaign/controller.py` before admitting another round. The campaign budget is a soft admission deadline: an admitted schedule retains normal build and runner timeouts and may finish afterward. The confirmation reserve is recalculated from measured finalist launch cost with a configured minimum floor. The generic semantics are described in `docs/multi_shape_campaign_control.md`. The one-shape use is described in `docs/blind_campaign_control.md`.
 
 ## CLI Controls
 
@@ -97,7 +97,7 @@ Run durations and commands remain the authoritative low-level provenance. Derive
 ## Limitations
 
 - Equal division of shared run duration cannot identify which candidate caused a long batch.
-- The preparation predictor is a hand-sized generic heuristic, not a fitted duration model.
+- Proposal-side preparation ordering remains a hand-sized generic heuristic. Campaign bundle costing adds a fitted model only when typed measured rows are available.
 - Validation and benchmark startup costs can dominate small candidate sets.
 - Cost is pooled across selected shapes and phases rather than modeled conditionally by family or hardware state.
 - There is no explicit workload-priority model combining call count, baseline latency, headroom, uncertainty, and evaluation cost.

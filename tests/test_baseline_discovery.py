@@ -1,7 +1,18 @@
 from evotensile.database import BaselineSelectionInsert, EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
+from evotensile.search_space import DOMAINS
 from evotensile.shapes import pilot_100_shapes
+from scripts.discover_hipblaslt_baselines import _solution_to_candidate
 from tests.helpers import sample_candidates
+
+
+def test_installed_solution_import_materializes_complete_candidate():
+    original = sample_candidates(1)[0]
+
+    imported = _solution_to_candidate(original.canonical_params())
+
+    assert set(DOMAINS) <= set(imported.params)
+    assert imported.hash == original.hash
 
 
 def test_baseline_discovery_is_zero_evidence_planning_data(tmp_path):
@@ -23,12 +34,15 @@ def test_baseline_discovery_is_zero_evidence_planning_data(tmp_path):
             )
         ],
         problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
-        context={"logic": "installed"},
+        context={"logic": "installed", "baseline_label": "anchored-untuned"},
         duration_s=0.25,
     )
 
     assert discovery_id is not None
+    discoveries = db.baseline_discoveries(baseline_label="anchored-untuned")
     pairs = db.baseline_selection_pairs(discovery_id)
+    assert discoveries[0].discovery_id == discovery_id
+    assert discoveries[0].context["baseline_label"] == "anchored-untuned"
     assert pairs[0][0] == shape
     assert pairs[0][1].hash == candidate.hash
     counts = db.counts()

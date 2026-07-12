@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -9,20 +10,21 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import yaml
 
 from evotensile.activity import apu_activity_lock
 from evotensile.candidate import Candidate
 from evotensile.database import BaselineSelectionInsert, EvoTensileDB
-from evotensile.profile import PROFILES, get_profile
+from evotensile.profile import PROFILES, TargetProfile, get_profile
 from evotensile.protocol import BenchmarkProtocol, apply_benchmark_protocol_overrides
 from evotensile.runner import DEFAULT_TENSILELITE_BIN
 from evotensile.scheduler import DEFAULT_COMPILE_THREADS, execute_schedule
+from evotensile.scheduling.models import EvidenceStage, PairRequest
+from evotensile.search_space import DOMAINS, defaulted_params
 from evotensile.shapes import Shape, parse_shape
 from evotensile.subprocess_utils import resolve_timeout
-from evotensile.tensilelite_keys import DIRECT_SOLUTION_MATCH_KEYS
 
 DEFAULT_BENCH = Path.home() / "rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench"
 DEFAULT_ROCM_DEVEL = Path.home() / "venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel"
@@ -38,16 +40,15 @@ SOLUTION_NAME_RE = re.compile(r"--Solution name:\s*(?P<value>\S.*)")
 KERNEL_NAME_RE = re.compile(r"--kernel name:\s*(?P<value>\S.*)")
 DEVICE_RE = re.compile(r"Device ID \d+ : (?P<name>.*?) (?P<arch>gfx\d+) ")
 
-CANDIDATE_PARAM_KEYS = frozenset(
-    {
-        "1LDSBuffer",
-        "ExpandPointerSwap",
-        "PrefetchLocalRead",
-        "StoreVectorWidth",
-        "WorkGroup",
-        *DIRECT_SOLUTION_MATCH_KEYS,
-    }
-)
+
+class BenchOutput(TypedDict):
+    hipblaslt_gflops: float
+    hipblaslt_time_us: float
+    solution_index: int
+    solution_name: str | None
+    kernel_name: str | None
+    device_name: str | None
+    device_arch: str | None
 
 
 @dataclass(frozen=True)
@@ -66,13 +67,13 @@ class BaselineSelection:
     command: list[str]
 
 
-def _profile_protocol(args: argparse.Namespace) -> tuple[Any, BenchmarkProtocol]:
+def _profile_protocol(args: argparse.Namespace) -> tuple[TargetProfile, BenchmarkProtocol]:
     profile = get_profile(args.profile)
     protocol = apply_benchmark_protocol_overrides(profile.default_protocol, vars(args))
     return profile, protocol
 
 
-def _parse_shapes(args: argparse.Namespace, profile) -> list[Shape]:
+def _parse_shapes(args: argparse.Namespace, profile: TargetProfile) -> list[Shape]:
     if args.shapes:
         return [parse_shape(value) for value in args.shapes]
     shapes = profile.shapes()
@@ -104,7 +105,7 @@ def _match_or_none(pattern: re.Pattern[str], text: str) -> str | None:
     return match.group("value").strip() if match else None
 
 
-def parse_bench_output(stdout: str) -> dict[str, Any]:
+def parse_bench_output(stdout: str) -> BenchOutput:
     header, data = _csv_payload_lines(stdout)
     row = dict(zip(header, data, strict=True))
     device_name = None
@@ -122,6 +123,14 @@ def parse_bench_output(stdout: str) -> dict[str, Any]:
         "device_name": device_name,
         "device_arch": device_arch,
     }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def runtime_env(rocm_devel: Path, rocm_libraries: Path, tensile_libpath: Path | None) -> dict[str, str]:
@@ -225,9 +234,7 @@ def _is_ordered_subsequence(needles: list[str], haystack: list[str]) -> bool:
     return True
 
 
-def _match_logic_solution(
-    parsed: dict[str, Any], logic_solutions: list[dict[str, Any]], shape_id: str
-) -> dict[str, Any]:
+def _match_logic_solution(parsed: BenchOutput, logic_solutions: list[dict[str, Any]], shape_id: str) -> dict[str, Any]:
     solution_tokens = _name_tokens(parsed.get("solution_name"))
     kernel_tokens = _name_tokens(parsed.get("kernel_name"))
     solution_matches: list[dict[str, Any]] = []
@@ -253,7 +260,7 @@ def _match_logic_solution(
 
 
 def _solution_to_candidate(solution: dict[str, Any]) -> Candidate:
-    params = {key: solution[key] for key in CANDIDATE_PARAM_KEYS if key in solution}
+    params = {key: solution[key] for key in DOMAINS if key in solution}
     matrix_instruction = solution.get("MatrixInstruction")
     if isinstance(matrix_instruction, list):
         mi = list(matrix_instruction)
@@ -264,7 +271,10 @@ def _solution_to_candidate(solution: dict[str, Any]) -> Candidate:
         params["MatrixInstruction"] = mi
     if "StoreVectorWidth" not in params:
         params["StoreVectorWidth"] = solution.get("GlobalWriteVectorWidth", -1)
-    return Candidate(params=params, source="installed_hipblaslt_baseline")
+    return Candidate(
+        params=defaulted_params(params),
+        source="installed_hipblaslt_baseline",
+    )
 
 
 def query_baselines(args: argparse.Namespace, shapes: list[Shape], env: dict[str, str]) -> list[BaselineSelection]:
@@ -400,6 +410,11 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--stop-on-error", action="store_true", help="Stop after the first query or schedule error")
     parser.add_argument("--query-only", action="store_true")
+    parser.add_argument(
+        "--baseline-label",
+        default=None,
+        help="Stable experiment label such as anchored-untuned or anchored-tuned",
+    )
     args = parser.parse_args()
 
     if not args.bench.exists():
@@ -423,6 +438,9 @@ def main() -> int:
         environment_compatibility_tag=profile.environment_compatibility_tag,
     )
     db.init()
+    installed_logic = Path(env["HIPBLASLT_TENSILE_LIBPATH"]) / "TensileLibrary_lazy_gfx1151.dat.zlib"
+    logic_yaml_sha256 = _file_sha256(args.logic_yaml)
+    installed_logic_sha256 = _file_sha256(installed_logic) if installed_logic.exists() else None
     discovery_id = db.record_baseline_discovery(
         [
             BaselineSelectionInsert(
@@ -448,6 +466,9 @@ def main() -> int:
             "iters": args.iters,
             "use_gpu_timer": not args.no_gpu_timer,
             "tensile_libpath": env["HIPBLASLT_TENSILE_LIBPATH"],
+            "baseline_label": args.baseline_label,
+            "logic_yaml_sha256": logic_yaml_sha256,
+            "installed_logic_sha256": installed_logic_sha256,
         },
         duration_s=discovery_duration_s,
     )
@@ -463,12 +484,18 @@ def main() -> int:
             group_dir = args.output_dir / f"baseline_group_{group_index:04d}_{candidate.hash}"
             result = execute_schedule(
                 db,
-                shapes=group_shapes,
-                candidates=[candidate],
+                requests=[
+                    PairRequest(
+                        candidate=candidate,
+                        shape=shape,
+                        evidence_stage=EvidenceStage.SCREENING,
+                        min_samples=protocol.num_benchmarks,
+                    )
+                    for shape in group_shapes
+                ],
                 output_root=group_dir,
                 target_profile=profile,
                 protocol=protocol,
-                min_samples=protocol.num_benchmarks,
                 candidate_batch_size=1,
                 shape_batch_size=max(1, len(group_shapes)),
                 tensilelite_bin=args.tensilelite_bin,
@@ -512,6 +539,9 @@ def main() -> int:
         "runner_timeout_s": resolve_timeout(args.runner_timeout, profile.default_runner_timeout_s),
         "executed_groups": executed_groups,
         "HIPBLASLT_TENSILE_LIBPATH": env["HIPBLASLT_TENSILE_LIBPATH"],
+        "baseline_label": args.baseline_label,
+        "logic_yaml_sha256": logic_yaml_sha256,
+        "installed_logic_sha256": installed_logic_sha256,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     metadata_path = args.output_dir / "metadata.json"

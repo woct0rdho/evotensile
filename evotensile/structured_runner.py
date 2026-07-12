@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict, cast
 
 from .candidate import Shape
 from .database import BenchmarkEventInsert, ValidationInsert
@@ -16,6 +16,17 @@ from .solution_mapping import build_solution_candidate_mapper
 from .subprocess_utils import run_logged_process
 
 RunMode = Literal["validate", "benchmark"]
+
+
+class StructuredSamplePayload(TypedDict, total=False):
+    shape_id: str
+    candidate_hash: str
+    status: str | None
+    sample_index: int | str | None
+    time_us: float | str | None
+    validation: object
+    validation_detail: object
+    solution_index: int | str | None
 
 
 def _validation_token(value: str | None) -> str:
@@ -41,7 +52,7 @@ class StructuredSample:
     time_us: float | None = None
     validation: str | None = None
     solution_index: int | None = None
-    raw: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -78,21 +89,23 @@ def _finite_positive(value: Any) -> bool:
     return math.isfinite(number) and number > 0.0
 
 
-def _sample_from_json(value: dict[str, Any]) -> StructuredSample:
+def _sample_from_json(value: StructuredSamplePayload) -> StructuredSample:
     validation = value.get("validation")
     detail = value.get("validation_detail")
     if detail not in (None, ""):
         validation = detail
+    sample_index = value.get("sample_index")
+    time_us = value.get("time_us")
     solution_index = value.get("solution_index")
     return StructuredSample(
         shape_id=str(value["shape_id"]),
         candidate_hash=str(value["candidate_hash"]),
         status=str(value.get("status") or "ok"),
-        sample_index=int(value["sample_index"]) if value.get("sample_index") not in (None, "") else None,
-        time_us=float(value["time_us"]) if value.get("time_us") not in (None, "") else None,
+        sample_index=int(sample_index) if sample_index not in (None, "") else None,
+        time_us=float(time_us) if time_us not in (None, "") else None,
         validation=str(validation) if validation is not None else None,
         solution_index=int(solution_index) if solution_index not in (None, "") else None,
-        raw=value,
+        raw=dict(value),
     )
 
 
@@ -104,9 +117,7 @@ def read_structured_results(path: str | Path) -> list[StructuredSample]:
             stripped = line.strip()
             if not stripped:
                 continue
-            value = json.loads(stripped)
-            if not isinstance(value, dict):
-                raise ValueError(f"{path}:{line_no}: expected a JSON object")
+            value = cast(StructuredSamplePayload, json.loads(stripped))
             samples.append(_sample_from_json(value))
     return samples
 

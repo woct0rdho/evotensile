@@ -7,7 +7,7 @@ from pathlib import Path
 from evotensile.artifacts import register_artifact_bundle
 from evotensile.candidate import stable_hash
 from evotensile.database import BenchmarkEventInsert, EvoTensileDB
-from evotensile.manifest import write_manifest
+from evotensile.manifest import ManifestPair, write_manifest
 from evotensile.profile import TargetProfile
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.runner import RunResult, run_tensilelite
@@ -50,10 +50,19 @@ class PreparationContext:
 
 def _batch_fingerprint(batch: PlannedBatch) -> str:
     payload = {
-        "candidates": [candidate.hash for candidate in batch.candidates],
-        "requires_validation": batch.requires_validation,
-        "samples_per_pair": batch.samples_per_pair,
-        "shapes": [shape.id for shape in batch.shapes],
+        "artifact_candidates": [candidate.hash for candidate in batch.artifact_candidates],
+        "artifact_shapes": [shape.id for shape in batch.artifact_shapes],
+        "evidence_stage": batch.evidence_stage.value,
+        "pairs": [
+            {
+                "candidate_hash": pair.request.candidate.hash,
+                "priority": pair.request.priority,
+                "requires_validation": pair.requires_validation,
+                "samples_to_collect": pair.samples_to_collect,
+                "shape_id": pair.request.shape.id,
+            }
+            for pair in batch.pairs
+        ],
     }
     return stable_hash(payload, prefix="batch_")[:18]
 
@@ -73,13 +82,18 @@ def write_batch_inputs(
     run_dir = batch_dir / (f"run_{uuid.uuid4().hex[:8]}" if unique_run_dir else "run")
     write_tensilelite_yaml(
         yaml_path,
-        batch.candidates,
-        batch.shapes,
+        list(batch.artifact_candidates),
+        list(batch.artifact_shapes),
         global_parameters=target_profile.global_parameters(protocol),
         library_logic=target_profile.library_logic,
         problem_type=target_profile.problem_type,
     )
-    write_manifest(manifest_path, batch.candidates, batch.shapes)
+    write_manifest(
+        manifest_path,
+        [ManifestPair(pair.request.candidate, pair.request.shape) for pair in batch.pairs],
+        artifact_candidates=batch.artifact_candidates,
+        artifact_shapes=batch.artifact_shapes,
+    )
     return yaml_path, manifest_path, run_dir
 
 
@@ -102,7 +116,7 @@ def _prepare_current_batch(
     build_timeout_s = context.build_timeout_s
     runner_timeout_s = context.runner_timeout_s
     compile_cache_root = context.compile_cache_root
-    build_protocol = protocol.with_overrides(num_benchmarks=current.samples_per_pair)
+    build_protocol = protocol.with_overrides(num_benchmarks=max(pair.samples_to_collect for pair in current.pairs))
     yaml_path, manifest_path, run_dir = write_batch_inputs(
         current,
         output_root,
@@ -129,7 +143,7 @@ def _prepare_current_batch(
             global_parameters=target_profile.global_parameter_items(build_protocol),
             timeout_s=build_timeout_s,
             use_cache=cache_dir is not None and has_tensilelite_cache(cache_dir),
-            candidate_hashes=[candidate.hash for candidate in current.candidates],
+            candidate_hashes=[candidate.hash for candidate in current.artifact_candidates],
         )
 
     if cache_dir is None:
@@ -142,7 +156,7 @@ def _prepare_current_batch(
 
     preparation_inserts: list[BenchmarkEventInsert] = []
     errors: list[str] = []
-    planned_pairs = {(shape.id, candidate.hash) for shape in current.shapes for candidate in current.candidates}
+    planned_pairs = current.pair_keys
     solution_yamls = [str(path) for path in find_solution_yamls([build_dir])]
     runnable, missing = build_runnable_pairs(
         manifest_path=manifest_path,
@@ -154,19 +168,19 @@ def _prepare_current_batch(
     )
     library_dir = library_dir_from_build(build_dir)
 
-    if not build_result.ok and len(current.candidates) == 1 and not runnable:
+    if not build_result.ok and len(current.artifact_candidates) == 1 and not runnable:
         status = "build_timeout" if build_result.timed_out else "build_failed"
         preparation_inserts = [
             BenchmarkEventInsert(
-                shape_id=shape.id,
-                candidate_hash=current.candidates[0].hash,
+                shape_id=pair.request.shape.id,
+                candidate_hash=pair.request.candidate.hash,
                 run_id=build_result.run_id,
                 status=status,
                 source_kind="native_run",
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
             )
-            for shape in current.shapes
+            for pair in current.pairs
         ]
         runnable = []
     elif build_result.ok:
@@ -182,9 +196,22 @@ def _prepare_current_batch(
             )
             for item in missing
         )
-    elif len(current.candidates) > 1:
+    elif len(current.artifact_candidates) > 1:
         accepted_hashes = {pair.candidate_hash for pair in runnable}
-        failed_hashes = {candidate.hash for candidate in current.candidates} - accepted_hashes
+        preparation_inserts.extend(
+            BenchmarkEventInsert(
+                shape_id=item.shape_id,
+                candidate_hash=item.candidate_hash,
+                run_id=build_result.run_id,
+                status=item.status,
+                source_kind="native_run",
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+            )
+            for item in missing
+            if item.candidate_hash in accepted_hashes
+        )
+        failed_hashes = {candidate.hash for candidate in current.artifact_candidates} - accepted_hashes
         if failed_hashes:
             diagnostics = run_tensilelite_diagnostics(
                 yaml_path,
@@ -195,11 +222,11 @@ def _prepare_current_batch(
                 target_profile=target_profile,
                 protocol=build_protocol,
                 timeout_s=build_timeout_s,
-                candidate_hashes=[candidate.hash for candidate in current.candidates],
+                candidate_hashes=[candidate.hash for candidate in current.artifact_candidates],
             )
             diagnostic_inserts = attribution_inserts_from_diagnostics(
                 diagnostics.records,
-                planned_shape_ids=[shape.id for shape in current.shapes],
+                planned_pairs=current.pair_keys,
                 failed_candidate_hashes=failed_hashes,
                 run_id=diagnostics.run_id,
                 problem_type_hash=problem_type_hash,
@@ -231,36 +258,49 @@ def _prepare_current_batch(
             errors.append(f"candidate artifact registration failed: {exc}")
 
     if runnable and library_dir is not None and not errors:
-        if current.requires_validation:
+        validation_pairs = [
+            pair for pair in runnable if current.planned_pair((pair.shape_id, pair.candidate_hash)).requires_validation
+        ]
+        cached_pairs = [pair for pair in runnable if pair not in validation_pairs]
+        if cached_pairs:
+            cached = db.validated_cache_entries(
+                problem_type_hash=problem_type_hash,
+                validation_protocol_hash=validation_protocol_hash,
+                shape_ids=list({pair.shape_id for pair in cached_pairs}),
+                candidate_hashes=list({pair.candidate_hash for pair in cached_pairs}),
+            )
+            cached_pairs = [pair for pair in cached_pairs if (pair.shape_id, pair.candidate_hash) in cached]
+            if len(cached_pairs) + len(validation_pairs) != len(runnable):
+                errors.append("prepared artifact contains pairs without cached correctness verification")
+
+        passed_pairs: list[RunnablePair] = []
+        if validation_pairs and not errors:
             validation_protocol = protocol.with_overrides(num_benchmarks=1)
 
             def run_validation() -> StructuredRunOutput:
                 return run_structured_phase(
                     mode="validate",
                     run_dir=run_dir,
-                    pairs=runnable,
-                    shapes=current.shapes,
+                    pairs=validation_pairs,
+                    shapes=list(current.artifact_shapes),
                     protocol=validation_protocol,
                     runner_bin=runner_bin,
                     library_dir=library_dir,
                     timeout_s=runner_timeout_s,
                 )
 
-            if validation_gate is None:
+            with validation_gate:
                 validation_result = run_validation()
-            else:
-                with validation_gate:
-                    validation_result = run_validation()
             record_structured_run(
                 db,
                 validation_result,
-                pairs=runnable,
+                pairs=validation_pairs,
                 cost_phase="validation",
             )
             try:
                 outcome = validate_validation_samples(
                     validation_result.samples,
-                    runnable_pairs=runnable,
+                    runnable_pairs=validation_pairs,
                     problem_type_hash=problem_type_hash,
                     validation_protocol_hash=validation_protocol_hash,
                     run_id=validation_result.run_id,
@@ -270,17 +310,9 @@ def _prepare_current_batch(
                 errors.append(str(exc))
             else:
                 db.insert_validations(outcome.validations)
-                validated_pairs = outcome.passed_pairs
-        else:
-            cached = db.validated_cache_entries(
-                problem_type_hash=problem_type_hash,
-                validation_protocol_hash=validation_protocol_hash,
-                shape_ids=[shape.id for shape in current.shapes],
-                candidate_hashes=[candidate.hash for candidate in current.candidates],
-            )
-            validated_pairs = [pair for pair in runnable if (pair.shape_id, pair.candidate_hash) in cached]
-            if len(validated_pairs) != len(runnable):
-                errors.append("prepared artifact contains pairs without cached correctness verification")
+                passed_pairs = outcome.passed_pairs
+        admitted = {(pair.shape_id, pair.candidate_hash) for pair in [*cached_pairs, *passed_pairs]}
+        validated_pairs = [pair for pair in runnable if (pair.shape_id, pair.candidate_hash) in admitted]
 
     if preparation_inserts:
         db.insert_benchmark_events(preparation_inserts)
@@ -307,8 +339,8 @@ def prepare_wave(context: PreparationContext, batches: list[PlannedBatch]) -> li
             batches,
             key=lambda batch: (
                 -predicted_batch_prepare_weight(
-                    batch.candidates,
-                    batch.shapes,
+                    list(batch.artifact_candidates),
+                    list(batch.artifact_shapes),
                     workgroup_processor_count=context.target_profile.workgroup_processor_count,
                 ),
                 batch.batch_index,

@@ -180,7 +180,7 @@ def test_provider_rejects_unknown_parent(tmp_path: Path):
 
 def test_provider_options_exist_only_on_proposal_commands(tmp_path: Path):
     parser = build_parser()
-    for command in ("proposal-coverage", "schedule-batches", "repair-outliers"):
+    for command in ("proposal-coverage", "schedule-batches"):
         arguments = [command, "--db", str(tmp_path / "sched.sqlite"), "--proposal-script", "provider.py"]
         if command != "proposal-coverage":
             arguments.extend(("--output-dir", str(tmp_path / command)))

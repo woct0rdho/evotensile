@@ -80,11 +80,13 @@ def test_family_qd_builds_one_evidence_snapshot_per_proposal(tmp_path: Path, mon
             linkage_truncation_tau=1.0,
         ),
         target_shapes=[shape],
+        shape_weights={shape.id: 1.0},
     )
 
     assert result.selected
+    assert result.metadata["shape_weights"] == {shape.id: 1.0}
     assert rank_calls == 1
-    assert result.provider["identity"] == "builtin:family-qd:gfx1151-grid-v1"
+    assert result.provider["identity"] == "builtin:family-qd"
 
 
 def test_family_qd_preserves_shape_normalized_specialists(tmp_path: Path):
@@ -211,6 +213,30 @@ def test_family_qd_surrogate_multiplier_preserves_measurement_budget(tmp_path: P
 
     assert len(result.generated) == 6
     assert len(result.selected) == 3
+
+
+def test_family_qd_uses_singleton_bundle_acquisition_after_cold_start(tmp_path: Path):
+    db = EvoTensileDB.connect(tmp_path / "singleton.sqlite")
+    db.init()
+    shape = Shape(1024, 1024, 1, 1024)
+    candidates = sample_candidates(32, seed=20260712)
+    _insert_ranked_candidates(db, candidates, [shape])
+
+    result = propose_candidates(
+        db,
+        policy=_policy(
+            num_random=4,
+            surrogate_pool_multiplier=2,
+            covering_cold_start=False,
+        ),
+        target_shapes=[shape],
+        shape_id=shape.id,
+        seed=20260713,
+    )
+
+    assert result.metadata["selection_method"] == "singleton-bundle-acquisition"
+    generated_hashes = {candidate.hash for candidate in result.generated}
+    assert sum(candidate.hash in generated_hashes for candidate in result.selected) == 4
 
 
 def test_family_qd_adaptive_operators_keep_distinct_sources(tmp_path: Path):

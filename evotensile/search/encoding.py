@@ -10,7 +10,7 @@ _VALUE_TO_INDEX: dict[str, dict[str, int]] = {
 }
 
 
-def _domain_value_key(name: str, value: Any) -> str:
+def _domain_value_key(name: str, value: object) -> str:
     values = DOMAINS[name]
     if isinstance(value, bool) and any(type(domain_value) is int for domain_value in values):
         value = int(value)

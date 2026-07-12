@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from evotensile.campaign.models import CAMPAIGN_CONFIGURATION_VERSION, CAMPAIGN_ENVIRONMENT_KEYS, CampaignConfiguration
+from evotensile.campaign.models import CAMPAIGN_ENVIRONMENT_KEYS, CampaignConfiguration
 from evotensile.campaign.protocols import CAMPAIGN_HOT_PROTOCOL, CAMPAIGN_SCREENING_PROTOCOL
 from evotensile.candidate import Shape
 from evotensile.profile import TargetProfile
@@ -61,7 +61,6 @@ def build_campaign_configuration(
     runner_bin, runner_fingerprint = _binary_identity(request.runner_bin)
     tensilelite_bin, tensilelite_fingerprint = _binary_identity(request.tensilelite_bin, include_python_tree=True)
     return CampaignConfiguration(
-        version=CAMPAIGN_CONFIGURATION_VERSION,
         seed=request.seed,
         shape_id=shape.id,
         profile_name=profile.name,

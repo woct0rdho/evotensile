@@ -1,6 +1,6 @@
 # Surrogate-Guided Proposal Search
 
-This document describes EvoTensile's optional ExtraTrees surrogate and oversized-pool shortlisting. The surrogate ranks already generated candidates. It does not invent parameters, bypass validity, or replace the underlying random, semantic, DE, GOMEA, or family-QD operators.
+This document describes EvoTensile's optional shape-local ExtraTrees surrogate and oversized-pool proposal shortlisting. The shared contextual pair model used by later campaign acquisition is documented separately in `docs/contextual_pair_model.md`. This surrogate ranks already generated candidates. It does not invent parameters, bypass validity, or replace the underlying random, semantic, DE, GOMEA, or family-QD operators.
 
 ## Purpose
 
@@ -140,9 +140,9 @@ The replay infrastructure in `docs/blind_experiment_infrastructure.md` enforces 
 
 ## Limitations
 
-Current limitations include:
+Current limitations of this proposal shortlister include:
 - two-sample medians can be noisy enough to misrank provisional leaders.
-- the model has no explicit compile-failure or validation-failure classifier.
+- it has no explicit compile-failure or validation-failure classifier. The separate contextual pair model does.
 - model fitting is rebuilt from the active immutable evidence snapshot on each proposal call.
 - acquisition weights and shortlist fractions are fixed rather than cost-adaptive.
 - uncertainty is ensemble disagreement, not a calibrated posterior interval.

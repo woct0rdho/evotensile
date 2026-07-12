@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+
 import argparse
 from pathlib import Path
 
 from evotensile.campaign.configuration import CampaignConfigurationRequest, build_campaign_configuration
-from evotensile.campaign.one_shape import OneShapeCampaign, run_one_shape_campaign
+from evotensile.campaign.runner import CampaignRun, run_campaign
 from evotensile.campaign.store import CampaignStore
 from evotensile.profile import PROFILES, get_profile
 from evotensile.runner import DEFAULT_TENSILELITE_BIN
@@ -38,8 +39,8 @@ def main() -> int:
     runner_timeout_s = profile.default_runner_timeout_s if args.runner_timeout is None else args.runner_timeout
     if build_timeout_s is None or runner_timeout_s is None:
         raise ValueError("blind campaigns require positive build and runner timeouts")
-    return run_one_shape_campaign(
-        OneShapeCampaign(
+    return run_campaign(
+        CampaignRun(
             configuration=build_campaign_configuration(
                 CampaignConfigurationRequest(
                     runner_bin=runner_bin,
@@ -57,7 +58,7 @@ def main() -> int:
                 shape=shape,
             ),
             profile=profile,
-            shape=shape,
+            shapes=(shape,),
             store=CampaignStore(args.output),
             resume=args.resume,
         )

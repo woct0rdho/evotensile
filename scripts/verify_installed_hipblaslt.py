@@ -9,7 +9,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TypedDict
 
 from evotensile.activity import apu_activity_lock
 
@@ -25,6 +25,37 @@ DEFAULT_ROCM_PATH = Path(
     os.environ.get("ROCM_PATH", Path.home() / "venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel")
 )
 DEFAULT_OUTPUT_DIR = Path("out/hipblaslt_validation")
+
+
+class ParsedCaseMetrics(TypedDict, total=False):
+    supported: int | None
+    total_solutions: int | None
+    hipblaslt_gflops: float | None
+    hipblaslt_time_us: float | None
+    cpu_gflops: float | None
+    cpu_time_us: float | None
+    norm_error: float | None
+    atol: float | None
+    rtol: float | None
+    solution_index: int
+    solution_name: str | None
+    hipblaslt_version: str | None
+    hipblaslt_git_version: str | None
+
+
+class VerificationResult(ParsedCaseMetrics):
+    name: str
+    shape_id: str
+    m: int
+    n: int
+    k: int
+    on_tuned_grid: bool
+    status: str
+    error: str
+    returncode: int
+    elapsed_s: float
+    stdout_log: str
+    stderr_log: str
 
 
 @dataclass(frozen=True)
@@ -157,7 +188,13 @@ def _env(rocm_path: Path, tensile_libpath: Path) -> dict[str, str]:
     return env
 
 
-def _run_case(bench: Path, case: Case, args: argparse.Namespace, env: dict[str, str], logs_dir: Path) -> dict[str, Any]:
+def _run_case(
+    bench: Path,
+    case: Case,
+    args: argparse.Namespace,
+    env: dict[str, str],
+    logs_dir: Path,
+) -> VerificationResult:
     cmd = _command(bench, case, args)
     started = time.perf_counter()
     with apu_activity_lock(exclusive=True):
@@ -168,7 +205,7 @@ def _run_case(bench: Path, case: Case, args: argparse.Namespace, env: dict[str, 
     (log_prefix.with_suffix(".stdout.log")).write_text(proc.stdout, encoding="utf-8")
     (log_prefix.with_suffix(".stderr.log")).write_text(proc.stderr, encoding="utf-8")
 
-    parsed: dict[str, Any] = {}
+    parsed: ParsedCaseMetrics = {}
     error: str | None = None
     if proc.returncode == 0:
         try:
@@ -199,7 +236,7 @@ def _run_case(bench: Path, case: Case, args: argparse.Namespace, env: dict[str, 
     if parsed.get("supported") == 0:
         error = "unsupported"
 
-    return {
+    result: VerificationResult = {
         "name": case.name,
         "shape_id": case.shape_id,
         "m": case.m,
@@ -214,6 +251,7 @@ def _run_case(bench: Path, case: Case, args: argparse.Namespace, env: dict[str, 
         "stdout_log": str(log_prefix.with_suffix(".stdout.log")),
         "stderr_log": str(log_prefix.with_suffix(".stderr.log")),
     }
+    return result
 
 
 def main() -> int:

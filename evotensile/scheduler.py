@@ -1,18 +1,22 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from .adaptive_retime import AdaptivePolicy, ProbePolicy
-from .candidate import Candidate, Shape
+from .candidate import Shape
 from .database import EvoTensileDB
 from .profile import DEFAULT_PROFILE, TargetProfile
 from .protocol import BenchmarkProtocol
 from .runner import DEFAULT_TENSILELITE_BIN
-from .scheduling.models import ExecutedBatch, PreparedBatch, ScheduleResult
+from .scheduling.models import ExecutedBatch, PairRequest, PreparedBatch, ScheduleResult
 from .scheduling.planning import (
-    plan_batches,
+    normalize_pair_requests,
+    plan_pair_requests,
     preprepare_probe_screened_pairs,
     production_candidate_batch_size,
     record_shape_rule_rejections,
+    requested_candidates,
+    requested_shapes,
 )
 from .scheduling.preparation import PreparationContext, prepare_wave, write_batch_inputs
 from .scheduling.timing import TimingContext, run_serial_timing
@@ -24,12 +28,11 @@ DEFAULT_COMPILE_THREADS = 1
 def execute_schedule(
     db: EvoTensileDB,
     *,
-    shapes: list[Shape],
-    candidates: list[Candidate],
+    requests: Sequence[PairRequest],
     output_root: str | Path,
+    artifact_shapes_by_candidate: Mapping[str, Sequence[Shape]] | None = None,
     target_profile: TargetProfile = DEFAULT_PROFILE,
     protocol: BenchmarkProtocol | None = None,
-    min_samples: int = 1,
     candidate_batch_size: int | None = None,
     shape_batch_size: int | None = None,
     ignore_cache: bool = False,
@@ -61,10 +64,25 @@ def execute_schedule(
     resolved_wave_batches = (
         target_profile.default_prepare_wave_batches if prepare_wave_batches is None else prepare_wave_batches
     )
+    protocol = protocol or target_profile.default_protocol
+    if protocol.role != "main":
+        raise ValueError("execute_schedule requires a main benchmark protocol")
+
+    normalized = normalize_pair_requests(requests)
+    effective_requests = [
+        replace(request, min_samples=max(request.min_samples, protocol.num_benchmarks)) for request in normalized
+    ]
+    candidates = requested_candidates(effective_requests)
+    shapes = requested_shapes(effective_requests)
+    artifact_shapes = list(shapes)
+    if artifact_shapes_by_candidate is not None:
+        artifact_shapes = list(
+            {shape.id: shape for scope in artifact_shapes_by_candidate.values() for shape in scope}.values()
+        )
     if candidate_batch_size is None:
         candidate_batch_size = production_candidate_batch_size(
             candidate_count=len(candidates),
-            shape_count=len(shapes),
+            shape_count=len(artifact_shapes),
             shape_batch_size=shape_batch_size,
             prepare_workers=resolved_prepare_workers,
             max_candidate_batch_size=target_profile.max_no_cache_candidate_batch_size,
@@ -83,15 +101,11 @@ def execute_schedule(
     if adaptive_policy is not None and probe_policy is None:
         raise ValueError("probe_policy is required when adaptive sampling is enabled")
 
-    protocol = protocol or target_profile.default_protocol
-    if protocol.role != "main":
-        raise ValueError("execute_schedule requires a main benchmark protocol")
     problem_type_hash = target_profile.problem_type_hash
     benchmark_protocol_hash = target_profile.benchmark_protocol_hash(protocol)
     validation_protocol_hash = protocol.validation_protocol_hash()
     build_timeout_s = resolve_timeout(build_timeout_s, target_profile.default_build_timeout_s)
     runner_timeout_s = resolve_timeout(runner_timeout_s, target_profile.default_runner_timeout_s)
-    initial_samples = max(min_samples, protocol.num_benchmarks)
     probe_protocol = None
     probe_protocol_hash = None
     probe_policy_hash = None
@@ -99,12 +113,11 @@ def execute_schedule(
 
     db.init()
     db.register_candidates(candidates)
-    db.register_shapes(shapes)
+    db.register_shapes(list({shape.id: shape for shape in [*shapes, *artifact_shapes]}.values()))
     if not dry_run and not generate_only:
         record_shape_rule_rejections(
             db,
-            shapes=shapes,
-            candidates=candidates,
+            requests=effective_requests,
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=benchmark_protocol_hash,
         )
@@ -123,48 +136,48 @@ def execute_schedule(
         if not ignore_cache:
             preprepare_screened_pairs = preprepare_probe_screened_pairs(
                 db,
-                shapes=shapes,
-                candidates=candidates,
+                requests=effective_requests,
                 problem_type_hash=problem_type_hash,
                 benchmark_protocol_hash=benchmark_protocol_hash,
                 probe_protocol_hash=probe_protocol_hash,
                 policy=probe_policy,
             )
 
-    planned = plan_batches(
+    planned = plan_pair_requests(
         db,
-        shapes=shapes,
-        candidates=candidates,
+        requests=effective_requests,
         problem_type_hash=problem_type_hash,
         benchmark_protocol_hash=benchmark_protocol_hash,
         validation_protocol_hash=validation_protocol_hash,
-        min_samples=initial_samples,
         candidate_batch_size=effective_candidate_batch_size,
         shape_batch_size=shape_batch_size,
         ignore_cache=ignore_cache,
         max_batches=max_batches,
         excluded_pairs=preprepare_screened_pairs,
+        artifact_shapes_by_candidate=artifact_shapes_by_candidate,
+    )
+    base_result = ScheduleResult(
+        planned_batches=planned,
+        build_timeout_s=build_timeout_s,
+        runner_timeout_s=runner_timeout_s,
+        candidate_batch_size=effective_candidate_batch_size,
+        shape_batch_size=shape_batch_size,
+        prepare_workers=resolved_prepare_workers,
+        prepare_wave_batches=resolved_wave_batches,
+        validation_workers=resolved_validation_workers,
+        runner_bin=str(runner_bin),
+        probe_protocol_hash=probe_protocol_hash,
+        probe_policy_hash=probe_policy_hash,
+        probe_preprepare_screened_pairs=len(preprepare_screened_pairs),
     )
     if dry_run:
-        return ScheduleResult(
-            planned_batches=planned,
-            build_timeout_s=build_timeout_s,
-            runner_timeout_s=runner_timeout_s,
-            candidate_batch_size=effective_candidate_batch_size,
-            shape_batch_size=shape_batch_size,
-            prepare_workers=resolved_prepare_workers,
-            prepare_wave_batches=resolved_wave_batches,
-            validation_workers=resolved_validation_workers,
-            runner_bin=str(runner_bin),
-            probe_protocol_hash=probe_protocol_hash,
-            probe_policy_hash=probe_policy_hash,
-            probe_screened_pairs=len(preprepare_screened_pairs),
-            probe_preprepare_screened_pairs=len(preprepare_screened_pairs),
-        )
+        return replace(base_result, probe_screened_pairs=len(preprepare_screened_pairs))
     if generate_only:
         generated = []
         for batch in planned:
-            batch_protocol = protocol.with_overrides(num_benchmarks=batch.samples_per_pair)
+            batch_protocol = protocol.with_overrides(
+                num_benchmarks=max(pair.samples_to_collect for pair in batch.pairs)
+            )
             yaml_path, manifest_path, run_dir = write_batch_inputs(
                 batch,
                 output_root,
@@ -180,21 +193,10 @@ def execute_schedule(
                     phase="generated",
                 )
             )
-        return ScheduleResult(
-            planned_batches=planned,
+        return replace(
+            base_result,
             executed_batches=generated,
-            build_timeout_s=build_timeout_s,
-            runner_timeout_s=runner_timeout_s,
-            candidate_batch_size=effective_candidate_batch_size,
-            shape_batch_size=shape_batch_size,
-            prepare_workers=resolved_prepare_workers,
-            prepare_wave_batches=resolved_wave_batches,
-            validation_workers=resolved_validation_workers,
-            runner_bin=str(runner_bin),
-            probe_protocol_hash=probe_protocol_hash,
-            probe_policy_hash=probe_policy_hash,
             probe_screened_pairs=len(preprepare_screened_pairs),
-            probe_preprepare_screened_pairs=len(preprepare_screened_pairs),
         )
 
     assert runner_bin is not None
@@ -205,31 +207,18 @@ def execute_schedule(
     probe_screened_pairs = len(preprepare_screened_pairs)
     for wave_start in range(0, len(planned), resolved_wave_batches):
         if completed_waves and admit_next_wave is not None:
-            progress = ScheduleResult(
-                planned_batches=planned,
+            progress = replace(
+                base_result,
                 executed_batches=executed,
-                build_timeout_s=build_timeout_s,
-                runner_timeout_s=runner_timeout_s,
-                candidate_batch_size=effective_candidate_batch_size,
-                shape_batch_size=shape_batch_size,
-                prepare_workers=resolved_prepare_workers,
-                prepare_wave_batches=resolved_wave_batches,
-                validation_workers=resolved_validation_workers,
-                runner_bin=str(runner_bin),
                 completed_waves=completed_waves,
                 adaptive_rounds=adaptive_rounds,
-                probe_protocol_hash=probe_protocol_hash,
-                probe_policy_hash=probe_policy_hash,
                 probe_survivor_pairs=probe_survivor_pairs,
                 probe_screened_pairs=probe_screened_pairs,
-                probe_preprepare_screened_pairs=len(preprepare_screened_pairs),
             )
             if not admit_next_wave(progress):
                 break
 
         wave = planned[wave_start : wave_start + resolved_wave_batches]
-        wave_shapes = list({shape.id: shape for batch in wave for shape in batch.shapes}.values())
-        wave_candidates = list({candidate.hash: candidate for batch in wave for candidate in batch.candidates}.values())
         prepared = prepare_wave(
             PreparationContext(
                 db=db,
@@ -254,8 +243,6 @@ def execute_schedule(
         wave_result = run_serial_timing(
             TimingContext(
                 db=db,
-                shapes=wave_shapes,
-                candidates=wave_candidates,
                 planned_batches=wave,
                 protocol=protocol,
                 problem_type_hash=problem_type_hash,
@@ -264,7 +251,6 @@ def execute_schedule(
                 runner_bin=runner_bin,
                 runner_timeout_s=runner_timeout_s,
                 keep_going=keep_going,
-                initial_samples=initial_samples,
                 adaptive_policy=adaptive_policy,
                 probe_policy=probe_policy,
                 probe_protocol=probe_protocol,
@@ -284,22 +270,11 @@ def execute_schedule(
         ):
             break
 
-    return ScheduleResult(
-        planned_batches=planned,
+    return replace(
+        base_result,
         executed_batches=executed,
-        build_timeout_s=build_timeout_s,
-        runner_timeout_s=runner_timeout_s,
-        candidate_batch_size=effective_candidate_batch_size,
-        shape_batch_size=shape_batch_size,
-        prepare_workers=resolved_prepare_workers,
-        prepare_wave_batches=resolved_wave_batches,
-        validation_workers=resolved_validation_workers,
-        runner_bin=str(runner_bin),
         completed_waves=completed_waves,
         adaptive_rounds=adaptive_rounds,
-        probe_protocol_hash=probe_protocol_hash,
-        probe_policy_hash=probe_policy_hash,
         probe_survivor_pairs=probe_survivor_pairs,
         probe_screened_pairs=probe_screened_pairs,
-        probe_preprepare_screened_pairs=len(preprepare_screened_pairs),
     )

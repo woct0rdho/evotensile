@@ -15,9 +15,9 @@ The old TensileLite `LibraryClient` CSV/log ingestion path and the combined vali
 
 ## YAML And Manifest
 
-`write_tensilelite_yaml()` writes one complete candidate dictionary per `Groups` entry and exact shapes under `BenchmarkFinalParameters`. The active profile supplies problem type, global parameters, and target library logic.
+`write_tensilelite_yaml()` writes one complete candidate dictionary per `Groups` entry and the batch's explicit artifact-shape scope under `BenchmarkFinalParameters`. The active profile supplies problem type, global parameters, and target library logic. The artifact scope may be an explicit superset of the shapes currently requested for evaluation.
 
-Every YAML has a `config.manifest.csv` containing:
+Every YAML has a `config.manifest.csv` containing only exact requested pairs:
 
 ```text
 candidate_hash
@@ -28,7 +28,7 @@ solution_index
 params_json
 ```
 
-The manifest records intended ordering. Final accepted mapping remains authoritative and comes from TensileLite-generated solution YAMLs.
+Candidate and problem indices refer to the artifact candidate and shape positions in the YAML. The manifest does not contain unrequested artifact-scope combinations. Final accepted mapping remains authoritative and comes from TensileLite-generated solution YAMLs. The complete request and artifact-scope contract is documented in `docs/exact_pair_scheduling.md`.
 
 ## Prepare Queue
 
@@ -79,7 +79,7 @@ External GPU programs that do not participate in this gate remain outside EvoTen
 
 The scheduler can reuse a stable TensileLite build cache under `OUTPUT_DIR/compile_cache` unless `--no-compile-cache` is passed.
 
-Stable caching uses candidate-centric TensileLite libraries: each prepared batch contains one candidate and all exact shapes assigned to that batch. This makes reuse independent of the proposal cohort without attempting to merge generated libraries or code objects. The cache key includes:
+Stable caching uses candidate-centric TensileLite libraries: each prepared batch contains one candidate and its explicit artifact-shape scope. This makes reuse independent of the proposal cohort without attempting to merge generated libraries or code objects. A later request outside that scope requires a distinct cache identity. The cache key includes:
 - Candidate hash.
 - Sorted exact shape identities, because GridBased generation and final mapping are shape-dependent.
 - Compile-relevant global parameters.
@@ -92,16 +92,18 @@ A cache-specific kernel advisory file lock prevents duplicate population by prep
 
 Validation, probe, main benchmark, and adaptive top-up modes always use the same prepared library directory. None of the timing stages invoke TensileLite again.
 
-After final-YAML mapping, the scheduler registers one shared artifact bundle for the generated library and one mapping per runnable pair. The bundle owns build roots, normalized generated solution-YAML paths, library path, optional manifest, and a SHA-256-derived library content identity. Mappings own exact solution indices. Registration failure blocks validation and timing for that prepared batch. Later stabilization, confirmation, and production export use only content-verified bundles. They do not rediscover artifacts by scanning run directories.
+After final-YAML mapping, the scheduler registers one shared artifact bundle for the generated library and one mapping per runnable requested pair. The bundle owns build roots, normalized generated solution-YAML paths, library path, optional manifest, and a SHA-256-derived library content identity. Mappings own exact solution indices. Unrequested artifact-scope combinations receive no mapping. Registration failure blocks validation and timing for that prepared batch. Later stabilization, confirmation, and production export use only content-verified bundles. They do not rediscover artifacts by scanning run directories.
 
 ## Accepted-Solution Mapping
 
 After build/codegen, `build_runnable_pairs()`:
-- Reads the manifest.
+- Reads the exact requested-pair manifest.
 - Maps generated solution dictionaries to candidate hashes.
-- Emits `RunnablePair` records for accepted planned pairs.
-- Emits `rejected` for planned manifest pairs absent from final mapping.
-- Emits `unmapped` for planned pairs absent from the manifest.
+- Emits `RunnablePair` records for accepted requested pairs.
+- Emits `rejected` for requested manifest pairs absent from final mapping.
+- Emits `unmapped` for requested pairs absent from the manifest.
+
+Build failures, diagnostic attribution, validation, and timing are likewise restricted to requested keys rather than the artifact candidate/shape product.
 
 If a mixed build returns nonzero but contains accepted final-YAML solutions, those accepted candidates continue through validation and timing. Missing candidates are attributed through structured diagnostics. They are not inferred rejected from absence alone.
 
@@ -168,7 +170,7 @@ There is no public `none` validation backend and no trusted-validation bypass. S
 
 ## Adaptive Timing
 
-Adaptive sampling prepares the candidate set once. The scheduler then:
+Adaptive sampling prepares the explicit candidate artifact scopes once. The scheduler then, for requested pairs only:
 - runs one one-enqueue, zero-warmup probe sample for every validation-passed pair.
 - screens candidates outside the configured coarse factor while retaining the minimum survivor floor.
 - gives provisional survivors the remaining samples needed for the three-sample probe target.
@@ -183,7 +185,7 @@ Probe, main, and adaptive rounds do not compile, remap, diagnose, or validate ca
 
 ## Hot-Loop Confirmation
 
-Broad search normally uses a cheap main protocol so many candidates can provide feedback. Final performance claims use a separate hot-loop confirmation over a small ranked set.
+Broad search normally uses a cheap main protocol so many candidates can provide feedback. The legacy singleton diagnostic uses a separate hot-loop ranking over a small set. Production deployment uses the campaign confirmation path described in `docs/deployment_selection.md`.
 
 `hot_confirm_topk()`:
 - ranks screening candidates under the requested main protocol.
@@ -194,7 +196,9 @@ Broad search normally uses a cheap main protocol so many candidates can provide 
 - records malformed or timed-out finalists in `summary.json` and continues while budget remains.
 - writes JSON and CSV rankings without recompilation, repeated validation, or DB timing insertion.
 
-The blind campaign supplies `20` warmups, `10` samples, and `10` enqueues per sample. Confirmation uses `NumElementsToValidate=0` in benchmark mode and relies on the validation table as its correctness gate. The helper is used by real blind campaign tooling described in `docs/blind_experiment_infrastructure.md`. Statistical interpretation of screening and confirmation is documented in `docs/noisy_measurements.md`.
+The blind campaign supplies `20` warmups, `10` samples, and `10` enqueues per sample. This diagnostic uses `NumElementsToValidate=0` in benchmark mode and relies on the validation table as its correctness gate. It is not the production export gate because it neither revalidates nor inserts confirmation timing into the DB.
+
+Production confirmation emits explicit `CONFIRMATION` requests through a dedicated `RealEvaluatorContext(ignore_cache=True)`. Ignoring the cache forces fresh validation and timing for every selected production pair under the requested protocol identities. The soft controller checks each candidate group before admission, lets admitted work drain, records overrun, and stops later admission. Statistical interpretation remains in `docs/noisy_measurements.md`.
 
 ## Diagnostic Attribution
 

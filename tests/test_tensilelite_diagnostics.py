@@ -70,7 +70,7 @@ def test_attribution_inserts_marks_only_structured_failures_reusable():
                 shape_ids=("m1_n2_b1_k3",),
             ),
         ],
-        planned_shape_ids=["m1_n2_b1_k3"],
+        planned_pairs={("m1_n2_b1_k3", "cand_a"), ("m1_n2_b1_k3", "cand_b")},
         failed_candidate_hashes={"cand_a", "cand_b"},
         run_id="diag_run",
         problem_type_hash="ptype",
