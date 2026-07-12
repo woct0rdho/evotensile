@@ -173,7 +173,7 @@ class BundleCostModel:
         fallback_validation_s: float = 0.05,
         fallback_timing_s: float = 0.05,
         min_fit_rows: int = 12,
-        seed: int = 0,
+        seed: int = 12345,
         jobs: int = 1,
     ) -> None:
         if workgroup_processor_count <= 0 or min_fit_rows <= 0 or jobs == 0:

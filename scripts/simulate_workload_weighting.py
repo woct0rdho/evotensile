@@ -146,7 +146,7 @@ def main():
     rows = []
     with tempfile.TemporaryDirectory(prefix="evotensile-workload-replay-") as directory:
         for seed_index in range(args.seeds):
-            seed = 20260712 + seed_index
+            seed = 12345 + seed_index
             candidates = _stable_candidate_order(catalog, seed=seed)
             for mode, active_weights in (("uniform", uniform), ("workload", workload)):
                 evaluator, controller, observations, references = _anchored_state(

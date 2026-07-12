@@ -40,7 +40,7 @@ def _outcome(candidate, shape, *, performance, status="ok", disclosed=True):
 
 def test_contextual_pair_model_uses_only_disclosed_pairs_and_supports_sparse_shapes():
     shapes = pilot_100_shapes()[:6]
-    candidates = sample_candidates(30, seed=8128)
+    candidates = sample_candidates(30, seed=12345)
     train_candidates = candidates[:20]
     invalid_hashes = {candidate.hash for candidate in train_candidates[:3]}
     outcomes = []
@@ -64,7 +64,7 @@ def test_contextual_pair_model_uses_only_disclosed_pairs_and_supports_sparse_sha
     )
     model = ContextualPairModel(
         workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
-        configuration=PairModelConfiguration(n_estimators=48, min_performance_rows=24, seed=17, jobs=1),
+        configuration=PairModelConfiguration(n_estimators=48, min_performance_rows=24, seed=12346, jobs=1),
     )
 
     summary = model.fit(outcomes)
@@ -90,11 +90,11 @@ def test_contextual_pair_model_uses_only_disclosed_pairs_and_supports_sparse_sha
 
 def test_contextual_pair_model_uses_the_same_path_for_one_shape():
     shape = pilot_100_shapes()[0]
-    candidates = sample_candidates(28, seed=2048)
+    candidates = sample_candidates(28, seed=12345)
     outcomes = [_outcome(candidate, shape, performance=_performance(candidate, shape)) for candidate in candidates]
     model = ContextualPairModel(
         workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
-        configuration=PairModelConfiguration(n_estimators=32, min_performance_rows=24, seed=19, jobs=1),
+        configuration=PairModelConfiguration(n_estimators=32, min_performance_rows=24, seed=12346, jobs=1),
     )
 
     model.fit(outcomes)
@@ -107,7 +107,7 @@ def test_contextual_pair_model_uses_the_same_path_for_one_shape():
 
 def test_pair_model_reports_rank_calibration_topk_and_improvement_metrics():
     shapes = pilot_100_shapes()[:5]
-    candidates = sample_candidates(36, seed=4096)
+    candidates = sample_candidates(36, seed=12345)
     train_candidates = candidates[:24]
     test_candidates = candidates[24:]
     train = [
@@ -117,7 +117,7 @@ def test_pair_model_reports_rank_calibration_topk_and_improvement_metrics():
     ]
     model = ContextualPairModel(
         workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
-        configuration=PairModelConfiguration(n_estimators=64, min_performance_rows=24, seed=23, jobs=1),
+        configuration=PairModelConfiguration(n_estimators=64, min_performance_rows=24, seed=12346, jobs=1),
     )
     model.fit(train)
     test = [

@@ -545,7 +545,7 @@ def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch
     candidates = sample_candidates(2)
     shape = pilot_100_shapes()[0]
     main_protocol = DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2)
-    incumbent = sample_candidates(1, seed=2026)[0]
+    incumbent = sample_candidates(1, seed=12345)[0]
     db.register_candidates([incumbent])
     db.register_shapes([shape])
     insert_test_benchmark_event(

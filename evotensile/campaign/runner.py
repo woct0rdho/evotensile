@@ -265,7 +265,7 @@ def run_campaign(campaign: CampaignRun) -> int:
         else:
             controller.append_trace("resume_pending", {"round_index": round_index})
 
-        round_seed = configuration.seed + round_index * 10007
+        round_seed = configuration.seed + round_index
         round_dir = store.round_dir(round_index)
         if pending:
             round_proposal = store.load_proposal(round_index)

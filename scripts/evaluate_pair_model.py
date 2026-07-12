@@ -255,7 +255,7 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("out/grid100_pair_model_20260712.json"))
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--estimators", type=int, default=96)
-    parser.add_argument("--seed", type=int, default=20260712)
+    parser.add_argument("--seed", type=int, default=12345)
     args = parser.parse_args()
     oracle = load_db_oracle_matrix(args.db, shapes=shapes)
     outcomes = _outcomes(oracle)
@@ -273,7 +273,7 @@ def main():
             result["shape_local_extratrees"] = _shape_local_predictions(
                 train,
                 test,
-                seed=args.seed + 100 + offset,
+                seed=args.seed + 3 + offset,
                 estimators=args.estimators,
             )
         if mode in {"shape", "pair"}:

@@ -33,7 +33,7 @@ class PairModelConfiguration:
     max_features: float = 0.7
     bootstrap_fraction: float = 0.8
     min_performance_rows: int = 24
-    seed: int = 0
+    seed: int = 12345
     jobs: int = 1
 
     def __post_init__(self) -> None:
@@ -244,7 +244,7 @@ class ContextualPairModel:
         calibration_index_set = set(calibration_indices)
         fit_indices = [index for index in range(len(targets)) if index not in calibration_index_set]
         if len(calibration_indices) >= 8 and len(fit_indices) >= self.configuration.min_performance_rows:
-            calibration_model = ExtraTreesRegressor(**self._regressor_parameters(seed=self.configuration.seed + 17))
+            calibration_model = ExtraTreesRegressor(**self._regressor_parameters(seed=self.configuration.seed + 2))
             calibration_model.fit(performance_matrix[fit_indices], [targets[index] for index in fit_indices])
             calibration_tree_predictions = [
                 estimator.predict(performance_matrix[calibration_indices])

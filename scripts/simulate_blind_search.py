@@ -92,7 +92,7 @@ def main() -> int:
         prepare_seconds_per_candidate=args.prepare_seconds_per_candidate,
         hot_reserve_s=args.hot_reserve,
     )
-    seeds = args.seed or [20260710]
+    seeds = args.seed or [12345]
     results = [
         simulate_candidate_stream(
             stream,

@@ -131,7 +131,7 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="evotensile-deployment-replay-") as directory:
         for seed_index in range(args.seeds):
-            seed = 20260712 + seed_index
+            seed = 12345 + seed_index
             candidates = _stable_candidate_order(catalog, seed=seed)
             evaluator, campaign_controller, observations, references = _anchored_state(
                 Path(directory) / f"campaign-{seed}.sqlite",
@@ -154,7 +154,7 @@ def main():
                 allow_repair=True,
                 reference_performance=references,
             )
-            model = _model(observations, estimators=args.estimators, seed=seed + 101)
+            model = _model(observations, estimators=args.estimators, seed=seed + 1)
             predictions = model.predict([(candidate, shape) for candidate in candidates for shape in shapes])
             incumbents = {
                 shape_id: incumbent.candidate_hash for shape_id, incumbent in campaign_controller.incumbents.items()
@@ -174,7 +174,7 @@ def main():
             confirmation_model = _model(
                 observations,
                 estimators=args.estimators,
-                seed=seed + 202,
+                seed=seed + 2,
             )
             confirmation_predictions = confirmation_model.predict(
                 [(candidate, shape) for candidate in candidates for shape in shapes]

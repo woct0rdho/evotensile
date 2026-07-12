@@ -34,7 +34,7 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
     request = CampaignConfigurationRequest(
         runner_bin=fake_runner,
         tensilelite_bin=fake_tensile,
-        seed=20260710,
+        seed=12345,
         time_budget_s=30.0,
         hot_reserve_s=5.0,
         max_feedback_rounds=0,

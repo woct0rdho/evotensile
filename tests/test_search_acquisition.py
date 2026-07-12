@@ -117,7 +117,7 @@ def test_family_qd_preserves_shape_normalized_specialists(tmp_path: Path):
         db,
         policy=_policy(local_count=8, elite_count=2),
         target_shapes=[small, large],
-        seed=7,
+        seed=12345,
     )
 
     parent_hashes = {parent for candidate in result.generated for parent in candidate.parent_hashes}
@@ -163,7 +163,7 @@ def test_family_qd_parent_override_prevents_global_parent_selection(tmp_path: Pa
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
     shape = pilot_100_shapes()[0]
-    candidates = sample_candidates(12, seed=20260710)
+    candidates = sample_candidates(12, seed=12345)
     _insert_ranked_candidates(db, candidates, [shape])
     island_parents = candidates[:8]
 
@@ -173,7 +173,7 @@ def test_family_qd_parent_override_prevents_global_parent_selection(tmp_path: Pa
         target_shapes=[shape],
         shape_id=shape.id,
         parent_candidates=island_parents,
-        seed=20260711,
+        seed=12346,
     )
 
     parent_hashes = {candidate.hash for candidate in island_parents}
@@ -191,7 +191,7 @@ def test_family_qd_cold_start_is_shape_aware_and_balanced(tmp_path: Path):
         db,
         policy=_policy(num_random=3),
         target_shapes=[shape],
-        seed=1151,
+        seed=12345,
     )
 
     assert len(result.selected) == 3
@@ -208,7 +208,7 @@ def test_family_qd_surrogate_multiplier_preserves_measurement_budget(tmp_path: P
         db,
         policy=_policy(num_random=3, surrogate_pool_multiplier=2, covering_cold_start=True),
         target_shapes=[shape],
-        seed=20260710,
+        seed=12345,
     )
 
     assert len(result.generated) == 6
@@ -219,7 +219,7 @@ def test_family_qd_uses_singleton_bundle_acquisition_after_cold_start(tmp_path: 
     db = EvoTensileDB.connect(tmp_path / "singleton.sqlite")
     db.init()
     shape = Shape(1024, 1024, 1, 1024)
-    candidates = sample_candidates(32, seed=20260712)
+    candidates = sample_candidates(32, seed=12345)
     _insert_ranked_candidates(db, candidates, [shape])
 
     result = propose_candidates(
@@ -231,7 +231,7 @@ def test_family_qd_uses_singleton_bundle_acquisition_after_cold_start(tmp_path: 
         ),
         target_shapes=[shape],
         shape_id=shape.id,
-        seed=20260713,
+        seed=12346,
     )
 
     assert result.metadata["selection_method"] == "singleton-bundle-acquisition"
@@ -242,7 +242,7 @@ def test_family_qd_uses_singleton_bundle_acquisition_after_cold_start(tmp_path: 
 def test_family_qd_adaptive_operators_keep_distinct_sources(tmp_path: Path):
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
-    candidates = sample_candidates(12, seed=20260710)
+    candidates = sample_candidates(12, seed=12346)
     shape = Shape(8192, 8192, 1, 8192)
     _insert_ranked_candidates(db, candidates, [shape])
 
@@ -260,7 +260,7 @@ def test_family_qd_adaptive_operators_keep_distinct_sources(tmp_path: Path):
             adaptive_donor_selection=True,
         ),
         target_shapes=[shape],
-        seed=20260711,
+        seed=12345,
     )
 
     sources = {candidate.source for candidate in result.generated}

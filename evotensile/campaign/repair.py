@@ -32,7 +32,7 @@ class RepairPolicy:
     cluster_candidates: int = 4
     mutation_candidates_per_shape: int = 4
     mutation_max_changed_genes: int = 2
-    seed: int = 0
+    seed: int = 12345
 
     def __post_init__(self) -> None:
         counts = (

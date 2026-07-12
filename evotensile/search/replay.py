@@ -759,7 +759,7 @@ def _select_replay_batch(
                 evidence=evidence,
                 shapes=[shape],
                 count=min(budget, len(pool)),
-                seed=seed + island_index * 1_000_003,
+                seed=seed + island_index,
                 min_evidence=min_evidence,
                 covering_cold_start=covering_cold_start,
                 surrogate_jobs=1,

@@ -11,7 +11,7 @@ from tests.helpers import insert_test_benchmark_event
 
 
 def test_candidate_coverage_counts_unique_values():
-    candidates = random_candidates(16, seed=1151)
+    candidates = random_candidates(16, seed=12345)
 
     summary = candidate_coverage(candidates)
 
@@ -54,7 +54,7 @@ def test_summarize_families_cli(tmp_path: Path, capsys):
         environment_compatibility_tag=DEFAULT_PROFILE.environment_compatibility_tag,
     )
     db.init()
-    candidates = random_candidates(2, seed=1151)
+    candidates = random_candidates(2, seed=12345)
     shape = pilot_100_shapes()[0]
     p_hash = DEFAULT_PROFILE.problem_type_hash
     b_hash = DEFAULT_PROFILE.benchmark_protocol_hash()

@@ -157,7 +157,7 @@ def test_repair_candidate_pool_audits_all_seed_lanes_and_mutations():
             neighbor_candidates_per_shape=1,
             cluster_candidates=1,
             mutation_candidates_per_shape=2,
-            seed=7,
+            seed=12345,
         ),
     )
 

@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--pair-budget", type=int, default=385)
     parser.add_argument("--repair-pairs", type=int, default=12)
     parser.add_argument("--estimators", type=int, default=96)
-    parser.add_argument("--seed", type=int, default=20260712)
+    parser.add_argument("--seed", type=int, default=12345)
     args = parser.parse_args()
     if args.repair_pairs <= 0 or args.repair_pairs >= args.pair_budget:
         raise ValueError("repair pair reserve must be positive and smaller than total pair budget")
@@ -158,7 +158,7 @@ def main():
                 candidates=candidates,
                 shapes=shapes,
                 predictions=predictions,
-                cost_model=_cost_model(args.seed),
+                cost_model=_cost_model(args.seed + 1),
                 policy=_broad_policy(broad_pairs),
             )
             broad_result = evaluator.evaluate(
@@ -167,7 +167,7 @@ def main():
             )
             broad_result.apply(controller)
             observations = (*seed_result.outcomes, *broad_result.outcomes)
-            continuation_model = _model(observations, estimators=args.estimators, seed=args.seed + 1)
+            continuation_model = _model(observations, estimators=args.estimators, seed=args.seed + 2)
             extra = {
                 "broad_pairs": len(broad_plan.timing_requests),
                 "reserve_pairs": args.repair_pairs,
@@ -181,7 +181,7 @@ def main():
                     candidates=candidates,
                     shapes=shapes,
                     predictions=continuation_predictions,
-                    cost_model=_cost_model(args.seed + 1),
+                    cost_model=_cost_model(args.seed + 3),
                     policy=_broad_policy(args.repair_pairs),
                 )
                 continuation_result = evaluator.evaluate(
@@ -198,7 +198,7 @@ def main():
                 repair_policy = RepairPolicy(
                     uncertainty_weight=0.0,
                     mutation_candidates_per_shape=0,
-                    seed=args.seed,
+                    seed=args.seed + 4,
                 )
                 deficits = assess_repair_deficits(
                     controller,
@@ -231,7 +231,7 @@ def main():
                     shapes=shapes,
                     deficits=deficits,
                     predictions=repair_predictions,
-                    cost_model=_cost_model(args.seed + 1),
+                    cost_model=_cost_model(args.seed + 3),
                     acquisition_policy=BundleAcquisitionPolicy(
                         improvement_weight=0.0,
                         coverage_weight=0.0,

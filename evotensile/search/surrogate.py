@@ -58,7 +58,7 @@ class GridCandidatePrediction:
 
 
 class ExtraTreesSurrogate:
-    def __init__(self, *, seed: int = 0, jobs: int, n_estimators: int = 192) -> None:
+    def __init__(self, *, seed: int = 12345, jobs: int, n_estimators: int = 192) -> None:
         try:
             from sklearn.ensemble import ExtraTreesRegressor
             from sklearn.feature_extraction import DictVectorizer

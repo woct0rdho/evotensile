@@ -388,7 +388,7 @@ def _run_increment(
         candidates=candidates,
         shapes=shapes,
         predictions=predictions,
-        cost_model=_cost_model(seed),
+        cost_model=_cost_model(seed + 1),
         policy=broad_policy,
         artifact_shapes_by_target=_artifact_scopes(shapes, clustering, configuration.artifact_scope),
     )
@@ -409,9 +409,9 @@ def _run_increment(
     }
     if repair_pairs <= 0:
         return report
-    repair_model = _model(observations, estimators=estimators, seed=seed + 1)
+    repair_model = _model(observations, estimators=estimators, seed=seed + 2)
     catalog_predictions = repair_model.predict([(candidate, shape) for candidate in candidates for shape in shapes])
-    replay_repair_policy = replace(configuration.repair, mutation_candidates_per_shape=0, seed=seed)
+    replay_repair_policy = replace(configuration.repair, mutation_candidates_per_shape=0, seed=seed + 3)
     deficits = assess_repair_deficits(
         controller,
         shapes=shapes,
@@ -437,7 +437,7 @@ def _run_increment(
         shapes=shapes,
         deficits=deficits,
         predictions=repair_predictions,
-        cost_model=_cost_model(seed + 1),
+        cost_model=_cost_model(seed + 3),
         acquisition_policy=BundleAcquisitionPolicy(
             improvement_weight=0.0,
             coverage_weight=0.0,
@@ -600,7 +600,7 @@ def main():
             }
             oracle_best_by_profile[profile_name] = oracle_best
             for seed_index in range(args.seeds):
-                seed = 20260712 + seed_index
+                seed = 12345 + seed_index
                 ordered_candidates = _stable_candidate_order(candidates, seed=seed)
                 if profile_name == "blind":
                     seed_candidates = ordered_candidates[: args.seed_candidates]
@@ -711,7 +711,7 @@ def main():
                 {record.candidate.hash: record.candidate for record in oracle.values()}.values(),
                 key=lambda candidate: candidate.hash,
             )
-            candidates = _stable_candidate_order(candidates, seed=20260712)
+            candidates = _stable_candidate_order(candidates, seed=12345)
             if profile_name == "blind":
                 seed_candidates = candidates[: args.seed_candidates]
                 pool = candidates[args.seed_candidates :]
@@ -758,7 +758,7 @@ def main():
                             configuration=selected_configuration,
                             pair_budget=round_budget,
                             estimators=args.estimators,
-                            seed=20260712 + round_index * 100,
+                            seed=12345 + round_index,
                             allow_repair=allow_repair,
                             reference_performance=references,
                         )
@@ -788,13 +788,13 @@ def main():
             for report in run_reports
             if report["initialization"] == profile_name
             and report["configuration_id"] == configuration_id
-            and report["seed"] == 20260712
+            and report["seed"] == 12345
         )
         canonical_increment = cast(dict[str, object], canonical_run["increment"])
         unknown_pair_keys = cast(list[list[str]], canonical_increment["unknown_pair_keys"])
         canonical_unknown = {tuple(pair) for pair in unknown_pair_keys}
         hybrid_finalists[profile_name] = {
-            "canonical_seed": 20260712,
+            "canonical_seed": 12345,
             "canonical_unknown_pairs": len(canonical_unknown),
             "across_seed_unknown_pairs": len(across_seed_unknown),
             "overlay_pairs_available": len(canonical_unknown & overlay_pairs),

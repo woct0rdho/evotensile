@@ -85,7 +85,7 @@ def main():
     parser.add_argument("--seed-candidates", type=int, default=80)
     parser.add_argument("--pair-budget", type=int, default=385)
     parser.add_argument("--estimators", type=int, default=96)
-    parser.add_argument("--seed", type=int, default=20260712)
+    parser.add_argument("--seed", type=int, default=12345)
     args = parser.parse_args()
     shapes = pilot_100_shapes()
     oracle = load_db_oracle_matrix(args.db, shapes=shapes)
@@ -289,7 +289,7 @@ def main():
                 fallback_preparation_s=0.1,
                 fallback_validation_s=0.0,
                 fallback_timing_s=0.001,
-                seed=args.seed,
+                seed=args.seed + 1,
                 jobs=DEFAULT_PROFILE.default_surrogate_jobs,
             )
             plan = plan_candidate_bundles(

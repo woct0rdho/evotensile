@@ -34,9 +34,9 @@ def _trial(configuration_id, seed, mean, p95, worst, unresolved, prepared):
 
 def test_selected_profile_defaults_match_tuning_artifact_identities():
     expected: dict[InitializationRegime, str] = {
-        "blind": "campaign_policy_46baa1a9",
-        "anchored-untuned": "campaign_policy_89ea03a4",
-        "anchored-tuned": "campaign_policy_e7961c9f",
+        "blind": "campaign_policy_9950c0a3",
+        "anchored-untuned": "campaign_policy_d9cf44de",
+        "anchored-tuned": "campaign_policy_040cf3cc",
     }
 
     assert {regime: selected_campaign_policy(regime).identity_hash for regime in expected} == expected
@@ -65,10 +65,10 @@ def test_mechanical_folds_cover_shapes_once_and_mix_clusters():
 
 
 def test_seeded_candidate_order_is_stable_when_catalog_grows():
-    candidates = sample_candidates(9, seed=20260712)
+    candidates = sample_candidates(9, seed=12345)
 
-    original = _stable_candidate_order(candidates[:8], seed=17)
-    expanded = _stable_candidate_order(candidates, seed=17)
+    original = _stable_candidate_order(candidates[:8], seed=12346)
+    expanded = _stable_candidate_order(candidates, seed=12346)
 
     original_hashes = [candidate.hash for candidate in original]
     assert [candidate.hash for candidate in expanded if candidate.hash in original_hashes] == original_hashes
