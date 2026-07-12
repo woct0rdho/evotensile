@@ -6,6 +6,7 @@ import sqlite3
 import statistics
 import time
 from collections import defaultdict
+from contextlib import closing
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -69,25 +70,24 @@ def _fresh_performance(
     created_after: float,
 ) -> dict[tuple[str, str], tuple[float, int]]:
     shape_by_id = {shape.id: shape for shape in pilot_100_shapes()}
-    connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    rows = connection.execute(
-        """
-        SELECT shape.shape_id, candidate.candidate_hash, sample.time_us
-        FROM benchmark_samples AS sample
-        JOIN benchmark_events AS event USING (event_id)
-        JOIN benchmark_namespaces AS namespace USING (benchmark_namespace_id)
-        JOIN benchmark_protocols AS protocol USING (benchmark_protocol_id)
-        JOIN shapes AS shape USING (shape_key)
-        JOIN candidates AS candidate USING (candidate_id)
-        WHERE event.status = 'ok'
-          AND protocol.benchmark_protocol_hash = ?
-          AND event.created_at >= ?
-        ORDER BY event.event_id, sample.sample_index
-        """,
-        (DEFAULT_PROFILE.benchmark_protocol_hash(), created_after),
-    ).fetchall()
-    connection.close()
+    with closing(sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT shape.shape_id, candidate.candidate_hash, sample.time_us
+            FROM benchmark_samples AS sample
+            JOIN benchmark_events AS event USING (event_id)
+            JOIN benchmark_namespaces AS namespace USING (benchmark_namespace_id)
+            JOIN benchmark_protocols AS protocol USING (benchmark_protocol_id)
+            JOIN shapes AS shape USING (shape_key)
+            JOIN candidates AS candidate USING (candidate_id)
+            WHERE event.status = 'ok'
+              AND protocol.benchmark_protocol_hash = ?
+              AND event.created_at >= ?
+            ORDER BY event.event_id, sample.sample_index
+            """,
+            (DEFAULT_PROFILE.benchmark_protocol_hash(), created_after),
+        ).fetchall()
     times_by_pair: dict[tuple[str, str], list[float]] = defaultdict(list)
     for row in rows:
         times_by_pair[(str(row["shape_id"]), str(row["candidate_hash"]))].append(float(row["time_us"]))

@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from evotensile.campaign.controller import CampaignControllerState
@@ -282,6 +283,6 @@ def test_hybrid_evaluator_replays_known_pair_and_routes_absent_pair_to_native_ru
     }
     assert ranked_keys == {request.key for request in requests}
     assert (shapes[0].id, neighbor.hash) not in ranked_keys
-    with sqlite3.connect(overlay_path) as connection:
+    with closing(sqlite3.connect(overlay_path)) as connection:
         source_kinds = {row[0] for row in connection.execute("SELECT DISTINCT source_kind FROM evidence_sources")}
     assert {"replay", "native_run"}.issubset(source_kinds)

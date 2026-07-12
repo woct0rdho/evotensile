@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -84,7 +85,7 @@ def test_merge_compatible_databases_preserves_exact_evidence_and_provenance(tmp_
     )
     merged = EvoTensileDB.connect(output)
     discoveries = merged.baseline_discoveries(baseline_label="anchored-test")
-    with sqlite3.connect(output) as connection:
+    with closing(sqlite3.connect(output)) as connection:
         stored_manifest = json.loads(
             connection.execute(
                 "SELECT metadata_value FROM database_metadata WHERE metadata_key = 'merged_source_manifest'"

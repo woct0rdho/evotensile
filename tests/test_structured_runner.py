@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from textwrap import dedent
 
@@ -652,7 +653,7 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
     assert all(sample.validation == "NO_CHECK" for sample in samples)
     assert db.counts()["artifact_mappings"] == 4
 
-    with sqlite3.connect(tmp_path / "sched.sqlite") as con:
+    with closing(sqlite3.connect(tmp_path / "sched.sqlite")) as con:
         rows = con.execute(
             "SELECT s.shape_id, c.candidate_hash, COUNT(*) FROM benchmark_events AS be "
             "JOIN benchmark_samples AS bs USING (event_id) "
@@ -784,7 +785,7 @@ def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path
 
     assert first.executed_batches[0].planned.requires_validation
     assert not second.executed_batches[0].planned.requires_validation
-    with sqlite3.connect(tmp_path / "sched.sqlite") as con:
+    with closing(sqlite3.connect(tmp_path / "sched.sqlite")) as con:
         timing_rows = con.execute(
             "SELECT be.status, be.validation_namespace_id IS NOT NULL, COUNT(*) "
             "FROM benchmark_events AS be JOIN benchmark_samples AS bs USING (event_id) "
@@ -1293,7 +1294,7 @@ def test_structured_maps_renumbered_normalized_final_yaml_solution(tmp_path: Pat
     assert len(result.executed_batches) == 1
     assert result.executed_batches[0].ingest is not None
     assert result.executed_batches[0].ingest.status_counts == {"ok": 1, "rejected": 1}
-    with sqlite3.connect(tmp_path / "sched.sqlite") as con:
+    with closing(sqlite3.connect(tmp_path / "sched.sqlite")) as con:
         rows = con.execute(
             "SELECT c.candidate_hash, be.status, be.solution_index FROM benchmark_events AS be "
             "JOIN candidates AS c USING (candidate_id) ORDER BY be.status, c.candidate_hash"

@@ -15,6 +15,16 @@ def test_installed_solution_import_materializes_complete_candidate():
     assert imported.hash == original.hash
 
 
+def test_installed_solution_import_normalizes_integral_stagger_stride():
+    original = sample_candidates(1)[0]
+    solution = {**original.canonical_params(), "StaggerUStride": 32.0}
+
+    imported = _solution_to_candidate(solution)
+
+    assert imported.params["StaggerUStride"] == 32
+    assert type(imported.params["StaggerUStride"]) is int
+
+
 def test_baseline_discovery_is_zero_evidence_planning_data(tmp_path):
     db = EvoTensileDB.connect(tmp_path / "baseline.sqlite")
     db.init()

@@ -23,14 +23,13 @@ from evotensile.campaign.repair import (
 )
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
-from evotensile.profile import DEFAULT_PROFILE
+from evotensile.profile import DEFAULT_PROFILE, PROFILES, get_profile
 from evotensile.scheduling.models import EvidenceStage, PairRequest
 from evotensile.search.evidence import load_proposal_evidence_snapshot
 from evotensile.search.pair_model import ContextualPairModel, PairModelConfiguration, PairPrediction
 from evotensile.search.replay import OracleRecord, load_db_oracle_matrix
 from evotensile.search.shape_clustering import ShapeClusteringConfiguration, cluster_shapes
 from evotensile.search.trust_region import interaction_grid_candidates
-from evotensile.shapes import pilot_100_shapes
 
 DEFAULT_DB = Path("out/grid100_production_search_20260712.sqlite")
 DEFAULT_INITIAL_DB = Path("out/grid100_compatible_20260712.sqlite")
@@ -260,6 +259,13 @@ def _candidate_targets(
     return [parent for parent in parents if parent.hash in targets], targets, dict(winner_counts)
 
 
+def _parent_winner_count_payload(
+    parents: Sequence[Candidate],
+    winner_counts: Mapping[str, int],
+) -> dict[str, int]:
+    return {parent.hash: winner_counts.get(parent.hash, 0) for parent in parents}
+
+
 def _interaction_pool(
     parents: Sequence[Candidate],
     targets_by_parent: Mapping[str, Sequence[Shape]],
@@ -282,6 +288,7 @@ def _interaction_pool(
             "DepthU": (16, 32, 64),
             "PrefetchGlobalRead": (1, 2),
             "PrefetchLocalRead": (0, 1),
+            "ClusterLocalRead": (0, 1),
             "1LDSBuffer": (0, 1),
         }
         repair_linked = True
@@ -526,6 +533,7 @@ def _update_manifest(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
+    parser.add_argument("--profile", choices=sorted(PROFILES), default=DEFAULT_PROFILE.name)
     parser.add_argument("--initialize-from", type=Path, default=DEFAULT_INITIAL_DB)
     parser.add_argument("--campaign-root", type=Path, default=DEFAULT_CAMPAIGN_ROOT)
     parser.add_argument("--incumbent-deployment", type=Path, default=DEFAULT_INCUMBENT_DEPLOYMENT)
@@ -579,6 +587,7 @@ def main() -> None:
     )
     parser.add_argument("--plan-only", action="store_true")
     args = parser.parse_args()
+    profile = get_profile(args.profile)
     if args.parent_count <= 0 or args.max_target_shapes <= 0 or args.candidate_pool_limit <= 0:
         raise ValueError("parent, target-shape, and candidate-pool limits must be positive")
     if not args.store_batch_values:
@@ -615,12 +624,12 @@ def main() -> None:
         initialized=initialized,
     )
 
-    shapes = pilot_100_shapes()
+    shapes = profile.shapes()
     shape_by_id = {shape.id: shape for shape in shapes}
     oracle = load_db_oracle_matrix(
         args.db,
         shapes=shapes,
-        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        benchmark_protocol_hash=profile.benchmark_protocol_hash(),
     )
     outcomes = _oracle_outcomes(oracle, shape_by_id=shape_by_id)
     deployment = cast(
@@ -647,7 +656,7 @@ def main() -> None:
     candidate_by_hash = {record.candidate.hash: record.candidate for record in oracle.values()}
     db = EvoTensileDB.connect(
         args.db,
-        environment_compatibility_tag=DEFAULT_PROFILE.environment_compatibility_tag,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
     )
     promotion_hashes = {
         candidate_hash
@@ -726,7 +735,7 @@ def main() -> None:
         clustering = cluster_shapes(
             shapes,
             ShapeClusteringConfiguration(
-                workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
+                workgroup_processor_count=profile.workgroup_processor_count,
                 cluster_count=16,
             ),
         )
@@ -754,7 +763,7 @@ def main() -> None:
         }
 
     model = ContextualPairModel(
-        workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
+        workgroup_processor_count=profile.workgroup_processor_count,
         configuration=PairModelConfiguration(
             n_estimators=192,
             min_performance_rows=24,
@@ -787,15 +796,15 @@ def main() -> None:
 
     evidence = load_proposal_evidence_snapshot(
         db,
-        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
-        benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(),
+        problem_type_hash=profile.problem_type_hash,
+        benchmark_protocol_hash=profile.benchmark_protocol_hash(),
         shapes=shapes,
     )
     shapes_by_candidate: dict[str, list[Shape]] = defaultdict(list)
     for shape_id, candidate_hash in oracle:
         shapes_by_candidate[candidate_hash].append(shape_by_id[shape_id])
     cost_model = BundleCostModel(
-        workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
+        workgroup_processor_count=profile.workgroup_processor_count,
         fallback_preparation_s=8.0,
         fallback_validation_s=0.15,
         fallback_timing_s=0.05,
@@ -823,7 +832,7 @@ def main() -> None:
             max_pairs=args.max_pairs,
             max_bundles=args.max_bundles,
             max_predicted_cost_s=args.soft_budget_s * 0.85,
-            min_samples=DEFAULT_PROFILE.default_protocol.num_benchmarks,
+            min_samples=profile.default_protocol.num_benchmarks,
             evidence_stage=EvidenceStage.SCREENING,
         ),
         repair_values={
@@ -839,6 +848,8 @@ def main() -> None:
         "database": str(args.db),
         "initial_database": str(args.initialize_from),
         "initialized_database": initialized,
+        "profile": profile.name,
+        "shape_count": len(shapes),
         "strategy": strategy_label,
         "parameters": {
             "strategy": args.strategy,
@@ -864,7 +875,7 @@ def main() -> None:
         },
         "compatible_oracle_pairs": len(oracle),
         "positive_oracle_pairs": sum(outcome.performance is not None for outcome in outcomes),
-        "parent_winner_counts": {parent.hash: winner_counts[parent.hash] for parent in parents},
+        "parent_winner_counts": _parent_winner_count_payload(parents, winner_counts),
         "candidate_target_shapes": {
             candidate_hash: [shape.id for shape in target_shapes]
             for candidate_hash, target_shapes in targets_by_candidate.items()
@@ -903,22 +914,22 @@ def main() -> None:
         RealEvaluatorContext(
             db=db,
             output_root=round_dir,
-            target_profile=DEFAULT_PROFILE,
-            protocol=DEFAULT_PROFILE.default_protocol,
-            runner_bin=DEFAULT_PROFILE.default_runner_bin,
+            target_profile=profile,
+            protocol=profile.default_protocol,
+            runner_bin=profile.default_runner_bin,
             candidate_batch_size=1,
-            shape_batch_size=DEFAULT_PROFILE.default_shape_batch_size,
-            build_timeout_s=DEFAULT_PROFILE.default_build_timeout_s,
-            runner_timeout_s=DEFAULT_PROFILE.default_runner_timeout_s,
-            prepare_workers=DEFAULT_PROFILE.default_prepare_workers,
-            prepare_wave_batches=min(DEFAULT_PROFILE.default_prepare_wave_batches, args.max_bundles),
-            validation_workers=DEFAULT_PROFILE.default_validation_workers,
+            shape_batch_size=profile.default_shape_batch_size,
+            build_timeout_s=profile.default_build_timeout_s,
+            runner_timeout_s=profile.default_runner_timeout_s,
+            prepare_workers=profile.default_prepare_workers,
+            prepare_wave_batches=min(profile.default_prepare_wave_batches, args.max_bundles),
+            validation_workers=profile.default_validation_workers,
             compile_cache_root=args.campaign_root / "compile_cache",
             cost_aware_scheduling=True,
             adaptive_policy=AdaptivePolicy(),
             probe_policy=ProbePolicy(),
         ),
-        source_ref=f"grid100-practical:{args.round_id}",
+        source_ref=f"{profile.name}-practical:{args.round_id}",
     )
     result = evaluator.evaluate(
         acquisition.timing_requests,
