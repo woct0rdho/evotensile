@@ -114,7 +114,6 @@ class ProbePolicy:
     def policy_hash(self) -> str:
         return stable_hash(
             {
-                "version": 1,
                 "samples": self.samples,
                 "initial_samples": self.initial_samples,
                 "max_slowdown_factor": self.max_slowdown_factor,

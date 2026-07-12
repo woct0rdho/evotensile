@@ -6,11 +6,11 @@ from evotensile.candidate import Shape
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.scheduler import execute_schedule
-from evotensile.scheduling.planning import plan_batches
+from evotensile.scheduling.planning import plan_pair_requests
 from evotensile.search_space import make_candidate
 from evotensile.shapes import pilot_100_shapes
 from evotensile.tensilelite_diagnostics import DiagnosticRecord, DiagnosticRunResult
-from tests.helpers import REFERENCE_CANDIDATE, sample_candidates
+from tests.helpers import REFERENCE_CANDIDATE, pair_requests, sample_candidates
 
 
 def test_execute_schedule_resolves_profile_and_explicit_timeouts(tmp_path: Path):
@@ -31,8 +31,7 @@ def test_execute_schedule_resolves_profile_and_explicit_timeouts(tmp_path: Path)
 
     defaults = execute_schedule(
         db,
-        shapes=shapes,
-        candidates=candidates,
+        requests=pair_requests(candidates, shapes),
         output_root=tmp_path / "defaults",
         target_profile=profile,
         dry_run=True,
@@ -48,8 +47,7 @@ def test_execute_schedule_resolves_profile_and_explicit_timeouts(tmp_path: Path)
 
     explicit = execute_schedule(
         db,
-        shapes=shapes,
-        candidates=candidates,
+        requests=pair_requests(candidates, shapes),
         output_root=tmp_path / "explicit",
         target_profile=profile,
         dry_run=True,
@@ -61,8 +59,7 @@ def test_execute_schedule_resolves_profile_and_explicit_timeouts(tmp_path: Path)
 
     disabled = execute_schedule(
         db,
-        shapes=shapes,
-        candidates=candidates,
+        requests=pair_requests(candidates, shapes),
         output_root=tmp_path / "disabled",
         target_profile=profile,
         dry_run=True,
@@ -86,8 +83,7 @@ def test_execute_schedule_records_shape_rule_rejection_without_build(tmp_path: P
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=[candidate],
+        requests=pair_requests([candidate], [shape]),
         output_root=tmp_path / "batches",
         candidate_batch_size=1,
         shape_batch_size=1,
@@ -114,8 +110,7 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=[candidate],
+        requests=pair_requests([candidate], [shape]),
         output_root=tmp_path / "batches",
         candidate_batch_size=1,
         shape_batch_size=1,
@@ -129,10 +124,9 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
     assert db.benchmark_status_summary() == {"build_timeout": 1}
     assert (
         len(
-            plan_batches(
+            plan_pair_requests(
                 db,
-                shapes=[shape],
-                candidates=[candidate],
+                requests=pair_requests([candidate], [shape]),
                 problem_type_hash=p_hash,
                 benchmark_protocol_hash=b_hash,
                 validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
@@ -265,8 +259,7 @@ def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_b
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "batches",
         candidate_batch_size=2,
         shape_batch_size=1,
@@ -316,8 +309,7 @@ def test_multi_candidate_build_failure_unattributed_is_not_reusable_cache(tmp_pa
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "batches",
         candidate_batch_size=2,
         shape_batch_size=1,
@@ -332,10 +324,9 @@ def test_multi_candidate_build_failure_unattributed_is_not_reusable_cache(tmp_pa
     assert db.benchmark_status_summary() == {"build_failed_unattributed": 2}
     assert (
         len(
-            plan_batches(
+            plan_pair_requests(
                 db,
-                shapes=[shape],
-                candidates=candidates,
+                requests=pair_requests(candidates, [shape]),
                 problem_type_hash=p_hash,
                 benchmark_protocol_hash=b_hash,
                 validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
@@ -359,8 +350,7 @@ def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path)
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=[candidate],
+        requests=pair_requests([candidate], [shape]),
         output_root=tmp_path / "batches",
         candidate_batch_size=1,
         shape_batch_size=1,
@@ -371,10 +361,9 @@ def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path)
     assert len(result.executed_batches) == 1
     assert db.benchmark_status_summary() == {"build_failed": 1}
     assert (
-        plan_batches(
+        plan_pair_requests(
             db,
-            shapes=[shape],
-            candidates=[candidate],
+            requests=pair_requests([candidate], [shape]),
             problem_type_hash=p_hash,
             benchmark_protocol_hash=b_hash,
             validation_protocol_hash=DEFAULT_PROFILE.default_protocol.validation_protocol_hash(),
@@ -392,8 +381,7 @@ def test_execute_schedule_generate_only_writes_batch_inputs(tmp_path: Path):
 
     result = execute_schedule(
         db,
-        shapes=shapes,
-        candidates=candidates,
+        requests=pair_requests(candidates, shapes),
         output_root=tmp_path / "batches",
         candidate_batch_size=1,
         shape_batch_size=1,

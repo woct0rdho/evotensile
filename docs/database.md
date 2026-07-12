@@ -6,7 +6,7 @@ This document describes EvoTensile's SQLite result database and cache semantics.
 
 Each SQLite file is one evidence namespace for a target hardware/environment/campaign. Use separate DB files for incompatible hardware or software environments.
 
-Every database stores one opaque `environment_compatibility_tag`. The selected target profile supplies the expected tag whenever the database is opened. A missing or different tag rejects the database before evidence is read or mutated. The tag is a manual operator assertion that external factors affecting code generation, validation, loading, or timing remain compatible. It is not a schema version, semantic version, or automatic environment fingerprint. The current gfx1151 profile tag is `gfx1151-nt-hhs-v1`.
+Every writable evidence database stores one opaque `environment_compatibility_tag`. The selected target profile supplies the expected tag whenever the database is opened. A missing or different tag rejects the database before evidence is read or mutated. The tag is a manual operator assertion that external factors affecting code generation, validation, loading, or timing remain compatible. It is not a schema version, semantic version, or automatic environment fingerprint. The current gfx1151 profile tag is `gfx1151-nt-hhs-v1`. Retained replay-oracle SQLite files are opened separately in read-only mode. Native hybrid evidence first belongs in a fresh labeled overlay DB. Compatible overlays may later be consolidated into a new read-only snapshot without mutating their sources.
 
 Changes that may invalidate generated or executed code require a new tag and fresh timing/validation evidence rather than relabeling old evidence.
 
@@ -72,7 +72,7 @@ Owns the provenance of every benchmark and validation observation. Current kinds
 
 ### native_runs
 
-Stores one typed detail row for each native subprocess source: phase, outcome, measured duration, and return code. Commands, YAML/output/log paths, repeated protocol hashes, duplicate timeout flags, and metadata JSON are not persisted. Generated artifact locations belong to artifact records instead.
+Stores one typed detail row for each native subprocess source: phase, outcome, measured duration, and return code. Commands, YAML/output/log paths, repeated protocol hashes, duplicate timeout flags, and metadata JSON are not persisted. Generated artifact locations belong to artifact records instead. `native_run_phase_durations()` exposes aggregate typed phase totals so a real evaluator can report the exact delta produced by one admitted schedule.
 
 ### run_candidate_costs
 
@@ -137,13 +137,13 @@ There is no trusted no-validation path. Benchmark mode is allowed only for pairs
 - Without positive timing, the latest `rejected` or `build_failed` event by `(created_at, event_id)` is the reusable negative state.
 - Audit-only statuses do not control planning.
 
-`_missing_candidate_indices_by_shape()` combines the resolved positive sample count or negative state with latest compatible correctness state and shape-dependent source-backed invalidity. A proven timed pair can therefore receive additional samples even when older or newer build/mapping failures remain in raw audit history.
+`plan_pair_requests()` combines the resolved positive sample count or negative state with latest compatible correctness state and shape-dependent source-backed invalidity for each explicit request. A proven timed pair can therefore receive additional samples even when older or newer build/mapping failures remain in raw audit history. Unrequested keys are never cache candidates and never receive scheduler-created evidence.
 
 ## Ranking
 
 `rank_benchmarks()` groups child samples from `status='ok'` benchmark events by `(shape_id, candidate_hash)` and computes sample count, median/best time, and median/best GFLOP/s. Validation-only rows cannot enter ranking because they are stored separately and have no timing.
 
-Ranking feeds CLI reports, transfer seeds, learned linkage, outlier repair, family archives, and final GridBased updates. One proposal call builds one immutable `ProposalEvidenceSnapshot` containing compatible ranking summaries, candidates, selected occurrences, latest positive timestamps, indexed costs, and status aggregates. Elite, transfer, family, linkage, surrogate, and operator-credit views consume that snapshot rather than independently rescanning SQLite or artifacts. One-shape proposal elites consume the shape-local ranking directly. Multi-shape proposal parents derive specialist and coverage-aware generalist lanes from shape-local incumbent-normalized regret. They do not treat the globally sorted pair rows as a candidate ranking.
+Ranking feeds CLI reports, transfer seeds, learned linkage, integrated weak-shape repair, and family archives. GridBased preview may use DB rank, but production export consumes an explicit confirmed `DeploymentSelection` so tolerance-based assignments cannot be silently replaced by faster rows. One proposal call builds one immutable `ProposalEvidenceSnapshot` containing compatible ranking summaries, candidates, selected occurrences, latest positive timestamps, indexed costs, and status aggregates. Elite, transfer, family, linkage, surrogate, and operator-credit views consume that snapshot rather than independently rescanning SQLite or artifacts. One-shape proposal elites consume the shape-local ranking directly. Multi-shape proposal parents derive specialist and coverage-aware generalist lanes from shape-local incumbent-normalized regret. They do not treat the globally sorted pair rows as a candidate ranking.
 
 ## Indexes
 
@@ -159,7 +159,7 @@ Catalog uniqueness and parent/child primary keys provide the remaining required 
 
 ## Phase Metadata
 
-`schedule_metadata.json` and `repair_metadata.json` record:
+`schedule_metadata.json` records:
 - benchmark and validation protocol hashes.
 - prepare- and optional validation-worker counts.
 - proposal, surrogate, group/donor-credit, and cost-aware flags.
@@ -197,6 +197,14 @@ python3 -m evotensile.cli rank-benchmarks --db out/grid100_full_20260618_repaire
 
 The consolidated historical corpus intentionally has no current-protocol validation passes, so current ranking is empty until the normal scheduler validates and benchmarks pairs under current identities.
 
+## Compatible Evidence Consolidation
+
+`scripts/merge_compatible_databases.py` creates a new snapshot by copying one base DB and importing measurement evidence from explicitly listed overlays. It requires the same environment compatibility tag and rejects benchmark events outside the declared benchmark protocol hash. It remaps interned IDs while preserving raw benchmark samples, validation, evidence-source/native-run provenance, candidate phase costs, and baseline discoveries/selections.
+
+Proposal events and artifact tables are intentionally not imported. Proposal occurrences are local to one campaign's disclosed state, while artifact paths and code-object registrations are local to one build output. The merge writes `merged_source_manifest` into `database_metadata`. The command's JSON output is suitable as an external manifest.
+
+The P12 compatible replay snapshot is `out/grid100_compatible_20260712.sqlite`, with manifest `out/grid100_compatible_20260712_manifest.json`. It combines the retained corpus, both labeled baseline DBs, and both targeted hybrid overlays under `bproto_9f4055f5f13232a3` and `gfx1151-nt-hhs-v1`.
+
 ## Portability
 
-Use a new database and compatibility tag for incompatible hardware, software, benchmark, or validation environments. Runtime code reads and writes only this schema. It contains no historical-schema readers, migration dispatch, or compatibility views.
+Use a new database and compatibility tag for incompatible hardware or software environments. Incompatible benchmark protocols must not be pooled for strategy replay. Distinct validation protocols may coexist because correctness identity is separate, but callers must request the intended validation identity. Runtime code reads and writes only the current schema. It contains no historical-schema readers, migration dispatch, or compatibility views.

@@ -4,9 +4,10 @@ import json
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TextIO, TypedDict, cast
 
 import yaml
 
@@ -16,6 +17,25 @@ from .profile import TargetProfile
 from .protocol import BenchmarkProtocol
 from .runner import DEFAULT_TENSILELITE_BIN, _merged_env
 from .subprocess_utils import run_logged_process
+
+
+class DiagnosticRecordPayload(TypedDict, total=False):
+    candidate_hash: str
+    candidate_index: int | None
+    status: str | None
+    phase: str | None
+    reason: str | None
+    shape_ids: list[str]
+    errcode: int | None
+    kernel_name: str | None
+    solution_index: int | None
+    metadata: dict[str, object]
+
+
+class ManifestDiagnosticRow(TypedDict):
+    candidate_hash: str
+    candidate_index: int
+    shape_ids: list[str]
 
 
 @dataclass(frozen=True)
@@ -29,7 +49,7 @@ class DiagnosticRecord:
     errcode: int | None = None
     kernel_name: str | None = None
     solution_index: int | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -57,26 +77,23 @@ def read_diagnostic_records(path: str | Path) -> list[DiagnosticRecord]:
             stripped = line.strip()
             if not stripped:
                 continue
-            value = json.loads(stripped)
-            if not isinstance(value, dict):
-                raise ValueError(f"{path}:{line_no}: expected a JSON object")
+            value = cast(DiagnosticRecordPayload, json.loads(stripped))
             shape_ids = value.get("shape_ids") or []
-            if not isinstance(shape_ids, list):
-                shape_ids = []
             metadata = value.get("metadata") or {}
-            if not isinstance(metadata, dict):
-                metadata = {}
+            candidate_index = value.get("candidate_index")
+            errcode = value.get("errcode")
+            solution_index = value.get("solution_index")
             records.append(
                 DiagnosticRecord(
                     candidate_hash=str(value["candidate_hash"]),
-                    candidate_index=int(value["candidate_index"]) if value.get("candidate_index") is not None else None,
+                    candidate_index=int(candidate_index) if candidate_index is not None else None,
                     status=str(value.get("status") or "unknown"),
                     phase=str(value.get("phase") or "unknown"),
                     reason=str(value["reason"]) if value.get("reason") not in (None, "") else None,
                     shape_ids=tuple(str(item) for item in shape_ids),
-                    errcode=int(value["errcode"]) if value.get("errcode") is not None else None,
+                    errcode=int(errcode) if errcode is not None else None,
                     kernel_name=str(value["kernel_name"]) if value.get("kernel_name") not in (None, "") else None,
-                    solution_index=int(value["solution_index"]) if value.get("solution_index") is not None else None,
+                    solution_index=int(solution_index) if solution_index is not None else None,
                     metadata=metadata,
                 )
             )
@@ -160,7 +177,7 @@ def run_tensilelite_diagnostics(
 def attribution_inserts_from_diagnostics(
     records: list[DiagnosticRecord],
     *,
-    planned_shape_ids: list[str],
+    planned_pairs: set[tuple[str, str]],
     failed_candidate_hashes: set[str],
     run_id: str | None,
     problem_type_hash: str,
@@ -177,7 +194,14 @@ def attribution_inserts_from_diagnostics(
     for candidate_hash in sorted(failed_candidate_hashes):
         record = records_by_hash.get(candidate_hash)
         status = "build_failed" if record is not None else unattributed_status
-        shape_ids = record.shape_ids if record is not None and record.shape_ids else tuple(planned_shape_ids)
+        requested_shape_ids = {
+            shape_id for shape_id, requested_hash in planned_pairs if requested_hash == candidate_hash
+        }
+        shape_ids = (
+            sorted(requested_shape_ids.intersection(record.shape_ids))
+            if record is not None and record.shape_ids
+            else sorted(requested_shape_ids)
+        )
         for shape_id in shape_ids:
             inserts.append(
                 BenchmarkEventInsert(
@@ -193,8 +217,8 @@ def attribution_inserts_from_diagnostics(
     return inserts
 
 
-def _manifest_rows(path: Path) -> dict[int, dict[str, Any]]:
-    out: dict[int, dict[str, Any]] = {}
+def _manifest_rows(path: Path) -> dict[int, ManifestDiagnosticRow]:
+    out: dict[int, ManifestDiagnosticRow] = {}
     with path.open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             candidate_index = int(row.get("candidate_index") or 0)
@@ -212,14 +236,14 @@ def _manifest_rows(path: Path) -> dict[int, dict[str, Any]]:
     return out
 
 
-def _write_record(handle: Any, **record: Any) -> None:
+def _write_record(handle: TextIO, **record: object) -> None:
     handle.write(json.dumps(record, sort_keys=True) + "\n")
     handle.flush()
 
 
-def _architecture_name(config: dict[str, Any]) -> str:
-    library_logic = config.get("LibraryLogic") or {}
-    architecture = library_logic.get("ArchitectureName") or library_logic.get("ScheduleName") or "gfx1151"
+def _architecture_name(config: Mapping[str, object]) -> str:
+    library_logic = cast(Mapping[str, object], config.get("LibraryLogic") or {})
+    architecture = library_logic.get("ArchitectureName") or library_logic.get("ScheduleName") or ""
     return str(architecture)
 
 

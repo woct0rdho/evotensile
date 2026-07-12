@@ -1,4 +1,5 @@
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from typing import TypedDict
 
@@ -8,8 +9,6 @@ from evotensile.proposal import FamilyQDPolicy
 from evotensile.protocol import BenchmarkProtocol
 from evotensile.search.campaign_control import ProposalEvent
 from evotensile.search.screening_stabilize import ScreeningStabilizationPolicy
-
-CAMPAIGN_CONFIGURATION_VERSION = 1
 
 CAMPAIGN_ENVIRONMENT_KEYS = (
     "CUDA_VISIBLE_DEVICES",
@@ -30,7 +29,6 @@ CAMPAIGN_ENVIRONMENT_KEYS = (
 
 @dataclass(frozen=True)
 class CampaignConfiguration:
-    version: int
     seed: int
     shape_id: str
     profile_name: str
@@ -102,10 +100,10 @@ class CampaignConfiguration:
     adaptive_donor_selection: bool = True
     cost_aware_operator_credit: bool = True
     covering_cold_start: bool = True
+    singleton_acquisition_enabled: bool = True
+    singleton_information_weight: float = 0.05
 
     def __post_init__(self) -> None:
-        if self.version != CAMPAIGN_CONFIGURATION_VERSION:
-            raise ValueError("unsupported campaign configuration version")
         if self.time_budget_s <= 0.0:
             raise ValueError("campaign time budget must be positive")
         if not 0.0 <= self.hot_reserve_s < self.time_budget_s:
@@ -147,6 +145,8 @@ class CampaignConfiguration:
             raise ValueError("hot protocol must disable repeated validation")
         if self.hot_top_k <= 0:
             raise ValueError("hot finalist count must be positive")
+        if not math.isfinite(self.singleton_information_weight) or self.singleton_information_weight < 0.0:
+            raise ValueError("singleton information weight must be finite and nonnegative")
 
     def to_dict(self) -> dict[str, object]:
         return json.loads(json.dumps(asdict(self), sort_keys=True))

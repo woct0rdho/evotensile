@@ -1,6 +1,6 @@
 from collections import Counter
 from collections.abc import Iterable
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from evotensile.candidate import Candidate
 from evotensile.search.encoding import PARAM_NAMES
@@ -14,7 +14,7 @@ class CandidateCoverage(TypedDict):
     invalid_reason_counts: dict[str, int]
 
 
-def _freeze(value: Any) -> str:
+def _freeze(value: object) -> str:
     if isinstance(value, list):
         return "[" + ",".join(_freeze(item) for item in value) + "]"
     if isinstance(value, tuple):

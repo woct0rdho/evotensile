@@ -17,7 +17,7 @@ Family-QD does not narrow `DOMAINS`, make runtime failures into validity rules, 
 
 ## Family Descriptor
 
-A family descriptor is a profile-specific projection from a complete candidate to a small structural cell. The current `gfx1151-nt-hhs` descriptor version is `nt_hhs_v2` and contains:
+A family descriptor is a profile-specific projection from a complete candidate to a small structural cell. The current `gfx1151-nt-hhs` descriptor contains:
 
 ```text
 floor(log2(MacroTile0 * MacroTile1))
@@ -32,7 +32,7 @@ Descriptor design rules:
 - use traits that define a broad assembly or execution basin.
 - bucket high-cardinality traits when exact values make cells too sparse.
 - leave leaf tuning choices available for within-family search.
-- keep descriptors profile-specific and versioned.
+- keep descriptors profile-specific and defined by explicit named fields.
 - treat the descriptor as proposal metadata only.
 
 `family_descriptor()` and `family_descriptor_counts()` implement descriptor calculation and coverage reporting.
@@ -71,7 +71,7 @@ Each archive query requires one explicit objective:
 Family-QD breeding requests all four objectives and drains their leader lists round-robin under the global `elite_count` cap. One-shape search yields equivalent specialist/generalist/coverage ordering and has no unresolved-shape ambiguity. Learned linkage explicitly consumes the generalist score.
 
 Each archive entry records:
-- descriptor, descriptor version, and objective.
+- descriptor fields and objective.
 - candidate, selected objective score, specialist score, and generalist score.
 - timing sample count, represented shape count, coverage fraction, and unresolved-shape count.
 - observed candidate count for the cell.

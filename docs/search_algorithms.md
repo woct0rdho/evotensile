@@ -19,7 +19,7 @@ Search algorithms only propose candidates. They do not select final winners dire
 - Register candidates and shapes in the DB.
 - Record immediate shape-dependent rule rejections.
 - Plan missing `(shape, candidate)` observations from reusable cache status.
-- Emit TensileLite YAML and manifest files for exact rectangular batches.
+- Emit candidate-centric TensileLite YAML plus exact requested-pair manifests.
 - Run build/map/diagnostic/correctness work in bounded parallel preparation waves, optionally ordered longest-predicted-work first.
 - Cap validation-runner concurrency independently without reducing compilation parallelism.
 - Join every preparation worker in the admitted wave, then run that wave's benchmark-only work in one serial queue before admitting another wave.
@@ -30,7 +30,7 @@ Timing begins only after the currently admitted preparation wave drains. This wa
 
 ## Proposal Providers
 
-With no custom provider, proposal-generating commands call the built-in `family_qd_provider()` using `FamilyQDPolicy`. The immutable policy version `gfx1151-grid-v1` and every resolved policy field are recorded in metadata. The policy combines family-aware initialization and archives, random exploration, semantic mutation, categorical DE, GOMEA, learned linkage, adaptive allocation, covering, surrogate shortlisting, and cost-aware preparation. It does not change target-profile resources, validity, measurement identity, or cache semantics.
+With no custom provider, proposal-generating commands call the built-in `family_qd_provider()` using `FamilyQDPolicy`. The provider type label `builtin:family-qd` and every resolved policy field are recorded in metadata. The policy combines family-aware initialization and archives, random exploration, semantic mutation, categorical DE, GOMEA, learned linkage, adaptive allocation, covering, surrogate shortlisting, and cost-aware preparation. It does not change target-profile resources, validity, measurement identity, or cache semantics.
 
 `--proposal-script PATH.py` loads trusted Python code in process and calls `propose(context)`. An optional `--proposal-config PATH.json` supplies one JSON object through `context.config`. The core finalizer owns candidate completeness, global and scoped validity, deduplication, parent existence, generated/preserved classification, selected-subset validation, lineage scope, persistence, and audit metadata.
 
@@ -122,7 +122,7 @@ For scoped schedules, the scheduler can also seed from nearest previously tuned 
 
 Transfer candidates record the target and source shape IDs that caused selection. Target lanes are ordered by deterministic farthest-point mechanical coverage, then drained round-robin under one global cap so input or lexical shape order cannot monopolize a small transfer budget. They are inserted before random restarts so they are retained when candidate lists are truncated or batch budgets are tight.
 
-A `cluster` proposal scope is an explicit label and shape set. It does not itself discover clusters, select medoids, stage representative-first evaluation, or promote candidates to unmeasured members. Those actions require the production grid controller tracked in `docs/experiment_100_shape.md`.
+A `cluster` proposal scope is an explicit label and shape set. It does not itself discover clusters, select medoids, stage representative-first evaluation, or promote candidates to unmeasured members. Those actions belong to the shared campaign controller and exact promotion racer documented in `docs/multi_shape_campaign_control.md`, `docs/shape_clustering.md`, and `docs/shape_promotion_racing.md`.
 
 Installed hipBLASLt discovery creates zero-evidence planning pairs. After those exact pairs run through the normal scheduler, their measured candidates can become elites, transfer seeds, GOMEA parents, and final winners like any other candidate.
 
@@ -134,13 +134,13 @@ The scheduler avoids repeating known work with resolved timing and correctness s
 - Latest compatible validation state is `passed` or `failed` under the validation-protocol hash.
 - A resolved benchmark negative or latest compatible validation failure skips the pair. A different validation identity requests fresh correctness verification.
 
-`plan_batches()` first chunks candidates and shapes, then builds exact rectangular batches only for missing observations. Shapes that have the same missing candidate subset and same required sample count are grouped together. Stable compile caching uses singleton candidate libraries so cache identity is independent of proposal cohort. Exact shape identities remain in the key because GridBased generation is shape-dependent.
+`plan_pair_requests()` accepts only explicit `PairRequest` values. It deduplicates exact keys, rejects conflicting requirements, and applies timing, validation, negative-cache, static-rule, and probe-screening decisions only to those keys. A batch keeps exact requested pairs separate from its candidate-centric artifact-shape scope, so grouping never adds validation or timing work. Stable compile caching uses singleton candidate libraries keyed by their explicit artifact-shape scope. Detailed invariants are documented in `docs/exact_pair_scheduling.md`.
 
 ## Batch Execution
 
 Each batch writes:
 - `config.yaml`: TensileLite config with candidate `Groups`.
-- `config.manifest.csv`: intended shape/candidate/solution mapping.
+- `config.manifest.csv`: exact requested shape/candidate/solution mappings only.
 - `run/` or a unique run directory for build and structured-runner outputs.
 
 The core `execute_schedule()` boundary requires an effective runner path for execution. The CLI resolves that path from the selected target profile unless `--runner-bin` overrides it. Dry-run and generation-only paths do not launch the runner. `--prepare-workers` controls parallel build/map/diagnostic/validation work and defaults to the selected profile's resource cap. `--validation-workers` caps concurrent validators, `--prepare-wave-batches` bounds each admitted wave, and `--cost-aware-scheduling` orders heavier predicted preparation batches first without changing timing priority. After each wave's preparation workers exit, its benchmarks run serially. A shared/exclusive APU gate at `EVOTENSILE_APU_LOCK_PATH` protects this invariant across cooperating processes and direct runner invocations.
@@ -157,14 +157,11 @@ Timing-noise math and validation-gated top-up rules are documented in `docs/nois
 
 Use `--fixed-sampling` for deterministic fixed-budget utility runs or debugging.
 
-## Outlier Repair
+## Weak-Shape Repair
 
-`repair-outliers` is a second-stage search command that detects shapes whose current best GFLOP/s is below a robust nearest-neighbor envelope. It reruns only those shapes with seeds from:
-- the outlier's current winner.
-- nearest-shape winners and near-winners.
-- the built-in family-QD provider or an explicitly supplied custom provider.
+Campaign repair is an explicit staged reserve using the same shared-cost contextual acquisition as broad work. It combines capped reference, nearest-shape, cluster, and uncertainty deficits with candidate-specific posterior probability of closing useful headroom. Candidate pools include incumbent, neighbor, cluster, broad, and generic mutation lanes, but every selected target pair is measured exactly.
 
-Outlier detection and repair math are documented in `docs/search_outlier_repair.md`.
+Repair acquisition, reporting, and the retained-corpus ablation are documented in `docs/search_outlier_repair.md`.
 
 ## Excluded From Current Search
 

@@ -1,3 +1,4 @@
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -53,6 +54,7 @@ def candidate_grid_scores(
     *,
     target_shape_ids: Sequence[str],
     elite_per_shape: int | None = None,
+    shape_weights: Mapping[str, float] | None = None,
 ) -> dict[str, CandidateGridScore]:
     items_by_candidate: dict[str, list[tuple[str, float, int]]] = {}
     for shape_id in target_shape_ids:
@@ -65,17 +67,31 @@ def candidate_grid_scores(
                 continue
             items_by_candidate.setdefault(summary.candidate_hash, []).append((shape_id, percentile, summary.samples))
 
-    target_count = max(len(set(target_shape_ids)), 1)
+    unique_shape_ids = tuple(dict.fromkeys(target_shape_ids))
+    target_count = max(len(unique_shape_ids), 1)
+    weights = {shape_id: 1.0 for shape_id in unique_shape_ids}
+    if shape_weights is not None:
+        if set(shape_weights) != set(unique_shape_ids):
+            raise ValueError("grid score weights must cover the exact target shape set")
+        weights = {shape_id: float(shape_weights[shape_id]) for shape_id in unique_shape_ids}
+        if any(not math.isfinite(value) or value < 0.0 for value in weights.values()):
+            raise ValueError("grid score weights must be finite and nonnegative")
+    total_weight = sum(weights.values())
+    if total_weight <= 0.0:
+        raise ValueError("grid score weights must contain positive mass")
     scores: dict[str, CandidateGridScore] = {}
     for candidate_hash, items in items_by_candidate.items():
-        represented = len({shape_id for shape_id, _, _ in items})
+        represented_shape_ids = {shape_id for shape_id, _, _ in items}
+        represented = len(represented_shape_ids)
         percentiles = [percentile for _, percentile, _ in items]
         unresolved = max(0, target_count - represented)
+        represented_weight = sum(weights[shape_id] for shape_id in represented_shape_ids)
+        weighted_percentiles = sum(percentile * weights[shape_id] for shape_id, percentile, _ in items)
         scores[candidate_hash] = CandidateGridScore(
             candidate_hash=candidate_hash,
             specialist_score=min(percentiles),
-            generalist_score=(sum(percentiles) + unresolved) / target_count,
-            coverage_fraction=represented / target_count,
+            generalist_score=(weighted_percentiles + total_weight - represented_weight) / total_weight,
+            coverage_fraction=represented_weight / total_weight,
             unresolved_shape_count=unresolved,
             samples=sum(samples for _, _, samples in items),
             shape_count=represented,

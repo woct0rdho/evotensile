@@ -43,7 +43,7 @@ def test_proposal_coverage_cli(tmp_path: Path, capsys):
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["candidates"] == 8
-    assert payload["proposal_provider"]["identity"] == "builtin:family-qd:gfx1151-grid-v1"
+    assert payload["proposal_provider"]["identity"] == "builtin:family-qd"
     assert payload["candidate_family_count"] >= 1
 
 

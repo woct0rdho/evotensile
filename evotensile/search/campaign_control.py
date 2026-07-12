@@ -264,32 +264,6 @@ def estimate_confirmation_reserve_s(
     return max(minimum_reserve_s, estimate)
 
 
-def estimate_next_round_duration_s(
-    rounds: Sequence[Mapping[str, object]],
-    *,
-    expected_missing_pairs: int,
-    minimum_s: float = 20.0,
-) -> float:
-    usable = []
-    for item in rounds[-6:]:
-        schedule = item.get("schedule")
-        if not isinstance(schedule, Mapping):
-            continue
-        missing_value = schedule.get("missing_pairs", 0)
-        duration_value = item.get("duration_s", 0.0)
-        missing = int(missing_value) if isinstance(missing_value, (int, float, str)) else 0
-        duration = float(duration_value) if isinstance(duration_value, (int, float, str)) else 0.0
-        if missing > 0 and duration > 0.0:
-            usable.append(duration / missing)
-    if not usable:
-        return max(minimum_s, 30.0)
-    median_per_pair = statistics.median(usable)
-    deviations = [abs(value - median_per_pair) for value in usable]
-    robust_margin = statistics.median(deviations) if deviations else 0.0
-    estimate = (median_per_pair + robust_margin) * max(1, expected_missing_pairs)
-    return max(minimum_s, estimate * 1.15 + 5.0)
-
-
 def convergence_detected(
     best_history: Sequence[float],
     diagnostics: PopulationDiagnostics,

@@ -20,8 +20,6 @@ from evotensile.structured_runner import RunnablePair, run_structured_phase, val
 @dataclass(frozen=True)
 class TimingContext:
     db: EvoTensileDB
-    shapes: list[Shape]
-    candidates: list[Candidate]
     planned_batches: list[PlannedBatch]
     protocol: BenchmarkProtocol
     problem_type_hash: str
@@ -30,7 +28,6 @@ class TimingContext:
     runner_bin: str | Path
     runner_timeout_s: float | None
     keep_going: bool
-    initial_samples: int
     adaptive_policy: AdaptivePolicy | None
     probe_policy: ProbePolicy | None
     probe_protocol: BenchmarkProtocol | None
@@ -201,7 +198,7 @@ def _benchmark_prepared_pairs(
         mode="benchmark",
         run_dir=prepared.output_dir,
         pairs=pairs,
-        shapes=prepared.planned.shapes,
+        shapes=list(prepared.planned.artifact_shapes),
         protocol=benchmark_protocol,
         runner_bin=runner_bin,
         library_dir=prepared.library_dir,
@@ -265,9 +262,10 @@ def _benchmark_prepared_pairs(
 
 def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> ScheduleResult:
     db = context.db
-    shapes = context.shapes
-    candidates = context.candidates
     planned = context.planned_batches
+    requested = [pair.request for batch in planned for pair in batch.pairs]
+    shapes = list({request.shape.id: request.shape for request in requested}.values())
+    candidates = list({request.candidate.hash: request.candidate for request in requested}.values())
     protocol = context.protocol
     problem_type_hash = context.problem_type_hash
     benchmark_protocol_hash = context.benchmark_protocol_hash
@@ -275,7 +273,7 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
     runner_bin = context.runner_bin
     runner_timeout_s = context.runner_timeout_s
     keep_going = context.keep_going
-    initial_samples = context.initial_samples
+    initial_samples = min((request.min_samples for request in requested), default=protocol.num_benchmarks)
     adaptive_policy = context.adaptive_policy
     probe_policy = context.probe_policy
     probe_protocol = context.probe_protocol
@@ -297,22 +295,28 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
 
     if adaptive_policy is None:
         for item in prepared:
-            benchmark = _benchmark_prepared_pairs(
-                db,
-                item,
-                pairs=item.validated_pairs,
-                protocol=protocol.with_overrides(num_benchmarks=item.planned.samples_per_pair),
-                problem_type_hash=problem_type_hash,
-                benchmark_protocol_hash=benchmark_protocol_hash,
-                validation_protocol_hash=validation_protocol_hash,
-                runner_bin=runner_bin,
-                runner_timeout_s=runner_timeout_s,
-                phase="initial",
-                include_preparation=True,
-            )
-            executed.append(benchmark)
-            if not keep_going and benchmark.ingest is not None and not benchmark.ingest.ok:
-                return ScheduleResult(planned_batches=planned, executed_batches=executed, completed_waves=1)
+            pairs_by_samples: dict[int, list[RunnablePair]] = {}
+            for pair in item.validated_pairs:
+                samples = item.planned.planned_pair((pair.shape_id, pair.candidate_hash)).samples_to_collect
+                pairs_by_samples.setdefault(samples, []).append(pair)
+            timing_groups = sorted(pairs_by_samples.items()) or [(protocol.num_benchmarks, [])]
+            for group_index, (samples, pairs) in enumerate(timing_groups):
+                benchmark = _benchmark_prepared_pairs(
+                    db,
+                    item,
+                    pairs=pairs,
+                    protocol=protocol.with_overrides(num_benchmarks=samples),
+                    problem_type_hash=problem_type_hash,
+                    benchmark_protocol_hash=benchmark_protocol_hash,
+                    validation_protocol_hash=validation_protocol_hash,
+                    runner_bin=runner_bin,
+                    runner_timeout_s=runner_timeout_s,
+                    phase="initial",
+                    include_preparation=group_index == 0,
+                )
+                executed.append(benchmark)
+                if not keep_going and benchmark.ingest is not None and not benchmark.ingest.ok:
+                    return ScheduleResult(planned_batches=planned, executed_batches=executed, completed_waves=1)
         return ScheduleResult(planned_batches=planned, executed_batches=executed, completed_waves=1)
 
     assert probe_policy is not None
@@ -326,8 +330,8 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
         states = db.benchmark_evidence_states(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=probe_protocol_hash,
-            shape_ids=[shape.id for shape in item.planned.shapes],
-            candidate_hashes=[candidate.hash for candidate in item.planned.candidates],
+            shape_ids=[shape.id for shape in item.planned.artifact_shapes],
+            candidate_hashes=[candidate.hash for candidate in item.planned.artifact_candidates],
         )
         initial_pairs_by_remaining: dict[int, list[RunnablePair]] = {}
         for pair in item.validated_pairs:
@@ -382,8 +386,8 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
         states = db.benchmark_evidence_states(
             problem_type_hash=problem_type_hash,
             benchmark_protocol_hash=probe_protocol_hash,
-            shape_ids=[shape.id for shape in item.planned.shapes],
-            candidate_hashes=[candidate.hash for candidate in item.planned.candidates],
+            shape_ids=[shape.id for shape in item.planned.artifact_shapes],
+            candidate_hashes=[candidate.hash for candidate in item.planned.artifact_candidates],
         )
         topup_pairs_by_remaining: dict[int, list[RunnablePair]] = {}
         for pair in topup_pairs:
@@ -433,32 +437,39 @@ def run_serial_timing(context: TimingContext, prepared: list[PreparedBatch]) -> 
 
     # Phase 3: run the main timing protocol only for probe survivors.
     for item in prepared:
-        main_pairs = [pair for pair in item.validated_pairs if (pair.shape_id, pair.candidate_hash) in survivor_keys]
-        benchmark = _benchmark_prepared_pairs(
-            db,
-            item,
-            pairs=main_pairs,
-            protocol=protocol.with_overrides(num_benchmarks=item.planned.samples_per_pair),
-            problem_type_hash=problem_type_hash,
-            benchmark_protocol_hash=benchmark_protocol_hash,
-            validation_protocol_hash=validation_protocol_hash,
-            runner_bin=runner_bin,
-            runner_timeout_s=runner_timeout_s,
-            phase="initial",
-            include_preparation=True,
-        )
-        executed.append(benchmark)
-        if not keep_going and benchmark.ingest is not None and not benchmark.ingest.ok:
-            return ScheduleResult(
-                planned_batches=planned,
-                executed_batches=executed,
-                completed_waves=1,
-                probe_protocol_hash=probe_protocol_hash,
-                probe_policy_hash=probe_policy_hash,
-                probe_survivor_pairs=len(survivor_keys),
-                probe_screened_pairs=screened_pair_count,
-                probe_preprepare_screened_pairs=preprepare_screened_pair_count,
+        main_pairs_by_samples: dict[int, list[RunnablePair]] = {}
+        for pair in item.validated_pairs:
+            if (pair.shape_id, pair.candidate_hash) not in survivor_keys:
+                continue
+            samples = item.planned.planned_pair((pair.shape_id, pair.candidate_hash)).samples_to_collect
+            main_pairs_by_samples.setdefault(samples, []).append(pair)
+        main_groups = sorted(main_pairs_by_samples.items()) or [(protocol.num_benchmarks, [])]
+        for group_index, (samples, main_pairs) in enumerate(main_groups):
+            benchmark = _benchmark_prepared_pairs(
+                db,
+                item,
+                pairs=main_pairs,
+                protocol=protocol.with_overrides(num_benchmarks=samples),
+                problem_type_hash=problem_type_hash,
+                benchmark_protocol_hash=benchmark_protocol_hash,
+                validation_protocol_hash=validation_protocol_hash,
+                runner_bin=runner_bin,
+                runner_timeout_s=runner_timeout_s,
+                phase="initial",
+                include_preparation=group_index == 0,
             )
+            executed.append(benchmark)
+            if not keep_going and benchmark.ingest is not None and not benchmark.ingest.ok:
+                return ScheduleResult(
+                    planned_batches=planned,
+                    executed_batches=executed,
+                    completed_waves=1,
+                    probe_protocol_hash=probe_protocol_hash,
+                    probe_policy_hash=probe_policy_hash,
+                    probe_survivor_pairs=len(survivor_keys),
+                    probe_screened_pairs=screened_pair_count,
+                    probe_preprepare_screened_pairs=preprepare_screened_pair_count,
+                )
 
     completed_rounds = 0
     for _ in range(adaptive_policy.max_rounds if adaptive_policy is not None else 0):

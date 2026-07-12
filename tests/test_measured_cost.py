@@ -5,7 +5,7 @@ from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.scheduler import execute_schedule
 from evotensile.search.measured_cost import load_candidate_measured_costs
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import fake_build_tensile, fake_structured_runner, sample_candidates
+from tests.helpers import fake_build_tensile, fake_structured_runner, pair_requests, sample_candidates
 
 
 def test_recorded_run_costs_cover_prepare_validation_and_screening(tmp_path: Path):
@@ -18,8 +18,7 @@ def test_recorded_run_costs_cover_prepare_validation_and_screening(tmp_path: Pat
 
     execute_schedule(
         db,
-        shapes=[shape],
-        candidates=[candidate],
+        requests=pair_requests([candidate], [shape]),
         output_root=tmp_path / "round",
         protocol=protocol,
         candidate_batch_size=1,

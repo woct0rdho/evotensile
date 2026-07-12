@@ -1,8 +1,8 @@
 import time
 from collections.abc import Mapping, Sequence
-from typing import Any
 
 from evotensile.campaign.models import CampaignConfiguration, ProposalArgs, RoundProposal
+from evotensile.campaign.store import CampaignRecord
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import EvoTensileDB
 from evotensile.profile import TargetProfile
@@ -101,6 +101,8 @@ def propose_campaign_candidates(
         micro_exhaustive_neighborhoods=proposal_args["micro_exhaustive_neighborhoods"],
         adaptive_donor_selection=proposal_args["adaptive_donor_selection"],
         cost_aware_operator_credit=proposal_args["cost_aware_operator_credit"],
+        singleton_acquisition_enabled=configuration.singleton_acquisition_enabled,
+        singleton_information_weight=configuration.singleton_information_weight,
     )
     proposal = propose_candidates(
         db,
@@ -223,7 +225,7 @@ def _restart_due(
 def propose_round(
     db: EvoTensileDB,
     *,
-    record: dict[str, Any],
+    record: CampaignRecord,
     round_index: int,
     seed: int,
     shape: Shape,

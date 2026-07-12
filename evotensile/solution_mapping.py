@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -65,14 +65,14 @@ def _unique_entries(entries: list[ManifestEntry]) -> list[ManifestEntry]:
     return out
 
 
-def _value_equal(expected: Any, actual: Any) -> bool:
+def _value_equal(expected: object, actual: object) -> bool:
     if isinstance(expected, bool) or isinstance(actual, bool):
         if isinstance(expected, (bool, int)) and isinstance(actual, (bool, int)):
             return int(expected) == int(actual)
     return canonicalize(expected) == canonicalize(actual)
 
 
-def _matrix_instruction_matches(candidate_mi: Any, solution: dict[str, Any]) -> bool:
+def _matrix_instruction_matches(candidate_mi: object, solution: dict[str, Any]) -> bool:
     if not isinstance(candidate_mi, list) or len(candidate_mi) < 4:
         return False
     if not _value_equal(candidate_mi[:4], solution.get(MATRIX_INSTRUCTION_KEY)):
@@ -172,25 +172,30 @@ def solution_matches_candidate(solution: dict[str, Any], candidate_params: dict[
     return True
 
 
-def _shape_id_from_exact(exact: Any) -> str | None:
+def _shape_id_from_exact(exact: object) -> str | None:
     if not isinstance(exact, list) or len(exact) < 4:
         return None
+    values = cast(list[str | int], exact)
     try:
-        return Shape(int(exact[0]), int(exact[1]), int(exact[2]), int(exact[3])).id
+        return Shape(int(values[0]), int(values[1]), int(values[2]), int(values[3])).id
     except (TypeError, ValueError):
         return None
 
 
-def _shape_ids_from_solution_yaml(data: Any) -> tuple[str, ...]:
+def _shape_ids_from_solution_yaml(data: object) -> tuple[str, ...]:
     if not isinstance(data, list):
         return ()
     shape_ids: list[str] = []
     for item in data:
         if not isinstance(item, dict) or PROBLEM_SIZES_KEY not in item:
             continue
-        for size in item.get(PROBLEM_SIZES_KEY) or []:
+        sizes = item.get(PROBLEM_SIZES_KEY)
+        if not isinstance(sizes, list):
+            continue
+        for size in sizes:
             if isinstance(size, dict) and EXACT_KEY in size:
-                shape_id = _shape_id_from_exact(size[EXACT_KEY])
+                size_payload = cast(dict[str, object], size)
+                shape_id = _shape_id_from_exact(size_payload[EXACT_KEY])
                 if shape_id is not None:
                     shape_ids.append(shape_id)
     return tuple(dict.fromkeys(shape_ids))

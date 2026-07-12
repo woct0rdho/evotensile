@@ -1,6 +1,6 @@
 # Mechanical Coverage And Cold-Start Selection
 
-This document describes the generic candidate-shape mechanics in `evotensile/search/mechanics.py` and the optional covering cold-start selector built from them. Family descriptors and archives are documented in `docs/search_family_qd.md`. Surrogate training and acquisition are documented in `docs/search_surrogate.md`.
+This document describes the generic candidate-shape mechanics in `evotensile/search/mechanics.py` and the optional covering cold-start selector built from them. Candidate-independent workload descriptors, deterministic shape medoids, and representative baselines are documented in `docs/shape_clustering.md`. Family descriptors and archives are documented in `docs/search_family_qd.md`. Surrogate training and acquisition are documented in `docs/search_surrogate.md`.
 
 ## Boundary
 
@@ -83,13 +83,13 @@ The quality multiplier prevents mechanically novel but obviously under-tiled can
 
 ## Integration
 
-The feature projection is reused by:
+The candidate-shape feature projection is reused by:
 - `candidate_shape_features()` for ExtraTrees training.
 - the one-shape `--covering-cold-start` fallback before surrogate evidence exists.
 - campaign population diagnostics.
 - the proposal-side preparation-cost heuristic.
 
-Mechanical covering currently applies only when exactly one target shape is supplied. The built-in family-QD policy enables that fallback. Custom providers that call `select_surrogate_pool()` choose it explicitly.
+Mechanical covering currently applies only when exactly one target shape is supplied. The built-in family-QD policy enables that fallback. Custom providers that call `select_surrogate_pool()` choose it explicitly. Shape clustering separately projects workloads without a candidate and derives macro-tile families from the legal search-space domain. It does not reuse proposal rankings or known winners.
 
 ## Reporting And Tests
 

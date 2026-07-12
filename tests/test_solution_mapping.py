@@ -3,7 +3,7 @@ from pathlib import Path
 import yaml
 
 from evotensile.candidate import Candidate
-from evotensile.manifest import write_manifest
+from evotensile.manifest import ManifestPair, write_manifest
 from evotensile.shapes import Shape
 from evotensile.solution_mapping import build_solution_candidate_mapper, solution_matches_candidate
 from evotensile.tensilelite_keys import (
@@ -61,7 +61,13 @@ def test_solution_mapping_uses_final_yaml_not_group_order(tmp_path: Path):
     rejected = Candidate({**base.canonical_params(), "DepthU": 32}, source="rejected_or_different")
     shape = Shape(512, 128, 1, 256)
     manifest = tmp_path / "manifest.csv"
-    write_manifest(manifest, [base, rejected, deduped], [shape])
+    candidates = [base, rejected, deduped]
+    write_manifest(
+        manifest,
+        [ManifestPair(candidate, shape) for candidate in candidates],
+        artifact_candidates=candidates,
+        artifact_shapes=[shape],
+    )
     final_yaml = tmp_path / "00_Final.yaml"
     solution = _final_solution_from_candidate(base, solution_index=0)
     _write_solution_yaml(final_yaml, shape, solution)

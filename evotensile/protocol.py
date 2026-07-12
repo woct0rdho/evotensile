@@ -155,7 +155,7 @@ def apply_benchmark_protocol_overrides(
     return protocol.with_overrides(**{field: overrides.get(field) for field in BENCHMARK_PROTOCOL_OVERRIDE_FIELDS})
 
 
-def _format_global_value(value: Any) -> str:
+def _format_global_value(value: object) -> str:
     if isinstance(value, bool):
         return "True" if value else "False"
     if isinstance(value, str):
@@ -163,7 +163,7 @@ def _format_global_value(value: Any) -> str:
     return str(value)
 
 
-def global_parameter_items(values: Mapping[str, Any]) -> list[str]:
+def global_parameter_items(values: Mapping[str, object]) -> list[str]:
     return [f"{key}={_format_global_value(value)}" for key, value in values.items()]
 
 

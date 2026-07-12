@@ -2,13 +2,13 @@ from pathlib import Path
 
 import pytest
 
+from evotensile.campaign.controller import estimate_admission_duration_s
 from evotensile.database import EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.search.campaign_control import (
     convergence_detected,
     estimate_confirmation_reserve_s,
-    estimate_next_round_duration_s,
     load_island_elites,
     plateau_detected,
     population_diagnostics,
@@ -119,17 +119,13 @@ def test_population_plateau_cost_guard_and_convergence_are_deterministic():
         shape,
         workgroup_processor_count=DEFAULT_PROFILE.workgroup_processor_count,
     )
-    rounds = [
-        {"duration_s": 24.0, "schedule": {"missing_pairs": 24}},
-        {"duration_s": 30.0, "schedule": {"missing_pairs": 24}},
-        {"duration_s": 27.0, "schedule": {"missing_pairs": 24}},
-    ]
+    round_costs = [(24.0, 24), (30.0, 24), (27.0, 24)]
 
     assert diagnostics.candidates == 8
     assert diagnostics.matrix_instructions >= 1
     assert diagnostics.mechanical_tokens > diagnostics.candidates
     assert plateau_detected([100.0, 110.0, 110.1, 110.2, 110.15], patience=3, minimum_improvement_fraction=0.005)
-    assert estimate_next_round_duration_s(rounds, expected_missing_pairs=24) >= 30.0
+    assert estimate_admission_duration_s(round_costs, expected_units=24) >= 30.0
     low_diversity = diagnostics.__class__(8, 1, 1, 20, 3.0, 1)
     assert convergence_detected([100.0, 110.0, *([110.1] * 8)], low_diversity)
 

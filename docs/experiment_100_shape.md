@@ -1,57 +1,12 @@
-# 100-Shape Experiment
+# 100-Shape Campaign Experiment Log
 
-This document records the completed evidence, current capabilities, experiment policy, and remaining work for improving the gfx1151 FP16 NT HHS 100-shape GridBased workload. General subsystem design remains in the focused documents under `docs/`. The blind one-shape experiment is recorded separately in `docs/experiment_blind_one_shape.md`.
+This document is the historical log for the completed gfx1151 FP16 NT HHS 100-shape campaign work. It records experiment conditions, retained evidence, ordered P01-P14 results, selected policies, and artifacts. Stable subsystem behavior belongs to the focused design documents under `docs/`.
 
-## Objective
+The controlled campaign concluded after P14. The next objective is to improve the existing 100-shape result for practical use, not to rerun the same controlled experiment from scratch. Current direction is tracked in `docs/plan.md`.
 
-The experiment has two related goals:
-- Improve performance across every shape in the `gfx1151-nt-hhs` 100-shape grid.
-- Evaluate multi-shape search strategies by exact historical simulation and then by controlled real searches.
+## Experiment Scope
 
-The experiment should minimize candidate-shape trials and wall time, not merely maximize the number of generated candidates. Final production results must still contain current validation and measured timing for every selected candidate-shape pair.
-
-## Experiment Policy
-
-This is not a blind experiment. It may import and use:
-- all retained 100-shape candidates and measurements.
-- current installed hipBLASLt-selected configurations.
-- hand-authored and hand-tuned configurations.
-- the best guarded SIA3/no-store-priority configuration documented in `~/ComfyUI-FeatherOps/doc/tensile_fp16_nt_hhs.md`.
-- known strong candidates as initial parents, transfer seeds, controls, or local-search centers.
-
-Those imports are already represented in the retained corpus. In particular, the hand-tuned `ScheduleIterAlg=3`, `StorePriorityOpt=False`, `NumElementsPerBatchStore=10` configuration is normalized candidate `cand_07ba5e67b99df4ba` and has retained timing evidence on all 100 shapes.
-
-The search strategy itself must remain generic. Known configurations may initialize or guide generic operators, but they must not become hidden validity rules, winner-specific linkage groups, hard-coded parameter bundles in default proposal logic, or special cases that work only because the final answer is known.
-
-The reusable constraints from `docs/experiment_blind_one_shape.md` still apply to strategy evaluation:
-- validity comes from source-backed rules and real validation, not performance hindsight.
-- unknown simulated candidate-shape results remain unknown rather than imputed from a nearby winner.
-- simulated evidence is disclosed query-causally before it affects archive, surrogate, linkage, or operator credit.
-- screening evidence is not a final performance claim.
-- final claims use validation-gated confirmation evidence.
-- performance-derived observations belong in experiment policy and evidence, not generic search-space restrictions.
-
-Unlike the blind experiment, explicit imported candidates and their prior measurements are allowed inputs and must be labeled as such.
-
-## One-Shape And Multi-Shape Search
-
-One-shape search is the one-member special case of multi-shape search. It should use the same candidate representation, proposal operators, evidence model, validation gate, timing policy, and final ranking semantics.
-
-Multi-shape search is not one-shape search repeated independently for every shape. Joint search can reduce expensive trials by exploiting structure that does not exist in an isolated run:
-- a candidate measured on one shape can be promoted to mechanically related shapes.
-- exact and nearest-shape winners can seed mutation, DE, GOMEA, and family archives elsewhere.
-- representative shapes can screen a family before broader promotion.
-- specialist and generalist candidates can share one proposal pool without pooling absolute latency across shapes.
-- compilation artifacts can be reused when one candidate is evaluated on several shapes.
-- uncertainty and expected improvement can allocate measurements across shapes rather than assigning equal independent budgets.
-- full-grid outlier detection can identify shapes that need dedicated repair after broad promotion.
-- a final solution bank can trade a small bounded performance loss for fewer deployed solutions and code objects.
-
-Every promotion remains a measurement decision. Mechanical similarity may prioritize a candidate-shape pair, but it must never turn an unmeasured pair into a production winner.
-
-## 100-Shape Grid
-
-The profile grid is the Cartesian product defined in `evotensile/shapes.py`:
+The campaign studied the 100-shape Cartesian grid defined by the `gfx1151-nt-hhs` profile:
 
 ```text
 M:     512, 640, 896, 1024
@@ -60,9 +15,25 @@ batch: 1
 K:     256, 512, 1024, 2048, 4096
 ```
 
-This produces 100 exact shapes covering small and large output tiles, skinny and square aspect ratios, and short through long reductions.
+The experiment was non-blind. It allowed retained 100-shape candidates and measurements, installed hipBLASLt selections, hand-authored configurations, and the guarded SIA3/no-store-priority configuration from the FeatherOps investigation. That normalized candidate is `cand_07ba5e67b99df4ba` and has retained timing evidence on all 100 shapes.
 
-## Completed Evidence
+Imported configurations were allowed as seeds, parents, controls, local-search centers, and measured incumbents. The generic strategy was not allowed to turn known winners into hidden validity rules, winner-specific linkage, hard-coded default bundles, or inferred performance on unmeasured pairs.
+
+All replay comparisons used exact query-causal evidence:
+- an exact retained `(candidate, shape)` pair could answer only after that pair was requested.
+- a missing retained pair remained unknown.
+- neighboring measurements and model predictions could prioritize a request but could not answer it.
+- screening evidence was not treated as a final production claim.
+- production eligibility still required current exact validation, timing, confirmation, and artifact registration.
+
+The shared design resulting from these conditions is documented in:
+- `docs/multi_shape_campaign_control.md`.
+- `docs/exact_pair_scheduling.md`.
+- `docs/pair_evaluators.md`.
+- `docs/staged_round_controller.md`.
+- `docs/deployment_selection.md`.
+
+## Evidence Before P01
 
 ### Initial Pilot Search
 
@@ -70,55 +41,55 @@ The first pilot used the former standalone TensileLite client path:
 - `135` proposed candidates across `100` shapes.
 - `13,500` planned candidate-shape pairs in five batches.
 - `1265.21s` wall time.
-- `75,000` successful timing samples, corresponding to `7,500` accepted pairs with ten samples each.
+- `75,000` successful timing samples for `7,500` accepted pairs.
 - `200` validation-failed pairs and `5,800` rejected observations.
-- `17.178s` of summed successful GEMM time. Compilation, client startup, validation, logs, and ingestion dominated wall time.
+- `17.178s` of summed successful GEMM time.
+
+Compilation, client startup, validation, logging, and ingestion dominated wall time. This motivated shared preparation, exact sparse scheduling, and explicit cost-aware admission.
 
 ### Historical Top-Four Retiming
 
-Before adaptive timing existed, the top four screened candidates for every shape were rerun:
-- `400` intended candidate-shape pairs.
+The top four screened candidates for every shape were rerun before adaptive timing existed:
+- `400` intended exact pairs.
 - `4,000` successful timing samples.
 - `675.86s` wall time.
 - the winner changed on `57/100` shapes.
-- final winners had first-pass ranks 1, 2, 3, and 4 for `43`, `27`, `17`, and `13` shapes respectively.
+- final winners had first-pass ranks 1, 2, 3, and 4 for `43`, `27`, `17`, and `13` shapes.
 
-This result motivated adaptive sampling and confirms that a one-pass top-one screen is not reliable enough for final grid selection.
+This showed that one-pass top-one screening was not reliable enough for final assignment.
 
-### Outlier Repair And Imported Baselines
+### Imported Baselines And Repair Evidence
 
-The retained corpus includes:
+The retained corpus included:
 - `15,204` successful samples and `816` rejections from historical outlier repair.
-- current installed hipBLASLt selections for all 100 shapes.
+- installed hipBLASLt selections for all 100 shapes.
 - `22` unique installed hipBLASLt candidates and `1,000` scheduled timing samples.
-- hand-tuned candidates, including the guarded SIA3/no-store-priority configuration from the FeatherOps investigation.
+- hand-tuned candidates, including the guarded SIA3/no-store-priority configuration.
 
-Imported candidates compete as ordinary candidates. Their known origin may guide seeding and diagnostics, but final production use still requires the same current validation and timing path as generated candidates.
+### Historical Corpus And Canonical Migration
 
-### Consolidated Oracle Database
-
-The retained corpus is:
+The historical source database is:
 
 ```text
 out/grid100_full_20260618_repaired.sqlite
 ```
 
-Current contents include:
+At the initial consolidation point it contained:
 - `219` canonical candidates.
 - `100` shapes.
-- `8,728` successful candidate-shape pairs.
+- `8,728` successful exact candidate-shape pairs.
 - `165,604` successful timing samples.
-- `6,616` retained source-backed rejections.
+- `6,616` source-backed rejections.
 - `200` historical failed-validation events.
-- benchmark protocol hash `bproto_9f4055f5f13232a3`.
+- benchmark protocol `bproto_9f4055f5f13232a3`.
 
-The DB uses the current table and index schema. A one-time canonical migration converted legacy integer encodings of `ExpandPointerSwap`, `MIArchVgpr`, and `SourceSwap` to JSON booleans and recomputed `183` candidate hashes with no collisions. Candidate integer IDs and every evidence row were preserved. The complete local hash map is `out/grid100_boolean_migration_20260711.json`.
+A one-time canonical migration converted legacy integer encodings of `ExpandPointerSwap`, `MIArchVgpr`, and `SourceSwap` to JSON booleans. It changed `183` candidate hashes without collisions while preserving candidate integer IDs and all evidence rows. The local map is `out/grid100_boolean_migration_20260711.json`.
 
-The corpus intentionally does not synthesize current validation passes for historical timing. It is authoritative as a simulation oracle and imported-candidate catalog. Real production promotion must obtain current compatible validation evidence.
+The historical corpus intentionally did not synthesize current validation passes. It remained suitable as a replay oracle and imported-candidate catalog, not as direct production confirmation.
 
-### Reproduction Check
+### Winner Reproduction
 
-Four historical winners spanning the retained timing range were rebuilt with the current TensileLite checkout, fully validated through the hipBLASLt oracle, and measured with 30 fresh main-protocol samples. The acceptance bound was `max(5%, 3 * historical relative MAD)`.
+Four historical winners spanning the retained timing range were rebuilt with the current TensileLite checkout, validated through the hipBLASLt oracle, and measured with 30 fresh main-protocol samples. Acceptance used `max(5%, 3 * historical relative MAD)`.
 
 | Shape | Historical TFLOP/s | Fresh TFLOP/s | Speed error | Bound |
 | --- | ---: | ---: | ---: | ---: |
@@ -127,136 +98,151 @@ Four historical winners spanning the retained timing range were rebuilt with the
 | `m896_n768_b1_k2048` | `28.711` | `28.744` | `0.12%` | `5.00%` |
 | `m1024_n1024_b1_k4096` | `38.672` | `38.353` | `0.83%` | `6.00%` |
 
-All four passed. The scheduler also validated all 16 cross-product pairs between the four candidates and four selected shapes and recorded 480 fresh timing samples. The machine-readable report is `out/grid100_winner_reproduction_20260711/report_normalized.json`.
+All four passed. The scheduler also validated all 16 cross-product pairs between those candidates and shapes and recorded 480 fresh samples. The report is `out/grid100_winner_reproduction_20260711/report_normalized.json`.
 
-### Rebuilt hipBLASLt Validation
+### Historical Installed-Library Check
 
-The GridBased YAMLs were updated from retained winners, hipBLASLt was rebuilt and installed for gfx1151, and the installed runtime was checked:
-- PyTorch-level tests used `~/ComfyUI-FeatherOps/benchmark_mm_hipblaslt_fp16.py` with `TORCH_BLAS_PREFER_HIPBLASLT=1`.
-- the `1024^3` NT path improved from `16.007` to `23.434 TFLOP/s` for `torch_mm_NT`, from `15.998` to `23.465 TFLOP/s` for `torch_linear_NT`, and from `14.417` to `25.554 TFLOP/s` for direct hipBLASLt NT.
-- direct hipBLASLt NT improved by `1.829x`, `2.218x`, and `4.804x` at square sizes `2048`, `4096`, and `8192` relative to the earlier reference.
-- installed correctness passed all six curated target/off-grid cases.
-- upstream `hipblaslt-test` passed after excluding known no-solution availability families.
+An earlier GridBased update and rebuilt hipBLASLt installation produced:
+- `1024^3` NT improvement from `16.007` to `23.434 TFLOP/s` for `torch_mm_NT`.
+- improvement from `15.998` to `23.465 TFLOP/s` for `torch_linear_NT`.
+- direct hipBLASLt NT improvement from `14.417` to `25.554 TFLOP/s`.
+- direct NT speedups of `1.829x`, `2.218x`, and `4.804x` at square sizes `2048`, `4096`, and `8192` relative to the earlier reference.
+- correctness passes on six curated target/off-grid cases.
+- an upstream `hipblaslt-test` pass after excluding known no-solution availability families.
 
-## Implemented Multi-Shape Building Blocks
+These were historical validation results, not actions performed during P01-P14.
 
-The repository already provides:
-- exact proposal scopes for one shape and shape sets.
-- shape-local ranking and incumbent-normalized multi-shape parent selection.
-- nearest-shape transfer seeds and measured elite reuse.
-- family-QD archives with specialist and generalist objectives.
-- random, semantic mutation, DE, GOMEA, learned linkage, adaptive operator/group/donor allocation, covering, and surrogate selection.
-- candidate-shape mechanical features including tile fill, WGP rounds, reduction depth, LDS/VGPR pressure, and arithmetic intensity.
-- query-causal immutable proposal evidence snapshots.
-- compile-cache reuse across candidate cohorts.
-- separate parallel preparation and serialized validation-gated timing.
-- staged probing, screening stabilization, adaptive top-ups, and hot confirmation.
-- measured candidate cost attribution and analytical cost-aware preparation ordering.
-- neighbor-seeded `repair-outliers` over the complete grid.
-- shared one-shape and multi-shape exact-oracle replay state with query-causal DB evidence, exact unknown-pair handling, per-shape incumbents, candidate coverage, and one-time candidate preparation across shapes.
-- complete GridBased preview/write checks requiring full shape coverage, current validation, and registered artifacts.
+## Ordered Campaign Results
 
-These mechanisms are components. The production multi-shape controller that coordinates them over the entire grid is not yet implemented.
+### P01-P05: Shared Exact Campaign Infrastructure
 
-## Simulated Multi-Shape Evaluation
+P01-P05 replaced one-shape-specific control with shared campaign infrastructure:
+- one checkpointed `CampaignControllerState` for phases, exact pair state, incumbents, artifacts, clustering, workload state, costs, and traces.
+- one exact-oracle replay state shared by singleton and multi-shape simulation.
+- explicit `PairRequest(candidate, shape)` scheduling with no inferred Cartesian evaluation product.
+- a generic campaign runner with durable checkpoints.
+- replay, real, and hybrid evaluators using one controller-facing result contract and labeled provenance.
 
-### Oracle Role
+The old `evotensile/campaign/one_shape.py` implementation was removed in favor of the shared runner. Design details are in `docs/multi_shape_campaign_control.md`, `docs/exact_pair_scheduling.md`, and `docs/pair_evaluators.md`.
 
-Use the migrated retained DB as an exact candidate-shape timing oracle. Simulation may expose all imported candidate parameters because this experiment is non-blind, but timing must still be revealed only when a strategy queries the exact pair.
+### P06: Mechanical Shape Clustering
 
-A missing candidate-shape pair is unknown. Do not fill it with a neighbor's value, a surrogate prediction, or a hidden incumbent. Predictions may choose the next query but may not become oracle answers.
+Deterministic candidate-independent descriptors and clustering were evaluated against the retained oracle. Fixed-count 16 clustering was selected as the moderate-cost baseline:
+- `55.2%` representative promotion precision at 5% regret tolerance.
+- `44.8%` missed specialists among assessed shapes.
+- `2.39%` median assessed regret.
 
-`ExactOracleReplayState` now provides the shared candidate catalog, exact shape-by-candidate matrix, known/unknown/queried/disclosed pair state, query-causal simulated DB, per-shape incumbents and unresolved status, candidate coverage, and separate shared-preparation and pair-timing ledgers. The one-shape simulator uses the same state with one registered shape. Policy drivers still need to implement cross-shape promotion, transfer, budget allocation, regret trajectories, repair reserves, and final-confirmation decisions.
+Representative-only transfer was therefore insufficient. Results are in `out/grid100_shape_clustering_20260712.json` and `docs/shape_clustering.md`.
 
-### Policy Comparisons
+### P07: Exact Promotion Racing
 
-At equal simulated wall time and candidate-shape query budgets, compare at least:
-- Independent one-shape search: no transfer or shared allocation. The required baseline.
-- Global candidate evaluation: evaluate selected candidates broadly without mechanical clustering.
-- Nearest-shape transfer: seed each shape from measured neighboring winners and near-winners.
-- Representative-first clustering: search medoids, then promote candidates within and between nearby clusters.
-- Specialist/generalist family-QD: maintain shape specialists plus candidates with broad low regret.
-- Joint uncertainty and improvement allocation: choose the next candidate-shape pair across the whole grid.
-- Outlier repair: run the same broad policy, then spend a reserved budget on residual weak shapes.
-- Combined staged controller: clustering, promotion, joint allocation, and final repair.
+The selected observed-evidence racer combined nearest, representative, specialist, and adjacent-cluster broad lanes with exact probe and main requests. In retained replay it:
+- resolved all 100 shapes.
+- issued 385 probe pairs and 166 main pairs after 3,472 representative seed requests.
+- achieved `27.5%` promotion precision.
+- ended at mean log regret `0.0879` and worst log regret `0.6432` over resolved shapes.
 
-Known hipBLASLt and hand-tuned candidates should be available to every policy under the same declared import condition. Ablations must not give one policy a stronger seed catalog than another.
+This characterized the transfer mechanism. It did not make complete one-round resolution a production requirement. Results are in `out/grid100_shape_promotion_20260712.json` and `docs/shape_promotion_racing.md`.
 
-### Simulation Metrics
+### P08: Contextual Exact-Pair Model
 
-Report trajectories, not only the final average:
-- unweighted and optional workload-weighted incumbent-normalized regret.
-- worst-shape regret.
-- unresolved-shape count.
-- candidate-shape queries and unique candidates prepared.
-- simulated preparation, validation, probe, screening, and confirmation time.
-- time and queries to reach fixed regret thresholds.
-- representative-to-cluster promotion precision and missed specialists.
-- gains attributable to transfer and outlier repair.
-- final unique solution count and solution-bank coverage at each tolerance.
+The shared bootstrapped ExtraTrees model was selected because it predicted unseen candidates and shapes, modeled validity, and exposed calibrated tree samples. Retained five-fold evaluation reported:
+- held-candidate MAE `0.396` and 90% interval coverage `0.876`.
+- held-shape MAE `0.231` and coverage `0.904`.
+- masked-pair MAE `0.249` and coverage `0.868`.
 
-Simulation evaluates allocation over the known oracle, not the ability to generate genuinely unseen fast candidates. A strategy that succeeds only because all historical candidates are visible must be labeled as candidate-selection evidence rather than end-to-end search evidence.
+The evaluation artifact is `out/grid100_pair_model_20260712.json`. Design and complete baselines are in `docs/contextual_pair_model.md`.
 
-## Remaining Implementation
+### P09: Shared-Cost Bundle Acquisition
 
-### Multi-Shape Campaign State
+The balanced one-wave characterization added 385 exact pairs, resolved 67 shapes, prepared 83 candidates, and achieved:
+- mean resolved-shape log regret `0.0908`.
+- p95 log regret `0.3783`.
 
-Implement the policy/controller layer that owns cluster assignments, promotion queues, global and per-phase budgets, regret trajectories, repair and confirmation reserves, and checkpoints. One-shape policy execution should use this controller with one shape rather than a separate algorithm.
+It improved mean and tail quality over observed transfer and independent model ranking while preparing far fewer new candidates. Results are in `out/grid100_bundle_acquisition_20260712.json` and `docs/shared_bundle_acquisition.md`.
 
-### Staged Shape Evaluation
+### P10: Staged Soft-Deadline Rounds
 
-Add a controller that clusters shapes by mechanical behavior rather than only raw dimension distance. Inputs should include aspect ratio, batch/K regimes, arithmetic intensity, tile efficiency across macro-tile families, WGP-round behavior, and compatible coarse kernel families.
+Reusable broad, promotion, repair, stabilization, and confirmation phases were implemented with cumulative phase deadlines, explicit reserves, conservative admission, exact pending-wave persistence, resume-before-replan behavior, replay simulated time, and overrun stopping. Admitted work drained normally instead of receiving shrinking lower-layer timeouts.
 
-The controller should:
-- choose representative or medoid shapes.
-- search representatives first with the normal family-QD/operator/surrogate flow.
-- promote promising specialists and generalists to remaining cluster members.
-- migrate candidates between mechanically adjacent clusters.
-- retain artifact reuse across promoted shapes.
-- finish with complete-grid outlier detection and repair.
+The resulting execution contract is documented in `docs/staged_round_controller.md`.
 
-### Workload-Aware Allocation And Timing
+### P11: Integrated Weak-Shape Repair
 
-Add an explicit workload-weighted mode in which shape priority combines call count, baseline latency, predicted improvement headroom, uncertainty, and expected evaluation cost. Apply weights consistently to acquisition, archive and parent selection, operator feedback, timing admission, and reporting.
+Equal-wave retained replay compared broad continuation with bounded weak-shape repair. Repair improved:
+- mean log regret from `0.07376` to `0.06394`.
+- p95 log regret from `0.38236` to `0.31275`.
+- worst log regret from `0.66922` to `0.63070`.
 
-Fixed GridBased coverage remains a distinct mode and must evaluate every required shape. Workload weighting may defer low-contribution shapes only when explicitly requested.
+Repair remained a small reserved phase rather than a replacement for broad acquisition. Results are in `out/grid100_repair_acquisition_20260712.json` and `docs/search_outlier_repair.md`.
 
-Replace the analytical preparation heuristic with a measured predictor when enough build and validation history exists. Keep preparation order separate from serialized benchmark order. Benchmark admission should use expected improvement or information per second, unresolved-shape coverage, and soft-deadline fit.
+### P12: Policy Tuning And Compatible Oracle
 
-### Deployment Solution Bank
+A consolidated read-only oracle was created at:
 
-After confidence-aware retiming, add an optional greedy set-cover pass that selects the smallest solution bank covering all required shapes within a requested tolerance.
+```text
+out/grid100_compatible_20260712.sqlite
+```
 
-A zero tolerance must preserve exact per-shape winners. Nonzero tolerances must report weighted and worst-shape loss, retained solution/code-object count, shapes covered by each generalist, and shapes requiring specialists. Revalidate and remeasure every selected pair before GridBased generation.
+Its manifest is `out/grid100_compatible_20260712_manifest.json`. After compatible baseline and targeted hybrid overlays, the snapshot contained 224 candidates, 100 shapes, 17,171 benchmark events, 168,214 samples, and 8,858 positive exact pairs. Missing compatible pairs remained unknown.
 
-### Audit And Controlled Evaluation
+Twelve generic configurations were compared across blind, anchored-untuned, and anchored-tuned initialization. The selected one-round policies were:
 
-Add audit tools for:
-- winner sensitivity to sample count and timing noise.
-- DB-level candidate/hash/shape coverage.
-- representative-shape promotion precision.
-- transfer and repair effectiveness.
-- policy comparison from identical DB snapshots.
-- equal-wall-time and equal-pair-budget ablations.
+| Initialization | Policy identity | Mean log regret | P95 | Worst | Mean unresolved |
+| --- | --- | ---: | ---: | ---: | ---: |
+| blind | `campaign_policy_46baa1a9` | `0.5641` | `1.4444` | `2.1841` | `16.67` |
+| anchored-untuned | `campaign_policy_89ea03a4` | `0.1998` | `0.5073` | `0.8286` | `0` |
+| anchored-tuned | `campaign_policy_e7961c9f` | `0.0757` | `0.2732` | `0.4010` | `0` |
 
-Run controlled ablations for clustering, transfer, joint acquisition, workload weighting, measured cost prediction, timing allocation, outlier repair, and solution-bank minimization before any becomes a production default.
+Two-round selection retained fixed `50/50` scheduling for blind and role-specialized `60/40` scheduling for both anchored regimes. The complete artifact is `out/grid100_policy_tuning_20260712.json`. Details are in `docs/campaign_policy_tuning.md`.
 
-## Real Search Sequence
+The singleton comparison selected shared bundle acquisition with information weight `0.05` after at least 24 positive observations. Its artifact is `out/grid100_singleton_policy_tuning_20260712.json`.
 
-After simulation identifies robust policies:
-- Freeze the imported candidate catalog and experiment snapshot.
-- Start fresh real campaign DBs under the current environment tag. Import candidate parameters and provenance without inventing validation evidence.
-- Validate and screen imported hipBLASLt, historical, and hand-tuned seeds through the current scheduler.
-- Run representative-first and joint multi-shape search with explicit wall-time and pair budgets.
-- Promote candidates only through measured candidate-shape pairs.
-- Reserve time for finalist stabilization, full-grid outlier repair, and confirmation.
-- Recheck every final selected pair with current validation and confirmation evidence.
-- Generate complete GridBased logic, rebuild hipBLASLt, and run installed correctness and performance validation.
+### P13: Explicit Workload Weighting
 
-The final report must distinguish gains from imported candidates, gains from generic search around those candidates, gains from cross-shape transfer, and gains from repair.
+Three stable anchored-untuned replays compared uniform allocation with an explicit workload proportional to untuned baseline latency. Workload weighting shifted top-quartile pair allocation from `22.7%` to `26.6%`, reduced mean unknown pairs from `148.7` to `128.7`, and modestly improved:
+- unweighted mean regret from `0.19079` to `0.18810`.
+- workload-weighted mean regret from `0.26605` to `0.26502`.
+- unweighted p95 regret from `0.53466` to `0.52816`.
 
-## Immediate Next Steps
+The effect did not justify changing the default. Uniform weighting remained default. Explicit workload mode remained available with persisted provenance. Results are in `out/grid100_workload_weighting_20260712.json` and `docs/workload_weighting.md`.
 
-- Implement the independent one-shape policy baseline on the shared replay state.
-- Add nearest-shape transfer and representative-cluster policies over the same oracle snapshot.
-- Define equal-budget regret and unresolved-shape reports.
+### P14: Final Confirmation And Deployment Selection
+
+Three stable anchored-untuned replays stabilized posterior-close finalists, refit the contextual model, and confirmed exact finalists under a 300-second soft budget. All trials retained complete positive coverage for 100 shapes.
+
+Zero-tolerance deployment selected 11-12 exact confirmed winners, averaging:
+- `11.33` solutions.
+- `10.33` multi-shape generalists.
+- one specialist shape.
+
+Tolerances from 1% through 5% produced no additional reduction because the exact winners were already broadly shared. The artifact is `out/grid100_deployment_selection_20260712.json`. Production confirmation and export requirements are in `docs/deployment_selection.md`.
+
+## Experiment Conclusion
+
+The experiment established that the retained 100-shape result can be managed as one exact, cost-aware campaign rather than 100 isolated searches. The selected mechanisms support sparse exact evaluation, shared artifact preparation, measured promotion, contextual allocation, bounded repair, explicit workload priorities, fresh final confirmation, and deterministic deployment assignment.
+
+The evidence also established important limits:
+- retained-oracle success is candidate-selection and allocation evidence, not proof that a fresh proposal run regenerates the same catalog.
+- missing historical pairs remain unknown and may require targeted native execution.
+- model predictions and screening incumbents are not production evidence.
+- nonzero deployment tolerance is useful only when it actually reduces the confirmed solution bank and its measured loss is acceptable.
+
+Practical improvement should start from the existing candidates, compatible oracle, selected anchored policies, workload information when available, and current deployment assignment. New native work should be targeted at exact weak-shape, missing-pair, stabilization, confirmation, and artifact-completion needs rather than repeating the full campaign. Production logic generation and any hipBLASLt rebuild or installation remain separate operational actions requiring explicit approval.
+
+## Artifact Index
+
+- Historical source DB: `out/grid100_full_20260618_repaired.sqlite`.
+- Compatible oracle: `out/grid100_compatible_20260712.sqlite`.
+- Compatible oracle manifest: `out/grid100_compatible_20260712_manifest.json`.
+- Boolean migration map: `out/grid100_boolean_migration_20260711.json`.
+- Winner reproduction: `out/grid100_winner_reproduction_20260711/report_normalized.json`.
+- Shape clustering: `out/grid100_shape_clustering_20260712.json`.
+- Shape promotion: `out/grid100_shape_promotion_20260712.json`.
+- Contextual pair model: `out/grid100_pair_model_20260712.json`.
+- Bundle acquisition: `out/grid100_bundle_acquisition_20260712.json`.
+- Repair acquisition: `out/grid100_repair_acquisition_20260712.json`.
+- Policy tuning: `out/grid100_policy_tuning_20260712.json`.
+- Singleton policy tuning: `out/grid100_singleton_policy_tuning_20260712.json`.
+- Workload weighting: `out/grid100_workload_weighting_20260712.json`.
+- Deployment selection: `out/grid100_deployment_selection_20260712.json`.

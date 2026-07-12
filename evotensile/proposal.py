@@ -23,7 +23,7 @@ from evotensile.search.learned_linkage import (
 from evotensile.search.surrogate import DEFAULT_SURROGATE_MIN_EVIDENCE
 from evotensile.search_space import DOMAINS, FIXED_PARAMS, cheap_constraints, eligible_for_shape_scope
 
-BUILTIN_PROPOSAL_VERSION = "gfx1151-grid-v1"
+BUILTIN_PROPOSAL_IDENTITY = "builtin:family-qd"
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,6 @@ class ProposalScope:
 
 @dataclass(frozen=True)
 class FamilyQDPolicy:
-    version: str = BUILTIN_PROPOSAL_VERSION
     num_random: int = 64
     elite_count: int = 8
     local_count: int = 32
@@ -58,6 +57,8 @@ class FamilyQDPolicy:
     micro_exhaustive_neighborhoods: bool = True
     adaptive_donor_selection: bool = True
     cost_aware_operator_credit: bool = True
+    singleton_acquisition_enabled: bool = True
+    singleton_information_weight: float = 0.05
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -70,6 +71,7 @@ class ProposalContext:
     scope: ProposalScope
     seed: int
     evidence: ProposalEvidenceSnapshot
+    shape_weights: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     config: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
     family_qd_policy: FamilyQDPolicy | None = None
     shape_id: str | None = None

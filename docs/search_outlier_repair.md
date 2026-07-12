@@ -1,167 +1,115 @@
-# Outlier Repair Design
+# Integrated Weak-Shape Repair
 
-This document describes `repair-outliers`, the second-stage search command that spends extra budget on shapes whose current best measured candidate is locally underperforming.
+This document describes the generic repair acquisition in `evotensile/campaign/repair.py`. Staged admission and the explicit repair reserve are documented in `docs/staged_round_controller.md`. Shared-cost candidate bundles are documented in `docs/shared_bundle_acquisition.md`.
 
-## Purpose
+The former standalone `repair-outliers` command and its dense candidate-by-shape schedule have been removed. Repair now uses the same contextual model, candidate bundles, exact requests, shared preparation accounting, durable evidence, and soft round admission as broad and promotion work.
 
-A broad search pass can leave isolated weak shapes because of timing noise, missing transfer seeds, shape-specific validity, or discontinuities in solution selection. `repair-outliers` identifies these shapes from DB evidence and reruns only them with neighbor-heavy seeds.
+## Boundary
 
-Outlier repair is a search-budget heuristic. It does not prove a current winner is wrong, and it does not modify candidate validity rules.
+Repair is a budget-allocation heuristic. It does not:
+- inspect hidden oracle winners.
+- encode retained-corpus winners or candidate hashes.
+- impose smoothness as a validity or selection rule.
+- copy performance between shapes.
+- infer evaluation pairs from artifact scope.
 
-## Input Evidence
+Every selected repair pair is measured exactly on its target shape. Unknown replay pairs remain unknown and still consume their attempted budget.
 
-`detect_underperforming_shapes()` uses DB-ranked winners for the active `problem_type_hash` and `benchmark_protocol_hash`.
+Grid-outlier detection is a no-op for one shape. Ordinary singleton incumbent improvement, stabilization, and confirmation remain active.
 
-For each shape `s`, the current performance is the median GFLOP/s of its ranked winner:
+## Deficit Evidence
 
-$$
-P_s = \mathrm{median\ GFLOP/s}(s), \qquad p_s = \log(P_s).
-$$
+`assess_repair_deficits()` requires the current controller, the campaign's mechanical clustering, and optional compatible reference performance and contextual predictions.
 
-Only shapes with at least `--outlier-min-samples` timing samples are eligible. The CLI default is `10`, so repair uses confirmed/adaptive evidence rather than early screening noise.
+For each resolved shape, it derives candidate-independent target signals from:
+- an installed or other explicitly supplied compatible reference for that exact shape.
+- a distance-weighted upper quantile of nearest resolved-shape incumbents.
+- an upper quantile of incumbents in the same mechanical cluster.
+- calibrated epistemic uncertainty for still-unqueried candidate pairs on the target shape.
 
-## Shape Feature Space
+Nearest-shape distance uses the same normalized mechanical descriptors as clustering. Neighbor and cluster targets use log-performance quantiles to reduce sensitivity to one noisy maximum. The available reference, neighbor, and cluster targets are combined by their median. Model uncertainty contributes only a configurable fraction of log headroom.
 
-Each shape is embedded in log/ratio feature space:
-
-$$
-x_s = [\log_2 M,\ \log_2 N,\ \log_2 K,\ \log_2(M/N),\ \log_2(K/M),\ \log_2(K/N)].
-$$
-
-Distance to another tuned shape `u` is Euclidean distance:
-
-$$
-d(s,u) = \|x_s - x_u\|_2.
-$$
-
-The same feature keys are implemented by `Shape.features()` and `_shape_distance()`.
-
-## Neighbor Selection
-
-For each target shape, EvoTensile takes the nearest `K` other shapes with ranked winners, where:
+For incumbent performance `P_s` and robust evidence target `T_s`, the raw deficit is:
 
 ```text
-K = --neighbor-count
+max(0, log(T_s / P_s) + uncertainty_weight * epistemic_uncertainty_s)
 ```
 
-The default is `8`.
+Deficits below `minimum_deficit_fraction` are ignored. Larger deficits are capped at `maximum_deficit_fraction`. The cap prevents one apparently weak shape from consuming the complete reserve.
 
-Neighbor weights are:
+This estimate can be wrong because real kernels have shape-specific cliffs. It allocates exact measurements rather than changing the incumbent directly.
 
-$$
-w_u = \frac{1}{\max(d(s,u), 0.125)}.
-$$
+## Candidate Support
 
-The `0.125` floor prevents nearly duplicate shapes from receiving infinite weight. In log2 feature units, `0.125` is one eighth of an octave, so very close shapes are still strongly favored.
-
-## Local Linear Prediction
-
-When at least three neighbors are available, EvoTensile fits a weighted local linear model around the target shape:
-
-$$
-p_u \approx \beta_0 + \beta^T(x_u - x_s).
-$$
-
-The fitted coefficients minimize:
-
-$$
-\sum_{u \in N_K(s)} w_u \left(p_u - \beta_0 - \beta^T(x_u - x_s)\right)^2 + \lambda\|\beta\|_2^2,
-$$
-
-with:
-
-$$
-\lambda = 10^{-3} \sum_{u \in N_K(s)} w_u.
-$$
-
-The ridge term is a small numerical stabilizer for slope terms only. The intercept is not penalized.
-
-The local-linear prediction at the target is the intercept, clipped to the observed neighbor log-performance range:
-
-$$
-\hat{p}_{s,\mathrm{lin}} = \mathrm{clip}\left(\beta_0,\ \min_{u \in N_K(s)} p_u,\ \max_{u \in N_K(s)} p_u\right).
-$$
-
-If the local system is singular or too few neighbors are available, EvoTensile skips this prediction and falls back to the envelope prediction.
-
-## Upper-Neighborhood Envelope
-
-EvoTensile also computes a weighted upper-neighborhood envelope:
-
-$$
-\hat{p}_{s,\mathrm{env}} = Q_q(\{p_u\}_{u \in N_K(s)},\ \{w_u\}_{u \in N_K(s)}),
-$$
-
-where:
+A deficit alone is insufficient. For every available unqueried candidate-shape prediction, repair computes the posterior probability of reaching a configurable fraction of capped headroom:
 
 ```text
-q = --envelope-quantile
+useful_target = incumbent * exp(useful_close_fraction * capped_deficit_log)
+close_probability = P(candidate >= useful_target) * P(valid)
 ```
 
-The default is `0.75`, an upper-quartile envelope. It is more optimistic than the median but less sensitive than the maximum to one unusually fast or noisy neighbor.
+Probabilities below `minimum_close_probability` become zero. A shape therefore receives no repair utility when the candidate catalog and model provide no support for useful improvement.
 
-## Final Prediction And Residual
+The bundle allocator receives:
+- shape repair value equal to capped log deficit.
+- exact candidate-shape close probability.
+- the normal expected-improvement, information, shape-weight, and cost terms.
 
-The final predicted local envelope is conservative:
+The repair component for a pair is capped deficit multiplied by its candidate-specific close probability. It is not assigned uniformly to every valid candidate. Lazy greedy selection still accounts for candidates competing for the same shape, shared preparation, artifact expansion, exact validation/timing cost, pair and bundle caps, and utility per second.
 
-$$
-\hat{p}_s = \min(\hat{p}_{s,\mathrm{lin}},\ \hat{p}_{s,\mathrm{env}}).
-$$
+## Candidate Seeds
 
-If the linear prediction is unavailable, EvoTensile uses the envelope prediction alone.
+`build_repair_candidate_pool()` produces one deduplicated, auditable finite pool from:
+- the weak shape's current incumbent.
+- nearest-shape winners and near-winners from disclosed evidence.
+- champions from the target's mechanical cluster.
+- broad candidates supplied by the current round planner.
+- deterministic generic semantic mutations around those sources.
 
-The repair residual is:
+Every candidate records its contributing lanes and target shapes. Mutations use existing linked-parameter repair and shape-scope eligibility. No source is assumed to transfer. The contextual model scores the exact target pair and the evaluator measures selected requests.
 
-$$
-r_s = \hat{p}_s - p_s.
-$$
+Historical exact-oracle ablations may disable new mutations because absent native pairs must remain unknown. Real or hybrid campaigns may retain them and measure the exact new pairs.
 
-A shape is selected for repair when:
+## Reserve And Admission
 
-$$
-r_s > \log(1 + \tau),
-$$
+`StagedRoundConfiguration.repair_fraction` creates an explicit cumulative repair reserve. A broad expected-improvement wave cannot consume it because an over-budget broad plan closes its phase while later phases remain eligible.
 
-where:
+Within the repair phase, callers refit the contextual model and recompute deficits, candidate support, and bundle acquisition after each durable wave. Unsupported shapes naturally lose utility. Admitted work drains under unchanged operational timeouts. Overrun blocks all later admission.
 
-```text
-tau = --outlier-threshold-pct
-```
+The repair module does not bypass the staged planner boundary. It returns a normal `AcquisitionPlan` with exact `PairRequest` objects, artifact scopes, predicted costs, preparation order, and timing priorities.
 
-The default threshold is `10%`. Selected shapes are sorted by residual descending, and `--max-outliers` can cap the set for staged repair runs.
+## Reporting
 
-## Repair Seeds
+`RepairReport` records:
+- eligible weak shapes.
+- exact repair queries.
+- queries reusing prepared target artifacts.
+- deficits reaching the useful-close target.
+- mean and worst per-shape incumbent gain.
+- queries with no incumbent gain.
+- predicted cost attributed to those false repairs.
 
-`repair_seed_candidates()` builds a seed set for selected outliers from:
-- the outlier shape's current winner.
-- each nearest neighbor's winner.
-- each nearest neighbor's top candidates, controlled by `--neighbor-per-shape`.
+Candidate-pool origins, deficits, pair close probabilities, and the full acquisition plan are serializable for round reports.
 
-Seed candidates are reinserted with source `repair-transfer` and parent hashes pointing to the original candidate hash.
+## Retained-Corpus Ablation
 
-The command then adds normal proposal-mode candidates for the repair shapes. This allows repair runs to combine neighbor transfer, random exploration, local mutation, DE, and GOMEA depending on CLI options.
+`scripts/simulate_repair_acquisition.py` compares two equal-budget staged policies on `out/grid100_full_20260618_repaired.sqlite`. Both receive the identical 373-pair broad wave after the same 16-medoid seed. One spends the final 12 pairs on another broad acquisition. The other spends them through repair. New mutations are disabled only for this exact-oracle comparison because their historical pairs do not exist.
 
-## Execution Flow
+The selected characterization in `out/grid100_repair_acquisition_20260712.json` reports:
 
-`repair-outliers` uses the same scheduler and measurement pipeline as `schedule-batches`:
-- Resolve profile, protocol, DB, and eligible shapes.
-- Detect outliers from current DB-ranked winners.
-- Build repair seed candidates.
-- Propose additional candidates for only the repair shapes.
-- Dedupe and optionally truncate candidates with `--max-candidates`.
-- Execute cache-aware structured batches.
-- Write `repair_metadata.json` with outlier diagnostics, candidate hashes, execution batches, status counts, and linkage/adaptive metadata.
+| Final 12-pair policy | Mean log regret | P95 log regret | Worst log regret | Resolved shapes |
+|---|---:|---:|---:|---:|
+| Broad continuation | 0.07376 | 0.38236 | 0.66922 | 66 |
+| Repair reserve | 0.06394 | 0.31275 | 0.63070 | 62 |
 
-If no outliers or no candidates are available, the command writes metadata and performs a dry execution plan.
+Repair resolves one flagged deficit and improves mean, p95, and worst regret, but broad continuation resolves four more previously unseen shapes. This supports a small explicit weak-tail reserve without claiming that repair should replace broad coverage. P12 subsequently tested the reserve across seeds, orderings, initialization profiles, equal pair budgets, and targeted hybrid measurements. Selected repair fractions remain small and profile-specific. See `docs/campaign_policy_tuning.md`.
 
-## Interpretation
+## Tests
 
-A selected outlier means only that the current best median GFLOP/s is below a local neighbor prediction by more than the threshold. Real GEMM behavior can legitimately have cliffs from:
-- tile divisibility and edge handling.
-- LDS footprint and bank behavior.
-- occupancy or VGPR pressure.
-- GSU workspace decisions.
-- solution-selection discontinuities.
-- shape-specific invalidity or validation failures.
-
-Repair therefore allocates more measurement/search budget. It does not impose smoothness on final winner selection.
+Tests cover:
+- singleton no-op behavior.
+- reference/neighbor/cluster/uncertainty deficit construction and caps.
+- candidate-specific close-probability gating.
+- exact repair bundle selection.
+- incumbent, neighbor, cluster, broad, and mutation seed provenance.
+- preparation reuse, resolved-deficit, gain, and false-repair reporting.

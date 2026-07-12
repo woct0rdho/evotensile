@@ -21,7 +21,6 @@ from ..search_space import (
     repair_linked_overrides,
 )
 
-FAMILY_DESCRIPTOR_VERSION = "nt_hhs_v2"
 NT_HHS_PROFILE = "gfx1151-nt-hhs"
 DEFAULT_FAMILY_ELITES_PER_CELL = 4
 DEFAULT_FAMILY_DIVERSITY_SCORE_SLACK = 0.25
@@ -30,18 +29,16 @@ DEFAULT_FAMILY_DIVERSITY_SCORE_SLACK = 0.25
 @dataclass(frozen=True)
 class FamilyDescriptor:
     profile: str
-    version: str
     fields: tuple[tuple[str, Any], ...]
 
     @property
     def key(self) -> str:
         items = ",".join(f"{name}={_format_value(value)}" for name, value in self.fields)
-        return f"{self.profile}:{self.version}:{items}"
+        return f"{self.profile}:{items}"
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "profile": self.profile,
-            "version": self.version,
             "key": self.key,
             "fields": {name: value for name, value in self.fields},
         }
@@ -61,6 +58,7 @@ class FamilyArchiveEntry:
     shape_count: int
     observed_candidate_count: int
     status_counts: dict[str, int]
+    shape_weighted: bool = False
     family_rank: int = 1
     novelty_distance: int = 0
 
@@ -81,13 +79,14 @@ class FamilyArchiveEntry:
             "samples": self.samples,
             "shape_count": self.shape_count,
             "observed_candidate_count": self.observed_candidate_count,
+            "shape_weighted": self.shape_weighted,
             "family_rank": self.family_rank,
             "novelty_distance": self.novelty_distance,
             "status_counts": dict(sorted(self.status_counts.items())),
         }
 
 
-def _format_value(value: Any) -> str:
+def _format_value(value: object) -> str:
     if isinstance(value, bool):
         return "1" if value else "0"
     if isinstance(value, (tuple, list)):
@@ -121,7 +120,7 @@ def nt_hhs_family_descriptor(candidate: Candidate | Mapping[str, Any]) -> Family
         ("TransposeLDS", int(_field(params, "TransposeLDS", 0))),
         ("GlobalSplitU", int(_field(params, "GlobalSplitU", 1))),
     )
-    return FamilyDescriptor(profile=NT_HHS_PROFILE, version=FAMILY_DESCRIPTOR_VERSION, fields=fields)
+    return FamilyDescriptor(profile=NT_HHS_PROFILE, fields=fields)
 
 
 def family_descriptor(candidate: Candidate | Mapping[str, Any]) -> FamilyDescriptor:
@@ -155,7 +154,6 @@ def nt_hhs_family_cells() -> list[FamilyDescriptor]:
     return [
         FamilyDescriptor(
             profile=NT_HHS_PROFILE,
-            version=FAMILY_DESCRIPTOR_VERSION,
             fields=(
                 ("TileAreaLog2", area),
                 ("TileAspect", aspect),
@@ -354,6 +352,7 @@ def load_family_archive(
     limit: int | None = None,
     elites_per_family: int = 1,
     diversity_score_slack: float = DEFAULT_FAMILY_DIVERSITY_SCORE_SLACK,
+    shape_weights: Mapping[str, float] | None = None,
 ) -> list[FamilyArchiveEntry]:
     if objective not in {
         GridObjective.SPECIALIST,
@@ -385,7 +384,11 @@ def load_family_archive(
         for status, count in counts.items():
             status_counts[descriptor_key][status] += count
 
-    grid_scores = candidate_grid_scores(summaries_by_shape, target_shape_ids=shape_ids)
+    grid_scores = candidate_grid_scores(
+        summaries_by_shape,
+        target_shape_ids=shape_ids,
+        shape_weights=shape_weights,
+    )
     candidate_scores: dict[str, dict[str, CandidateGridScore]] = defaultdict(dict)
     family_descriptors: dict[str, FamilyDescriptor] = {}
     for candidate_hash, grid_score in grid_scores.items():
@@ -427,6 +430,7 @@ def load_family_archive(
                     shape_count=score.shape_count,
                     observed_candidate_count=len(scores_by_candidate),
                     status_counts=status_counts.get(descriptor_key, {}),
+                    shape_weighted=shape_weights is not None,
                     family_rank=family_rank,
                     novelty_distance=novelty_distance,
                 )

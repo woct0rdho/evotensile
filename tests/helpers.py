@@ -1,9 +1,10 @@
 from pathlib import Path
 from textwrap import dedent
 
-from evotensile.candidate import Candidate
+from evotensile.candidate import Candidate, Shape
 from evotensile.database import BenchmarkEventInsert, EvoTensileDB, ValidationInsert
 from evotensile.profile import DEFAULT_PROFILE
+from evotensile.scheduling.models import EvidenceStage, PairRequest
 from evotensile.search_space import make_candidate, random_candidates, repair_linked_overrides
 
 
@@ -13,6 +14,25 @@ def sample_candidates(count: int, *, seed: int = 1151) -> list[Candidate]:
 
 def sample_candidate(*, seed: int = 1151) -> Candidate:
     return sample_candidates(1, seed=seed)[0]
+
+
+def pair_requests(
+    candidates: list[Candidate],
+    shapes: list[Shape],
+    *,
+    min_samples: int = 1,
+    evidence_stage: EvidenceStage = EvidenceStage.SCREENING,
+) -> list[PairRequest]:
+    return [
+        PairRequest(
+            candidate=candidate,
+            shape=shape,
+            evidence_stage=evidence_stage,
+            min_samples=min_samples,
+        )
+        for shape in shapes
+        for candidate in candidates
+    ]
 
 
 REFERENCE_CANDIDATE = make_candidate(repair_linked_overrides({}), source="reference")

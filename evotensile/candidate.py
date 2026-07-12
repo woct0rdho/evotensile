@@ -3,10 +3,10 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 
-def canonicalize(value: Any) -> Any:
+def canonicalize(value: object) -> object:
     """Return a JSON-stable form for nested candidate/config values."""
     if isinstance(value, Mapping):
         return {str(k): canonicalize(value[k]) for k in sorted(value)}
@@ -17,11 +17,11 @@ def canonicalize(value: Any) -> Any:
     return value
 
 
-def canonical_json(value: Any) -> str:
+def canonical_json(value: object) -> str:
     return json.dumps(canonicalize(value), sort_keys=True, separators=(",", ":"))
 
 
-def stable_hash(value: Any, *, prefix: str = "") -> str:
+def stable_hash(value: object, *, prefix: str = "") -> str:
     digest = hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
     return f"{prefix}{digest}" if prefix else digest
 
@@ -36,7 +36,7 @@ class Candidate:
     proposal_metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def canonical_params(self) -> dict[str, Any]:
-        return canonicalize(dict(self.params))
+        return cast(dict[str, Any], canonicalize(dict(self.params)))
 
     @property
     def hash(self) -> str:

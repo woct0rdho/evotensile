@@ -130,7 +130,7 @@ Learned linkage is enabled by default in the built-in family-QD policy. Custom p
 --linkage-ordinal-bins
 ```
 
-`schedule-batches`, `repair-outliers`, and dry runs write linkage metadata into `schedule_metadata.json` or `repair_metadata.json`, including:
+`schedule-batches` and its dry runs write linkage metadata into `schedule_metadata.json`, including:
 - Whether learned linkage was requested and enabled.
 - Evidence and selected counts.
 - Fallback reason, if any.

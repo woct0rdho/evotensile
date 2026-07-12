@@ -5,12 +5,13 @@ from pathlib import Path
 from textwrap import dedent
 
 from evotensile.adaptive_retime import AdaptivePolicy, ProbePolicy
-from evotensile.database import EvoTensileDB
+from evotensile.database import EvoTensileDB, ValidationInsert
+from evotensile.manifest import read_manifest
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.scheduler import execute_schedule
 from evotensile.scheduling import preparation as preparation_module
-from evotensile.scheduling.models import ScheduleResult
+from evotensile.scheduling.models import PairRequest, ScheduleResult
 from evotensile.shapes import pilot_100_shapes
 from evotensile.structured_runner import (
     RunnablePair,
@@ -22,7 +23,13 @@ from evotensile.structured_runner import (
     validate_validation_samples,
 )
 from evotensile.subprocess_utils import run_logged_process
-from tests.helpers import fake_build_tensile, fake_structured_runner, insert_test_benchmark_event, sample_candidates
+from tests.helpers import (
+    fake_build_tensile,
+    fake_structured_runner,
+    insert_test_benchmark_event,
+    pair_requests,
+    sample_candidates,
+)
 
 
 def test_timed_out_process_kills_descendants(tmp_path: Path):
@@ -220,8 +227,7 @@ def test_parallel_prepare_finishes_before_serial_benchmark_queue(tmp_path: Path,
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
@@ -266,8 +272,7 @@ def test_cost_aware_prepare_order_does_not_change_timing_order(tmp_path: Path, m
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
@@ -294,8 +299,7 @@ def test_prepare_waves_allow_coordinator_to_stop_before_next_wave(tmp_path: Path
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
@@ -326,8 +330,7 @@ def test_validation_worker_cap_serializes_gpu_validation(tmp_path: Path, monkeyp
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
@@ -365,8 +368,7 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=2,
@@ -414,8 +416,7 @@ def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, mon
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "batches",
         protocol=main_protocol,
         candidate_batch_size=2,
@@ -485,8 +486,7 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
 
     first = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "first",
         protocol=main_protocol,
         candidate_batch_size=2,
@@ -499,8 +499,7 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
     )
     second = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "second",
         protocol=main_protocol,
         candidate_batch_size=2,
@@ -514,8 +513,7 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
     relaxed_policy = ProbePolicy(samples=3, max_slowdown_factor=20.0, min_survivors=1)
     third = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "third",
         protocol=main_protocol,
         candidate_batch_size=2,
@@ -536,7 +534,7 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
     assert third.probe_policy_hash == relaxed_policy.policy_hash
     assert third.probe_policy_hash != second.probe_policy_hash
     assert len(third.planned_batches) == 1
-    assert third.planned_batches[0].candidates == [candidates[1]]
+    assert list(third.planned_batches[0].artifact_candidates) == [candidates[1]]
 
 
 def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch):
@@ -567,8 +565,7 @@ def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch
 
     result = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates,
+        requests=pair_requests(candidates, [shape]),
         output_root=tmp_path / "batches",
         protocol=main_protocol,
         candidate_batch_size=2,
@@ -599,8 +596,7 @@ def test_singleton_nonzero_build_salvages_runnable_artifact(tmp_path: Path, monk
 
     result = execute_schedule(
         db,
-        shapes=pilot_100_shapes()[:1],
-        candidates=sample_candidates(1),
+        requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
@@ -629,8 +625,7 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
 
     result = execute_schedule(
         db,
-        shapes=shapes,
-        candidates=candidates,
+        requests=pair_requests(candidates, shapes),
         output_root=tmp_path / "batches",
         protocol=protocol,
         candidate_batch_size=2,
@@ -667,6 +662,96 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
     assert rows == sorted((shape.id, candidate.hash, 3) for shape in shapes for candidate in candidates)
 
 
+def test_sparse_requests_never_validate_time_or_insert_unrequested_pairs(tmp_path: Path):
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    candidates = sample_candidates(2)
+    shapes = pilot_100_shapes()[:2]
+    requests = [PairRequest(candidates[0], shapes[0]), PairRequest(candidates[1], shapes[1])]
+
+    result = execute_schedule(
+        db,
+        requests=requests,
+        artifact_shapes_by_candidate={candidate.hash: shapes for candidate in candidates},
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
+        candidate_batch_size=2,
+        shape_batch_size=2,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+    )
+
+    assert len(result.executed_batches) == 1
+    executed = result.executed_batches[0]
+    assert executed.planned.requested_pairs == 2
+    assert len(executed.planned.artifact_candidates) == 2
+    assert len(executed.planned.artifact_shapes) == 2
+    assert {(entry.shape_id, entry.candidate_hash) for entry in read_manifest(executed.manifest_path)} == {
+        request.key for request in requests
+    }
+    assert executed.ingest is not None
+    assert executed.ingest.status_counts == {"ok": 4}
+    assert db.benchmark_status_summary() == {"ok": 4}
+    assert db.counts()["validations"] == 2
+    assert db.counts()["artifact_mappings"] == 2
+    assert {
+        (row.shape_id, row.candidate_hash)
+        for row in db.rank_benchmarks(
+            problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+            benchmark_protocol_hash=DEFAULT_PROFILE.benchmark_protocol_hash(
+                DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2)
+            ),
+        )
+    } == {request.key for request in requests}
+
+
+def test_mixed_validation_state_runs_only_uncached_exact_pair(tmp_path: Path):
+    fake_tensile = fake_build_tensile(tmp_path)
+    fake_runner = fake_structured_runner(tmp_path)
+    db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
+    db.init()
+    candidates = sample_candidates(2)
+    shape = pilot_100_shapes()[0]
+    db.register_candidates(candidates)
+    db.register_shapes([shape])
+    db.insert_validations(
+        [
+            ValidationInsert(
+                shape_id=shape.id,
+                candidate_hash=candidates[0].hash,
+                run_id="cached_validation",
+                status="passed",
+                problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+                validation_protocol_hash=DEFAULT_BENCHMARK_PROTOCOL.validation_protocol_hash(),
+                source_kind="replay",
+            )
+        ]
+    )
+
+    result = execute_schedule(
+        db,
+        requests=pair_requests(candidates, [shape]),
+        output_root=tmp_path / "batches",
+        protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
+        candidate_batch_size=2,
+        shape_batch_size=1,
+        tensilelite_bin=fake_tensile,
+        runner_bin=fake_runner,
+        keep_going=True,
+    )
+
+    assert len(result.executed_batches) == 1
+    validation_files = list(result.executed_batches[0].output_dir.glob("validate_*.results.jsonl"))
+    assert len(validation_files) == 1
+    validation_samples = read_structured_results(validation_files[0])
+    assert [(sample.shape_id, sample.candidate_hash) for sample in validation_samples] == [
+        (shape.id, candidates[1].hash)
+    ]
+    assert db.counts()["validations"] == 2
+
+
 def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path):
     fake_tensile = fake_build_tensile(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
@@ -676,8 +761,7 @@ def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path
 
     first = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=[candidate],
+        requests=pair_requests([candidate], [shape]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
@@ -688,11 +772,9 @@ def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path
     )
     second = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=[candidate],
+        requests=pair_requests([candidate], [shape], min_samples=2),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
-        min_samples=2,
         candidate_batch_size=1,
         shape_batch_size=1,
         tensilelite_bin=fake_tensile,
@@ -768,8 +850,7 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
 
     first = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=candidates[:2],
+        requests=pair_requests(candidates[:2], [shape]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=2,
@@ -781,8 +862,7 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
     )
     second = execute_schedule(
         db,
-        shapes=[shape],
-        candidates=[candidates[0], candidates[2]],
+        requests=pair_requests([candidates[0], candidates[2]], [shape]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=2,
@@ -794,9 +874,13 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
         compile_cache_root=compile_cache_root,
     )
 
-    assert all(len(batch.planned.candidates) == 1 for batch in [*first.executed_batches, *second.executed_batches])
-    first_dirs = {batch.planned.candidates[0].hash: batch.build_output_dir for batch in first.executed_batches}
-    second_dirs = {batch.planned.candidates[0].hash: batch.build_output_dir for batch in second.executed_batches}
+    assert all(
+        len(batch.planned.artifact_candidates) == 1 for batch in [*first.executed_batches, *second.executed_batches]
+    )
+    first_dirs = {batch.planned.artifact_candidates[0].hash: batch.build_output_dir for batch in first.executed_batches}
+    second_dirs = {
+        batch.planned.artifact_candidates[0].hash: batch.build_output_dir for batch in second.executed_batches
+    }
     build_dir = first_dirs[candidates[0].hash]
     assert build_dir == second_dirs[candidates[0].hash]
     assert build_dir is not None
@@ -847,8 +931,7 @@ def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
 
     result = execute_schedule(
         db,
-        shapes=pilot_100_shapes()[:1],
-        candidates=sample_candidates(1),
+        requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         tensilelite_bin=fake_tensile,
         runner_bin=runner,
@@ -903,8 +986,7 @@ def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path
 
     result = execute_schedule(
         db,
-        shapes=pilot_100_shapes()[:1],
-        candidates=sample_candidates(1),
+        requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         tensilelite_bin=fake_tensile,
@@ -961,8 +1043,7 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
 
     result = execute_schedule(
         db,
-        shapes=pilot_100_shapes()[:1],
-        candidates=sample_candidates(1),
+        requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         tensilelite_bin=fake_tensile,
@@ -1021,8 +1102,7 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
 
     result = execute_schedule(
         db,
-        shapes=pilot_100_shapes()[:1],
-        candidates=sample_candidates(1),
+        requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         tensilelite_bin=fake_tensile,
@@ -1081,8 +1161,7 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
 
     result = execute_schedule(
         db,
-        shapes=pilot_100_shapes()[:1],
-        candidates=sample_candidates(1),
+        requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         tensilelite_bin=fake_tensile,
@@ -1136,8 +1215,7 @@ def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
 
     result = execute_schedule(
         db,
-        shapes=pilot_100_shapes()[:1],
-        candidates=sample_candidates(1),
+        requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         tensilelite_bin=fake_tensile,
@@ -1203,8 +1281,7 @@ def test_structured_maps_renumbered_normalized_final_yaml_solution(tmp_path: Pat
 
     result = execute_schedule(
         db,
-        shapes=pilot_100_shapes()[:1],
-        candidates=candidates,
+        requests=pair_requests(candidates, pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=2,
@@ -1270,8 +1347,7 @@ def test_structured_records_rejected_candidate_from_final_yaml(tmp_path: Path):
 
     result = execute_schedule(
         db,
-        shapes=pilot_100_shapes()[:1],
-        candidates=candidates,
+        requests=pair_requests(candidates, pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         candidate_batch_size=2,

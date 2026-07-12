@@ -35,7 +35,7 @@ python3 -m evotensile.cli schedule-batches \
 
 A provider can return an iterable of `Candidate` or `ProposalOutput`. `ProposalOutput` additionally selects a subset of its candidate pool and records provider metadata.
 
-The common finalizer—not the provider—owns complete parameter validation, global and shape-scope rules, deduplication, parent existence, selected-subset validation, generated-versus-preserved classification, lineage scope, persistence, and scheduling.
+The common finalizer - not the provider - owns complete parameter validation, global and shape-scope rules, deduplication, parent existence, selected-subset validation, generated-versus-preserved classification, lineage scope, persistence, and scheduling.
 
 ## Shape-Aware Random Provider
 

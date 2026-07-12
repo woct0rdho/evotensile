@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from evotensile.adaptive_retime import load_timing_stats
+from evotensile.campaign.controller import CampaignControllerState, estimate_admission_duration_s
 from evotensile.campaign.protocols import CAMPAIGN_HOT_PROTOCOL, CAMPAIGN_SCREENING_PROTOCOL, protocol_launches
 from evotensile.candidate import Candidate, Shape
 from evotensile.database import BenchmarkEventInsert, EvoTensileDB, ValidationInsert
@@ -93,6 +94,7 @@ class ExactOracleReplayState:
         self._queried_pairs: set[tuple[str, str]] = set()
         self._unknown_pairs: set[tuple[str, str]] = set()
         self._disclosed_pairs: set[tuple[str, str]] = set()
+        self._screening_samples: dict[tuple[str, str], int] = {}
         self._query_order: list[tuple[str, str]] = []
         self._prepared_candidates: set[str] = set()
         self._preparation_time_s = 0.0
@@ -116,6 +118,12 @@ class ExactOracleReplayState:
     @property
     def candidate_catalog(self) -> dict[str, Candidate]:
         return dict(self._candidates)
+
+    def has_oracle_pair(self, shape: Shape, candidate_hash: str) -> bool:
+        return self._pair_key(shape, candidate_hash) in self._oracle
+
+    def oracle_record(self, shape: Shape, candidate_hash: str) -> OracleRecord | None:
+        return self._oracle.get(self._pair_key(shape, candidate_hash))
 
     @property
     def queried_pairs(self) -> frozenset[tuple[str, str]]:
@@ -205,8 +213,11 @@ class ExactOracleReplayState:
             self._query_order.append(key)
             if key not in self._oracle:
                 self._unknown_pairs.add(key)
-        if disclose and key not in self._disclosed_pairs:
-            self.disclose_pair(shape, candidate.hash, samples=samples)
+        if disclose:
+            if key not in self._disclosed_pairs:
+                self.disclose_pair(shape, candidate.hash, samples=samples)
+            elif samples is not None:
+                self.ensure_screening_samples(shape, candidate.hash, target_samples=samples)
         return ReplayPairQuery(
             shape_id=shape.id,
             candidate_hash=candidate.hash,
@@ -226,6 +237,7 @@ class ExactOracleReplayState:
         if record is None:
             return False
         if record.screening_gflops is not None and record.screening_gflops > 0.0:
+            inserted_samples = self.screening_protocol.num_benchmarks if samples is None else samples
             _insert_screening_evidence(
                 self.db,
                 shape=shape,
@@ -233,8 +245,9 @@ class ExactOracleReplayState:
                 profile=self.profile,
                 screening_protocol=self.screening_protocol,
                 source_ref=self.source_ref,
-                samples=samples,
+                samples=inserted_samples,
             )
+            self._screening_samples[key] = inserted_samples
         elif record.status in {"validation_fail", "validation_failed", "failed_validation"}:
             self.db.insert_validations(
                 [
@@ -285,7 +298,20 @@ class ExactOracleReplayState:
             source_ref=self.source_ref,
             samples=samples,
         )
+        self._screening_samples[key] = self._screening_samples.get(key, 0) + samples
         self._disclosed_pairs.add(key)
+
+    def screening_samples(self, shape: Shape, candidate_hash: str) -> int:
+        return self._screening_samples.get(self._pair_key(shape, candidate_hash), 0)
+
+    def ensure_screening_samples(self, shape: Shape, candidate_hash: str, *, target_samples: int) -> int:
+        if target_samples <= 0:
+            raise ValueError("replay screening sample target must be positive")
+        current = self.screening_samples(shape, candidate_hash)
+        added = max(0, target_samples - current)
+        if added > 0:
+            self.add_screening_samples(shape, candidate_hash, samples=added)
+        return added
 
     def record_pair_time(self, shape: Shape, candidate_hash: str, duration_s: float) -> None:
         if not math.isfinite(duration_s) or duration_s < 0.0:
@@ -422,6 +448,7 @@ class ReplayResult:
     reached_target: bool = False
     stop_reason: str | None = None
     trace: list[dict[str, object]] = field(default_factory=list)
+    controller_summary: Mapping[str, object] = field(default_factory=dict)
 
     def summary(self) -> dict[str, object]:
         return {
@@ -431,6 +458,7 @@ class ReplayResult:
             "screened": len(self.screened),
             "screening_survivors": len(self.screening_survivors),
             "simulated_time_s": self.simulated_time_s,
+            "budget_overrun_s": self.controller_summary.get("budget_overrun_s", 0.0),
             "best_screening_hash": self.best_screening_hash,
             "best_screening_gflops": self.best_screening_gflops,
             "best_hot_hash": self.best_hot_hash,
@@ -438,6 +466,44 @@ class ReplayResult:
             "reached_target": self.reached_target,
             "stop_reason": self.stop_reason,
             "trace": self.trace,
+            "controller": self.controller_summary,
+        }
+
+
+@dataclass(frozen=True)
+class IndependentReplayResult:
+    seed: int
+    shape_results: dict[str, ReplayResult]
+
+    def summary(self) -> dict[str, object]:
+        per_shape_log_regret: dict[str, float | None] = {}
+        for shape_id, result in self.shape_results.items():
+            controller_metrics = result.controller_summary.get("grid_metrics")
+            regret = None
+            if isinstance(controller_metrics, Mapping):
+                values = controller_metrics.get("per_shape_log_regret")
+                if isinstance(values, Mapping):
+                    value = values.get(shape_id)
+                    regret = float(value) if isinstance(value, (int, float)) else None
+            per_shape_log_regret[shape_id] = regret
+        resolved = [value for value in per_shape_log_regret.values() if value is not None]
+        prepared_candidates = [
+            value
+            for result in self.shape_results.values()
+            if isinstance((value := result.controller_summary.get("prepared_candidates")), int)
+        ]
+        return {
+            "seed": self.seed,
+            "shapes": len(self.shape_results),
+            "shape_results": {shape_id: result.summary() for shape_id, result in self.shape_results.items()},
+            "total_simulated_time_s": sum(result.simulated_time_s for result in self.shape_results.values()),
+            "total_queries": sum(len(result.queried) for result in self.shape_results.values()),
+            "total_prepared_candidates": sum(prepared_candidates),
+            "resolved_shapes": len(resolved),
+            "unresolved_shapes": len(self.shape_results) - len(resolved),
+            "mean_log_regret": statistics.fmean(resolved) if resolved else None,
+            "worst_log_regret": max(resolved) if resolved else None,
+            "per_shape_log_regret": per_shape_log_regret,
         }
 
 
@@ -452,7 +518,7 @@ def load_db_oracle_matrix(
         raise ValueError("oracle shapes must have unique shape IDs")
     if not shapes_by_id:
         return {}
-    con = sqlite3.connect(path)
+    con = sqlite3.connect(f"file:{Path(path).resolve()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     shape_placeholders = ",".join("?" for _ in shapes_by_id)
     protocol_clause = "AND bp.benchmark_protocol_hash = ?" if benchmark_protocol_hash is not None else ""
@@ -740,15 +806,20 @@ def simulate_candidate_stream(
             screening_protocol=cost.screening_protocol,
             source_ref=replay_source_ref,
         )
+        controller = CampaignControllerState(
+            shape_ids=(shape.id,),
+            time_budget_s=cost.time_budget_s,
+            session_started_at=0.0,
+        )
+        controller.set_reserve("confirmation", max(0.0, cost.hot_reserve_s))
+        round_cost_observations: list[tuple[float, int]] = []
         pending: dict[str, Candidate] = {}
         stream_index = 0
         queried: set[str] = set()
         round_index = 0
         incumbent_gflops: float | None = None
         best_history: list[float] = []
-        search_time_limit = max(0.0, cost.time_budget_s - max(0.0, cost.hot_reserve_s))
-        budget_exhausted = False
-        while result.simulated_time_s < search_time_limit and (stream_index < len(stream) or pending):
+        while stream_index < len(stream) or pending:
             while stream_index < len(stream) and len(pending) < pool_window:
                 candidate = stream[stream_index]
                 stream_index += 1
@@ -774,14 +845,31 @@ def simulate_candidate_stream(
                 workers=max(1, cost.prepare_workers),
                 seconds_per_candidate=cost.prepare_seconds_per_candidate,
             )
-            if result.simulated_time_s + preparation_cost > search_time_limit:
-                result.stop_reason = "insufficient_prepare_budget"
+            predicted_round_s = estimate_admission_duration_s(
+                round_cost_observations,
+                expected_units=len(selected),
+                minimum_s=preparation_cost,
+                fixed_overhead_s=0.0,
+                default_s=preparation_cost,
+            )
+            admission = controller.decide_admission(
+                predicted_duration_s=predicted_round_s,
+                reserve_s=max(0.0, cost.hot_reserve_s),
+                now=state.simulated_time_s,
+            )
+            if not admission.admitted:
+                result.stop_reason = admission.reason
                 break
+            round_started_s = state.simulated_time_s
+            prepared_shape_ids = [shape.id] if selected else []
             state.prepare_candidates(
                 selected,
                 workers=max(1, cost.prepare_workers),
                 seconds_per_candidate=cost.prepare_seconds_per_candidate,
             )
+            for candidate in selected:
+                controller.record_prepared(candidate.hash, prepared_shape_ids)
+            controller.record_phase_time("preparation", state.simulated_time_s - round_started_s)
             result.simulated_time_s = state.simulated_time_s
             known_ok = []
             for candidate in selected:
@@ -789,6 +877,7 @@ def simulate_candidate_stream(
                 queried.add(candidate.hash)
                 result.queried.append(candidate.hash)
                 query = state.query_pair(shape, candidate, disclose=False)
+                controller.record_query(shape.id, candidate.hash, known=query.known)
                 record = query.record
                 if record is None:
                     result.unknown.append(candidate.hash)
@@ -799,12 +888,13 @@ def simulate_candidate_stream(
                         max(0, cost.probe_launches),
                     )
                     initial_probe_cost = initial_probe_launches * _launch_seconds(shape, record.screening_gflops)
-                    if result.simulated_time_s + initial_probe_cost > search_time_limit:
-                        budget_exhausted = True
-                        break
                     state.record_pair_time(shape, record.candidate.hash, initial_probe_cost)
+                    controller.record_phase_time("probe", initial_probe_cost)
                     result.simulated_time_s = state.simulated_time_s
                     known_ok.append(record)
+                else:
+                    state.disclose_pair(shape, candidate.hash)
+                    controller.disclose(shape.id, candidate.hash)
             if known_ok:
                 reference = max(
                     [record.screening_gflops or 0.0 for record in known_ok]
@@ -832,23 +922,24 @@ def simulate_candidate_stream(
                         shape,
                         record.screening_gflops or 0.0,
                     )
-                    if result.simulated_time_s + additional_probe_cost > search_time_limit:
-                        budget_exhausted = True
-                        break
                     state.record_pair_time(shape, record.candidate.hash, additional_probe_cost)
+                    controller.record_phase_time("probe", additional_probe_cost)
                     result.simulated_time_s = state.simulated_time_s
                     survivors.append(record)
                 for record in survivors:
                     if record.screening_gflops is None:
                         continue
                     screening_cost = cost.screening_launches * _launch_seconds(shape, record.screening_gflops)
-                    if result.simulated_time_s + screening_cost > search_time_limit:
-                        budget_exhausted = True
-                        break
                     state.record_pair_time(shape, record.candidate.hash, screening_cost)
+                    controller.record_phase_time("screening", screening_cost)
                     result.simulated_time_s = state.simulated_time_s
                     result.screening_survivors.append(record.candidate.hash)
                     state.disclose_pair(shape, record.candidate.hash)
+                    controller.disclose(
+                        shape.id,
+                        record.candidate.hash,
+                        performance=record.screening_gflops,
+                    )
                     if incumbent_gflops is None or record.screening_gflops > incumbent_gflops:
                         incumbent_gflops = record.screening_gflops
                         result.best_screening_hash = record.candidate.hash
@@ -880,9 +971,8 @@ def simulate_candidate_stream(
                         * cost.screening_protocol.enqueues_per_sync
                         * cost.screening_protocol.syncs_per_benchmark
                     ) * launch_seconds
-                    if result.simulated_time_s + topup_cost > search_time_limit:
-                        continue
                     state.record_pair_time(shape, record.candidate.hash, topup_cost)
+                    controller.record_phase_time("stabilization", topup_cost)
                     result.simulated_time_s = state.simulated_time_s
                     state.add_screening_samples(
                         shape,
@@ -912,10 +1002,8 @@ def simulate_candidate_stream(
                     "population_diagnostics": diagnostics.to_dict(),
                 }
             )
+            round_cost_observations.append((state.simulated_time_s - round_started_s, len(selected)))
             round_index += 1
-            if budget_exhausted:
-                result.stop_reason = "timing_budget_exhausted"
-                break
             if early_stop_on_convergence and convergence_detected(best_history, diagnostics):
                 result.stop_reason = "converged"
                 break
@@ -938,9 +1026,14 @@ def simulate_candidate_stream(
             if record is None or record.hot_gflops is None or record.hot_gflops <= 0.0:
                 continue
             hot_cost = cost.hot_launches * _launch_seconds(shape, record.hot_gflops)
-            if result.simulated_time_s + hot_cost > cost.time_budget_s:
+            admission = controller.decide_admission(
+                predicted_duration_s=hot_cost,
+                now=state.simulated_time_s,
+            )
+            if not admission.admitted:
                 break
             state.record_pair_time(shape, candidate_hash, hot_cost)
+            controller.record_phase_time("confirmation", hot_cost)
             result.simulated_time_s = state.simulated_time_s
             if result.best_hot_gflops is None or record.hot_gflops > result.best_hot_gflops:
                 result.best_hot_hash = candidate_hash
@@ -950,4 +1043,58 @@ def simulate_candidate_stream(
             and result.best_hot_gflops is not None
             and result.best_hot_gflops >= target_hot_gflops
         )
+        oracle_best = max(
+            (record.screening_gflops or 0.0 for record in oracle.values()),
+            default=0.0,
+        )
+        result.controller_summary = controller.summary(
+            oracle_best_by_shape={shape.id: oracle_best} if oracle_best > 0.0 else None,
+            now=state.simulated_time_s,
+        )
     return result
+
+
+def simulate_independent_shape_baseline(
+    stream: Sequence[Candidate],
+    *,
+    oracle: Mapping[tuple[str, str], OracleRecord],
+    shapes: Sequence[Shape],
+    profile: TargetProfile,
+    cost: ReplayCostModel,
+    seed: int,
+    surrogate_min_evidence: int,
+    batch_size: int = 32,
+    pool_window: int = 128,
+    hot_finalists: int = 8,
+    covering_cold_start: bool = False,
+    island_count: int = 1,
+    island_isolation_rounds: int = 0,
+    leader_stabilization: bool = False,
+    early_stop_on_convergence: bool = False,
+) -> IndependentReplayResult:
+    shape_ids = [shape.id for shape in shapes]
+    if not shape_ids or len(set(shape_ids)) != len(shape_ids):
+        raise ValueError("independent replay shapes must be non-empty and unique")
+    results = {}
+    for shape in shapes:
+        shape_oracle = {
+            candidate_hash: record for (shape_id, candidate_hash), record in oracle.items() if shape_id == shape.id
+        }
+        results[shape.id] = simulate_candidate_stream(
+            stream,
+            oracle=shape_oracle,
+            shape=shape,
+            profile=profile,
+            cost=cost,
+            seed=seed,
+            surrogate_min_evidence=surrogate_min_evidence,
+            batch_size=batch_size,
+            pool_window=pool_window,
+            hot_finalists=hot_finalists,
+            covering_cold_start=covering_cold_start,
+            island_count=island_count,
+            island_isolation_rounds=island_isolation_rounds,
+            leader_stabilization=leader_stabilization,
+            early_stop_on_convergence=early_stop_on_convergence,
+        )
+    return IndependentReplayResult(seed=seed, shape_results=results)

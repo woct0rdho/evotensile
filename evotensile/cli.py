@@ -17,17 +17,15 @@ from .proposal import (
 from .protocol import BenchmarkProtocol, apply_benchmark_protocol_overrides
 from .runner import DEFAULT_TENSILELITE_BIN
 from .scheduler import DEFAULT_COMPILE_THREADS, execute_schedule
-from .scheduling.models import ScheduleResult
+from .scheduling.models import EvidenceStage, PairRequest, ScheduleResult
 from .search.acquisition import propose_candidates
 from .search.coverage import candidate_coverage
 from .search.evidence import load_proposal_evidence_snapshot
 from .search.family import family_descriptor_counts, load_family_archive
 from .search.grid_evidence import GRID_OBJECTIVES, GridObjective
 from .search.learned_linkage import learn_linkage_models_from_snapshot
-from .search.outlier_repair import detect_underperforming_shapes, repair_seed_candidates
 from .search_space import DOMAINS, MATRIX_INSTRUCTIONS, macro_tile, random_candidates
 from .shapes import parse_shape
-from .utils import dedupe_candidates
 
 
 def _profile(args: argparse.Namespace) -> TargetProfile:
@@ -355,18 +353,15 @@ def _execute_schedule_from_args(
     args: argparse.Namespace,
     context: ScheduleCliContext,
     *,
-    shapes: list[Shape],
-    candidates: list[Candidate],
+    requests: list[PairRequest],
     dry_run: bool | None = None,
 ) -> ScheduleResult:
     return execute_schedule(
         context.db,
-        shapes=shapes,
-        candidates=candidates,
+        requests=requests,
         output_root=args.output_dir,
         target_profile=context.profile,
         protocol=context.protocol,
-        min_samples=args.min_samples,
         candidate_batch_size=args.candidate_batch_size,
         shape_batch_size=args.shape_batch_size,
         ignore_cache=args.ignore_cache,
@@ -452,7 +447,6 @@ def _family_metadata(
         limit=16,
     )
     return {
-        "family_descriptor_version": archive[0].descriptor.version if archive else None,
         "candidate_family_count": len(descriptor_counts),
         "candidate_family_counts": dict(sorted(descriptor_counts.items())),
         "archive_family_count": len(archive),
@@ -528,15 +522,13 @@ def _schedule_metadata_common(
         "probe_preprepare_screened_pairs": result.probe_preprepare_screened_pairs,
         **_learned_linkage_metadata(args, context, shapes),
         "planned_batches": len(result.planned_batches),
-        "planned_missing_pairs": result.missing_pairs,
-        "planned_nominal_pairs": result.nominal_pairs,
-        "planned_missing_samples": sum(batch.missing_samples for batch in result.planned_batches),
-        "planned_nominal_samples": sum(batch.nominal_samples for batch in result.planned_batches),
+        "planned_requested_pairs": result.requested_pairs,
+        "planned_requested_samples": result.requested_samples,
         **_family_metadata(context, candidates=candidates, shapes=shapes),
     }
 
 
-def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False) -> None:
+def _add_proposal_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--proposal-script",
         type=Path,
@@ -555,8 +547,7 @@ def _add_proposal_args(parser: argparse.ArgumentParser, *, repair: bool = False)
         default=None,
         help="Label the declared proposal shape scope; inferred from shape count when omitted",
     )
-    if not repair:
-        parser.add_argument("--proposal-shape-id", default=None, help="Limit cached elite selection to one shape id")
+    parser.add_argument("--proposal-shape-id", default=None, help="Limit cached elite selection to one shape id")
     parser.add_argument(
         "--transfer-shapes",
         type=int,
@@ -727,11 +718,11 @@ def _add_adaptive_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--adaptive-min-effect-pct", type=float, default=adaptive.min_effect_pct)
 
 
-def _add_schedule_args(parser: argparse.ArgumentParser, *, repair: bool = False) -> None:
+def _add_schedule_args(parser: argparse.ArgumentParser) -> None:
     _add_candidate_shape_args(parser)
     _add_profile_arg(parser)
     _add_protocol_args(parser)
-    _add_proposal_args(parser, repair=repair)
+    _add_proposal_args(parser)
     _add_execution_args(parser)
     _add_adaptive_args(parser)
 
@@ -931,7 +922,17 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
         proposal_shape_id=args.proposal_shape_id,
     )
     candidates = list(proposal.selected)
-    result = _execute_schedule_from_args(args, context, shapes=context.shapes, candidates=candidates)
+    requests = [
+        PairRequest(
+            candidate=candidate,
+            shape=shape,
+            evidence_stage=EvidenceStage.SCREENING,
+            min_samples=args.min_samples,
+        )
+        for shape in context.shapes
+        for candidate in candidates
+    ]
+    result = _execute_schedule_from_args(args, context, requests=requests)
     print(f"db: {args.db}")
     print(f"output_dir: {args.output_dir}")
     print(f"profile: {context.profile.name}")
@@ -945,17 +946,14 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
     if result.runner_bin:
         print(f"runner_bin: {result.runner_bin}")
     print(f"planned batches: {len(result.planned_batches)}")
-    print(f"planned missing pairs: {result.missing_pairs}")
-    print(f"planned nominal pairs: {result.nominal_pairs}")
-    print(f"planned missing samples: {sum(batch.missing_samples for batch in result.planned_batches)}")
-    print(f"planned nominal samples: {sum(batch.nominal_samples for batch in result.planned_batches)}")
+    print(f"planned requested pairs: {result.requested_pairs}")
+    print(f"planned requested samples: {result.requested_samples}")
     for batch in result.planned_batches:
         print(
-            f"batch {batch.batch_index:04d}: candidates={len(batch.candidates)} "
-            f"shapes={len(batch.shapes)} missing_pairs={batch.missing_pairs} "
-            f"nominal_pairs={batch.nominal_pairs} samples_per_pair={batch.samples_per_pair} "
-            f"requires_validation={batch.requires_validation} "
-            f"missing_samples={batch.missing_samples} extra_pairs={batch.extra_pairs}"
+            f"batch {batch.batch_index:04d}: artifact_candidates={len(batch.artifact_candidates)} "
+            f"artifact_shapes={len(batch.artifact_shapes)} requested_pairs={batch.requested_pairs} "
+            f"requested_samples={batch.requested_samples} evidence_stage={batch.evidence_stage.value} "
+            f"requires_validation={batch.requires_validation}"
         )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -973,15 +971,12 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
             "batches": [
                 {
                     "batch_index": batch.batch_index,
-                    "candidates": len(batch.candidates),
-                    "shapes": len(batch.shapes),
-                    "missing_pairs": batch.missing_pairs,
-                    "nominal_pairs": batch.nominal_pairs,
-                    "samples_per_pair": batch.samples_per_pair,
+                    "artifact_candidates": len(batch.artifact_candidates),
+                    "artifact_shapes": len(batch.artifact_shapes),
+                    "requested_pairs": batch.requested_pairs,
+                    "requested_samples": batch.requested_samples,
+                    "evidence_stage": batch.evidence_stage.value,
                     "requires_validation": batch.requires_validation,
-                    "missing_samples": batch.missing_samples,
-                    "nominal_samples": batch.nominal_samples,
-                    "extra_pairs": batch.extra_pairs,
                 }
                 for batch in result.planned_batches
             ],
@@ -1010,114 +1005,6 @@ def cmd_schedule_batches(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_repair_outliers(args: argparse.Namespace) -> int:
-    context = _schedule_context(args)
-    eligible_shapes = context.shapes
-    outliers = detect_underperforming_shapes(
-        context.db,
-        shapes=eligible_shapes,
-        problem_type_hash=context.problem_hash,
-        benchmark_protocol_hash=context.protocol_hash,
-        min_samples=args.outlier_min_samples,
-        neighbor_count=args.neighbor_count,
-        envelope_quantile=args.envelope_quantile,
-        threshold_pct=args.outlier_threshold_pct,
-        max_shapes=args.max_outliers,
-    )
-    repair_shapes = [outlier.shape for outlier in outliers]
-    repair_seeds = repair_seed_candidates(
-        context.db,
-        outliers=outliers,
-        problem_type_hash=context.problem_hash,
-        benchmark_protocol_hash=context.protocol_hash,
-        min_samples=args.outlier_min_samples,
-        neighbor_per_shape=args.neighbor_per_shape,
-    )
-    proposal = _propose_candidates_for_shapes(
-        context.db,
-        args,
-        problem_hash=context.problem_hash,
-        protocol_hash=context.protocol_hash,
-        shapes=repair_shapes,
-    )
-    candidates = dedupe_candidates([*repair_seeds, *proposal.selected])
-    if args.max_candidates is not None:
-        candidates = candidates[: args.max_candidates]
-
-    result = _execute_schedule_from_args(
-        args,
-        context,
-        shapes=repair_shapes,
-        candidates=candidates,
-        dry_run=args.dry_run or not repair_shapes or not candidates,
-    )
-
-    print(f"db: {args.db}")
-    print(f"output_dir: {args.output_dir}")
-    print(f"profile: {context.profile.name}")
-    print(f"problem_type_hash: {context.problem_hash}")
-    print(f"benchmark_protocol_hash: {context.protocol_hash}")
-    print(f"eligible shapes: {len(eligible_shapes)}")
-    print(f"outliers: {len(outliers)}")
-    print(f"repair seed candidates: {len(repair_seeds)}")
-    print(f"total candidates: {len(candidates)}")
-    print(f"planned batches: {len(result.planned_batches)}")
-    print(f"planned missing pairs: {result.missing_pairs}")
-    print(f"planned missing samples: {sum(batch.missing_samples for batch in result.planned_batches)}")
-    for outlier in outliers:
-        print(
-            f"outlier {outlier.shape.id}: actual={outlier.median_gflops:.3f}gflops "
-            f"neighbor_prediction={outlier.predicted_neighbor_gflops:.3f}gflops "
-            f"gap={outlier.residual_pct:.2f}% winner={outlier.candidate_hash}"
-        )
-
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    executed_batches, status_counts = _executed_batch_summaries(result)
-    metadata_path = output_dir / "repair_metadata.json"
-    metadata = _schedule_metadata_common(
-        args,
-        context,
-        result=result,
-        proposal=proposal,
-        candidates=candidates,
-        shapes=repair_shapes,
-    )
-    metadata.update(
-        {
-            "eligible_shapes": len(eligible_shapes),
-            "outlier_min_samples": args.outlier_min_samples,
-            "neighbor_count": args.neighbor_count,
-            "neighbor_per_shape": args.neighbor_per_shape,
-            "envelope_quantile": args.envelope_quantile,
-            "outlier_threshold_pct": args.outlier_threshold_pct,
-            "max_outliers": args.max_outliers,
-            "outliers": [
-                {
-                    "shape_id": outlier.shape.id,
-                    "candidate_hash": outlier.candidate_hash,
-                    "samples": outlier.samples,
-                    "median_gflops": outlier.median_gflops,
-                    "predicted_neighbor_gflops": outlier.predicted_neighbor_gflops,
-                    "residual_pct": outlier.residual_pct,
-                    "neighbor_shape_ids": list(outlier.neighbor_shape_ids),
-                    "neighbor_candidate_hashes": list(outlier.neighbor_candidate_hashes),
-                }
-                for outlier in outliers
-            ],
-            "repair_seed_candidates": len(repair_seeds),
-            "candidate_hashes": [candidate.hash for candidate in candidates],
-            "executed_batches": executed_batches,
-            "status_counts": status_counts,
-            "metadata_path": str(metadata_path),
-        }
-    )
-    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"metadata: {metadata_path}")
-    print(f"executed batches: {len(result.executed_batches)}")
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="evotensile")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1141,19 +1028,6 @@ def build_parser() -> argparse.ArgumentParser:
     cmd.add_argument("--output-dir", required=True)
     _add_schedule_args(cmd)
     cmd.set_defaults(func=cmd_schedule_batches)
-
-    cmd = sub.add_parser("repair-outliers", help="Rerun locally underperforming shapes with neighbor-seeded configs")
-    cmd.add_argument("--db", required=True)
-    cmd.add_argument("--output-dir", required=True)
-    _add_schedule_args(cmd, repair=True)
-    cmd.add_argument("--outlier-min-samples", type=int, default=10)
-    cmd.add_argument("--neighbor-count", type=int, default=8)
-    cmd.add_argument("--neighbor-per-shape", type=int, default=4)
-    cmd.add_argument("--envelope-quantile", type=float, default=0.75)
-    cmd.add_argument("--outlier-threshold-pct", type=float, default=10.0)
-    cmd.add_argument("--max-outliers", type=int, default=None)
-    cmd.add_argument("--max-candidates", type=int, default=None)
-    cmd.set_defaults(func=cmd_repair_outliers)
 
     cmd = sub.add_parser("summarize-cache", help="Summarize benchmark evidence statuses")
     cmd.add_argument("--db", required=True)

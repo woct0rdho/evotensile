@@ -37,7 +37,7 @@ ForkParameters:
         DepthU: 32
 ```
 
-This keeps TensileLite from taking a Cartesian product over independent multi-valued fork parameters. The manifest records the intended `(shape_id, candidate_hash, candidate_index, problem_index, solution_index)` mapping for every rectangular batch.
+This keeps TensileLite from taking a Cartesian product over independent multi-valued fork parameters. A scheduler build may include an explicit candidate-centric artifact-shape scope, while its manifest records `(shape_id, candidate_hash, candidate_index, problem_index, solution_index)` only for exact requested evaluation pairs. See `docs/exact_pair_scheduling.md`.
 
 ## Domain Construction
 

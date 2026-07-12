@@ -127,8 +127,8 @@ def test_schedule_cli_metadata_records_operational_modes(tmp_path: Path):
         "0",
         "--no-adaptive-donor-selection",
     )
-    assert production_policy_metadata["proposal_provider"]["identity"] == "builtin:family-qd:gfx1151-grid-v1"
-    assert production_policy_metadata["proposal_metadata"]["policy"]["version"] == "gfx1151-grid-v1"
+    assert production_policy_metadata["proposal_provider"]["identity"] == "builtin:family-qd"
+    assert "version" not in production_policy_metadata["proposal_metadata"]["policy"]
     assert production_policy_metadata["surrogate_pool_multiplier"] == 8
     assert production_policy_metadata["adaptive_operators"] is True
     assert production_policy_metadata["adaptive_group_credit"] is True
@@ -210,7 +210,7 @@ def test_schedule_cli_resolves_selected_profile_defaults(tmp_path: Path):
 
     metadata = json.loads((output_dir / "schedule_metadata.json").read_text(encoding="utf-8"))
     assert metadata["profile"] == profile.name
-    assert metadata["proposal_provider"]["identity"] == "builtin:family-qd:gfx1151-grid-v1"
+    assert metadata["proposal_provider"]["identity"] == "builtin:family-qd"
     assert metadata["candidates"] == 3
     assert metadata["shape_batch_size"] == profile.default_shape_batch_size
     assert metadata["prepare_workers"] == profile.default_prepare_workers

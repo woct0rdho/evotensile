@@ -4,7 +4,6 @@ import random
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
 
 from evotensile.candidate import Candidate, Shape
 from evotensile.search.encoding import PARAM_NAMES, candidate_to_genome, hamming_distance
@@ -20,7 +19,7 @@ DEFAULT_SURROGATE_MIN_EVIDENCE = 24
 class TrainingObservation:
     candidate_hash: str
     shape_id: str
-    features: Mapping[str, Any]
+    features: Mapping[str, float | str]
     log_time: float
 
 
@@ -59,26 +58,28 @@ class GridCandidatePrediction:
 
 
 class ExtraTreesSurrogate:
-    def __init__(self, *, seed: int = 0, jobs: int) -> None:
+    def __init__(self, *, seed: int = 0, jobs: int, n_estimators: int = 192) -> None:
         try:
             from sklearn.ensemble import ExtraTreesRegressor
             from sklearn.feature_extraction import DictVectorizer
         except ImportError as exc:  # pragma: no cover - exercised only in minimal installations
             raise RuntimeError("surrogate search requires scikit-learn") from exc
+        if n_estimators <= 0:
+            raise ValueError("surrogate estimator count must be positive")
         self._vectorizer = DictVectorizer(sparse=False)
         self._model = ExtraTreesRegressor(
-            n_estimators=192,
+            n_estimators=n_estimators,
             min_samples_leaf=2,
             max_features=0.7,
             random_state=seed,
             n_jobs=jobs,
         )
 
-    def fit(self, rows: Sequence[Mapping[str, Any]], targets: Sequence[float]) -> None:
+    def fit(self, rows: Sequence[Mapping[str, float | str]], targets: Sequence[float]) -> None:
         matrix = self._vectorizer.fit_transform(rows)
         self._model.fit(matrix, targets)
 
-    def predict(self, rows: Sequence[Mapping[str, Any]]) -> tuple[list[float], list[float]]:
+    def predict(self, rows: Sequence[Mapping[str, float | str]]) -> tuple[list[float], list[float]]:
         matrix = self._vectorizer.transform(rows)
         tree_predictions = [estimator.predict(matrix) for estimator in self._model.estimators_]
         means = []

@@ -24,6 +24,7 @@ A target profile defines:
 - exact input shapes, usually represented as `shape_id = m{M}_n{N}_b{batch}_k{K}`.
 - a typed benchmark protocol used consistently for YAML generation, runner JSONL, and cache hashing.
 - a candidate search space made of complete TensileLite solution dictionaries, not independent Cartesian products.
+- exact candidate-shape scheduler requests with separate candidate-centric artifact scopes, so shared builds never imply extra validation or timing work.
 
 Each target profile derives `problem_type_hash` and `benchmark_protocol_hash`. Commands use the registry's default profile when `--profile` is omitted.
 
@@ -82,11 +83,11 @@ python3 -m evotensile.cli schedule-batches \
   --output-dir out/search
 ```
 
-The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each SQLite DB file is one evidence namespace for a target hardware/environment/campaign. Use separate DB paths when comparing incompatible campaigns. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout. Profiles provide compile and runner timeout defaults. Pass `0` to a timeout flag to disable it or `--stop-on-error` to fail fast.
+The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each SQLite DB file is one evidence namespace for a target hardware/environment/campaign. Use separate DB paths when comparing incompatible campaigns. Compatible benchmark overlays can be consolidated into a new read-only replay snapshot with `scripts/merge_compatible_databases.py`. Source DBs remain unchanged and the merge records a source manifest. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout. Profiles provide compile and runner timeout defaults. Pass `0` to a timeout flag to disable it or `--stop-on-error` to fail fast.
 
 Production CLI defaults favor reusable throughput: the selected profile supplies the preparation-worker cap, compile threads default to one, and compile-cache reuse is enabled under `OUTPUT_DIR/compile_cache`. Cache-backed schedules use singleton candidate libraries so artifacts remain reusable across proposal cohorts. With `--no-compile-cache`, a profile-bounded throughput heuristic chooses the candidate batch size. Preparation performs build/map/diagnostic/validation in parallel. Timing starts only after that pool drains and always runs serially.
 
-With no custom provider, proposal-generating commands run the built-in family-QD policy and record policy version `gfx1151-grid-v1`. Exact-shape and nearest-shape validation-passed winners, including measured discovered hipBLASLt candidates when they remain best, can initialize its operators through `--transfer-shapes` / `--transfer-per-shape`. Random, local/semantic mutation, DE, GOMEA, family archive, linkage, covering, operator-allocation, and surrogate functions remain supported building blocks through `evotensile.proposals`. Trusted custom compositions use `--proposal-script`. See `docs/custom_proposals.md`.
+With no custom provider, proposal-generating commands run the built-in family-QD policy and record durable provider provenance `builtin:family-qd`. Exact-shape and nearest-shape validation-passed winners, including measured discovered hipBLASLt candidates when they remain best, can initialize its operators through `--transfer-shapes` / `--transfer-per-shape`. Random, local/semantic mutation, DE, GOMEA, family archive, linkage, covering, adaptive operator allocation, and contextual bundle acquisition remain supported building blocks. Singleton oversized-pool selection uses bundle acquisition after sufficient exact evidence while preserving mechanical cold start. Trusted custom compositions use `--proposal-script`. See `docs/custom_proposals.md` and `docs/campaign_policy_tuning.md`.
 
 Supported protocol overrides include `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, `--num-elements-to-validate`, and `--validation-backend`. The default performs full hipBLASLt GPU-oracle validation with `NumElementsToValidate=-1`. `--validation-backend cpu` selects CPU audit validation. There is no no-validation backend: benchmark-only execution is admitted only after compatible correctness evidence exists.
 
@@ -96,17 +97,11 @@ Search-time timing is noisy enough that top-1 screening can miss the final winne
 
 Structured scheduler runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
 
-### 3. Repair Local Outliers
+### 3. Repair Weak Shapes
 
-Before manual inspection or GridBased updates, `repair-outliers` can identify shapes whose current best config sits below a robust local neighbor envelope in log GFLOP/s space. It then reruns only those shapes, seeding candidates from the outlier's current winner, nearest-shape winners/top candidates, and the built-in family-QD provider or an explicitly supplied custom provider.
+Multi-shape campaigns reserve a staged repair phase for evidence-supported weak shapes. Repair combines capped reference, nearest-shape, cluster, and model-uncertainty deficits with each available candidate's posterior probability of closing useful headroom. Incumbent, neighbor, cluster, broad, and generic mutation seeds enter the same shared-cost bundle acquisition used by the rest of the campaign. Uniform shape weighting remains the default. Explicit call-count * baseline-latency workload weighting is documented in `docs/workload_weighting.md`.
 
-```bash
-python3 -m evotensile.cli repair-outliers \
-  --db out/evotensile.sqlite \
-  --output-dir out/repair_outliers
-```
-
-This is a search-budget heuristic, not a correctness rule: real performance cliffs from divisibility, edge handling, LDS pressure, or occupancy can legitimately sit below nearby shapes. The command writes `repair_metadata.json` with detected residuals, neighbors, candidate hashes, and planned/executed batch summaries.
+Repair is a search-budget heuristic, not a correctness rule: real performance cliffs from divisibility, edge handling, LDS pressure, or occupancy can legitimately sit below nearby shapes. Every selected repair pair still passes exact validation and timing on its target shape. See `docs/search_outlier_repair.md` and `scripts/simulate_repair_acquisition.py`.
 
 After searching, we can inspect the results.
 
@@ -127,7 +122,7 @@ python3 -m evotensile.cli rank-benchmarks \
 
 ### 4. Update hipBLASLt configs
 
-The updater requires the complete profile shape set, latest compatible passed validation for every winner, and a content-verified registered artifact for every winner. It renders every selected variant before writing anything. With no destination option it is a no-write preview:
+The updater requires the complete profile shape set, positive confirmation timing, latest compatible passed validation, and a content-verified registered artifact for every selected exact pair. Production export passes a serialized deployment assignment with `--selection-json`. This preserves optional solution-bank consolidation instead of re-ranking the DB. The no-selection path remains a DB-rank preview. See `docs/deployment_selection.md`.
 
 ```bash
 python3 scripts/update_hipblaslt_gridbased_logic.py \
@@ -139,6 +134,7 @@ Stage the complete variant set outside the hipBLASLt source tree for review:
 ```bash
 python3 scripts/update_hipblaslt_gridbased_logic.py \
   --db out/evotensile.sqlite \
+  --selection-json out/deployment-selection.json \
   --output-dir out/gridbased-logic-staged
 ```
 
@@ -190,7 +186,14 @@ LD_LIBRARY_PATH="$ROCM_PATH/llvm/lib:$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}" \
 ./hipblaslt-test --gtest_filter='<test-filter>' --gtest_output=xml:/tmp/hipblaslt_test.xml
 ```
 
-Then run an application-level benchmark, such as `~/ComfyUI-FeatherOps/benchmark_mm_hipblaslt_fp16.py`. If the Python runtime uses a separate TensileLite asset package, point `HIPBLASLT_TENSILE_LIBPATH` at the newly installed assets so the rebuilt logic is actually used.
+Then run an application-level benchmark, such as:
+
+```bash
+TORCH_BLAS_PREFER_HIPBLASLT=1 \
+python3 ~/ComfyUI-FeatherOps/benchmark_mm_hipblaslt_fp16.py
+```
+
+If the Python runtime uses a separate TensileLite asset package, point `HIPBLASLT_TENSILE_LIBPATH` at the newly installed assets so the rebuilt logic is actually used.
 
 ## Benchmark Protocol
 
@@ -213,6 +216,6 @@ Benchmark protocol is represented by the typed `BenchmarkProtocol` profile objec
 ## Current Limitations
 
 - Bundled profiles and runners are target-specific. Broader data types, layouts, and epilogues need profile and backend coverage.
-- The implemented ExtraTrees surrogate is per-campaign shortlisting only. LFBO, persistent transfer surrogates, and trusted TensileLite prediction pruning are not implemented. Keep `PredictionThreshold: 2.0` to disable heuristics like Formocast and Origami in TensileLite until they are accurate enough on gfx1151.
+- The proposal ExtraTrees surrogate remains per-campaign shortlisting. A shared contextual ExtraTrees pair model now supports normalized performance, validity, and calibrated uncertainty for campaign acquisition, but persistent cross-campaign transfer, LFBO, and trusted TensileLite prediction pruning are not implemented. Keep `PredictionThreshold: 2.0` to disable heuristics like Formocast and Origami in TensileLite until they are accurate enough on gfx1151.
 - Logic file update helpers are profile-aware, but each new target variant needs validation before measured-performance claims.
 - The production structured backend is intentionally narrower than the generic search abstractions and needs broader target coverage before it is a general GEMM runner.

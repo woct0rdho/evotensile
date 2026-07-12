@@ -62,8 +62,8 @@ def compile_cache_dir(
     if compile_cache_root is None:
         return None
     return Path(compile_cache_root) / _compile_cache_key(
-        current.candidates,
-        current.shapes,
+        list(current.artifact_candidates),
+        list(current.artifact_shapes),
         target_profile=target_profile,
         protocol=protocol,
     )
