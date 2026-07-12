@@ -5,9 +5,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
-from joblib import Parallel, delayed
 from sklearn.ensemble import ExtraTreesRegressor
 from sklearn.feature_extraction import DictVectorizer
+from sklearn.utils.parallel import Parallel, delayed
 
 from evotensile.campaign.controller import CampaignControllerState
 from evotensile.campaign.evaluator import PairEvaluationOutcome

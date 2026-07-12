@@ -11,7 +11,6 @@ license = "MIT"
 authors = [{name = "woctordho", email = "woctordho@outlook.com"}]
 requires-python = ">=3.10"
 dependencies = [
-  "joblib>=1.2",
   "numpy>=2.0",
   "PyYAML>=6.0",
   "scikit-learn>=1.4",
