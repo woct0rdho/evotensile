@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from evotensile.profile import DEFAULT_PROFILE
@@ -121,15 +122,15 @@ def _intern_namespaces(
     return mapping
 
 
-def _import_source(
+def _import_source_connection(
     destination,
+    source,
     source_path,
     *,
     required_problem_type_hash,
     required_benchmark_protocol_hash,
     required_environment_compatibility_tag,
 ):
-    source = sqlite3.connect(f"file:{source_path.resolve()}?mode=ro", uri=True)
     source.row_factory = sqlite3.Row
     source_tag = source.execute(
         "SELECT metadata_value FROM database_metadata WHERE metadata_key = 'environment_compatibility_tag'"
@@ -331,7 +332,6 @@ def _import_source(
         )
         discovery_count += 1
         selection_count += len(selections)
-    source.close()
     return {
         "path": str(source_path),
         "benchmark_events": event_count,
@@ -340,6 +340,25 @@ def _import_source(
         "baseline_discoveries": discovery_count,
         "baseline_selections": selection_count,
     }
+
+
+def _import_source(
+    destination,
+    source_path,
+    *,
+    required_problem_type_hash,
+    required_benchmark_protocol_hash,
+    required_environment_compatibility_tag,
+):
+    with closing(sqlite3.connect(f"file:{source_path.resolve()}?mode=ro", uri=True)) as source:
+        return _import_source_connection(
+            destination,
+            source,
+            source_path,
+            required_problem_type_hash=required_problem_type_hash,
+            required_benchmark_protocol_hash=required_benchmark_protocol_hash,
+            required_environment_compatibility_tag=required_environment_compatibility_tag,
+        )
 
 
 def merge_compatible_databases(
@@ -357,7 +376,7 @@ def merge_compatible_databases(
         raise FileExistsError(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(sources[0], output)
-    with sqlite3.connect(output) as base_connection:
+    with closing(sqlite3.connect(output)) as base_connection:
         base_tag_row = base_connection.execute(
             "SELECT metadata_value FROM database_metadata WHERE metadata_key = 'environment_compatibility_tag'"
         ).fetchone()
@@ -404,30 +423,29 @@ def merge_compatible_databases(
         ],
     }
     try:
-        destination = sqlite3.connect(output)
-        destination.row_factory = sqlite3.Row
-        destination.execute("PRAGMA foreign_keys=ON")
-        destination.execute("PRAGMA journal_mode=WAL")
-        for source in sources[1:]:
-            with destination:
-                manifest["overlays"].append(
-                    _import_source(
-                        destination,
-                        source,
-                        required_problem_type_hash=problem_type_hash,
-                        required_benchmark_protocol_hash=benchmark_protocol_hash,
-                        required_environment_compatibility_tag=environment_compatibility_tag,
+        with closing(sqlite3.connect(output)) as destination:
+            destination.row_factory = sqlite3.Row
+            destination.execute("PRAGMA foreign_keys=ON")
+            destination.execute("PRAGMA journal_mode=WAL")
+            for source in sources[1:]:
+                with destination:
+                    manifest["overlays"].append(
+                        _import_source(
+                            destination,
+                            source,
+                            required_problem_type_hash=problem_type_hash,
+                            required_benchmark_protocol_hash=benchmark_protocol_hash,
+                            required_environment_compatibility_tag=environment_compatibility_tag,
+                        )
                     )
+            with destination:
+                destination.execute(
+                    "INSERT OR REPLACE INTO database_metadata(metadata_key, metadata_value) VALUES (?, ?)",
+                    ("merged_source_manifest", json.dumps(manifest, sort_keys=True)),
                 )
-        with destination:
-            destination.execute(
-                "INSERT OR REPLACE INTO database_metadata(metadata_key, metadata_value) VALUES (?, ?)",
-                ("merged_source_manifest", json.dumps(manifest, sort_keys=True)),
-            )
-        foreign_key_errors = destination.execute("PRAGMA foreign_key_check").fetchall()
-        destination.close()
-        if foreign_key_errors:
-            raise ValueError(f"merged database has foreign-key errors: {foreign_key_errors}")
+            foreign_key_errors = destination.execute("PRAGMA foreign_key_check").fetchall()
+            if foreign_key_errors:
+                raise ValueError(f"merged database has foreign-key errors: {foreign_key_errors}")
     except Exception:
         output.unlink(missing_ok=True)
         raise

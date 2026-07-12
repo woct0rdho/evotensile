@@ -7,6 +7,7 @@ import statistics
 import time
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict, cast
@@ -17,9 +18,8 @@ from evotensile.campaign.evaluator import PairEvaluationOutcome, RealEvaluator, 
 from evotensile.candidate import Shape
 from evotensile.database import EvoTensileDB
 from evotensile.metrics import gflops_from_us
-from evotensile.profile import DEFAULT_PROFILE
+from evotensile.profile import DEFAULT_PROFILE, PROFILES, get_profile
 from evotensile.scheduling.models import EvidenceStage, PairRequest
-from evotensile.shapes import pilot_100_shapes
 
 DEFAULT_DB = Path("out/grid100_production_search_20260712.sqlite")
 DEFAULT_OUTPUT_DIR = Path("out/grid100_production_search_20260712/finalization")
@@ -57,29 +57,28 @@ def _timing_rankings(
     created_after: float | None = None,
 ) -> dict[str, tuple[TimingSummary, ...]]:
     shape_by_id = {shape.id: shape for shape in shapes}
-    connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    created_clause = "AND event.created_at >= ?" if created_after is not None else ""
-    parameters: list[object] = [DEFAULT_PROFILE.benchmark_protocol_hash()]
-    if created_after is not None:
-        parameters.append(created_after)
-    rows = connection.execute(
-        f"""
-        SELECT s.shape_id, c.candidate_hash, sample.time_us
-        FROM benchmark_samples AS sample
-        JOIN benchmark_events AS event USING (event_id)
-        JOIN benchmark_namespaces AS namespace USING (benchmark_namespace_id)
-        JOIN benchmark_protocols AS protocol USING (benchmark_protocol_id)
-        JOIN shapes AS s USING (shape_key)
-        JOIN candidates AS c USING (candidate_id)
-        WHERE event.status = 'ok'
-          AND protocol.benchmark_protocol_hash = ?
-          {created_clause}
-        ORDER BY s.shape_id, c.candidate_hash, event.event_id, sample.sample_index
-        """,
-        parameters,
-    ).fetchall()
-    connection.close()
+    with closing(sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)) as connection:
+        connection.row_factory = sqlite3.Row
+        created_clause = "AND event.created_at >= ?" if created_after is not None else ""
+        parameters: list[object] = [DEFAULT_PROFILE.benchmark_protocol_hash()]
+        if created_after is not None:
+            parameters.append(created_after)
+        rows = connection.execute(
+            f"""
+            SELECT s.shape_id, c.candidate_hash, sample.time_us
+            FROM benchmark_samples AS sample
+            JOIN benchmark_events AS event USING (event_id)
+            JOIN benchmark_namespaces AS namespace USING (benchmark_namespace_id)
+            JOIN benchmark_protocols AS protocol USING (benchmark_protocol_id)
+            JOIN shapes AS s USING (shape_key)
+            JOIN candidates AS c USING (candidate_id)
+            WHERE event.status = 'ok'
+              AND protocol.benchmark_protocol_hash = ?
+              {created_clause}
+            ORDER BY s.shape_id, c.candidate_hash, event.event_id, sample.sample_index
+            """,
+            parameters,
+        ).fetchall()
     times_by_pair: dict[tuple[str, str], list[float]] = defaultdict(list)
     for row in rows:
         times_by_pair[(str(row["shape_id"]), str(row["candidate_hash"]))].append(float(row["time_us"]))
@@ -112,24 +111,23 @@ def _latest_fresh_validation_states(
     *,
     created_after: float,
 ) -> dict[tuple[str, str], str]:
-    connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    rows = connection.execute(
-        """
-        SELECT s.shape_id, c.candidate_hash, validation.status,
-               validation.created_at, validation.validation_id
-        FROM validations AS validation
-        JOIN validation_namespaces AS namespace USING (validation_namespace_id)
-        JOIN validation_protocols AS protocol USING (validation_protocol_id)
-        JOIN shapes AS s USING (shape_key)
-        JOIN candidates AS c USING (candidate_id)
-        WHERE protocol.validation_protocol_hash = ?
-          AND validation.created_at >= ?
-        ORDER BY validation.created_at, validation.validation_id
-        """,
-        (DEFAULT_PROFILE.default_protocol.validation_protocol_hash(), created_after),
-    ).fetchall()
-    connection.close()
+    with closing(sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT s.shape_id, c.candidate_hash, validation.status,
+                   validation.created_at, validation.validation_id
+            FROM validations AS validation
+            JOIN validation_namespaces AS namespace USING (validation_namespace_id)
+            JOIN validation_protocols AS protocol USING (validation_protocol_id)
+            JOIN shapes AS s USING (shape_key)
+            JOIN candidates AS c USING (candidate_id)
+            WHERE protocol.validation_protocol_hash = ?
+              AND validation.created_at >= ?
+            ORDER BY validation.created_at, validation.validation_id
+            """,
+            (DEFAULT_PROFILE.default_protocol.validation_protocol_hash(), created_after),
+        ).fetchall()
     return {(str(row["shape_id"]), str(row["candidate_hash"])): str(row["status"]) for row in rows}
 
 
@@ -204,6 +202,7 @@ def _write_json(path: Path, payload: object) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
+    parser.add_argument("--profile", choices=sorted(PROFILES), default=DEFAULT_PROFILE.name)
     parser.add_argument("--baseline-db", type=Path, default=DEFAULT_BASELINE_DB)
     parser.add_argument(
         "--incumbent-deployment",
@@ -215,6 +214,7 @@ def main() -> None:
     parser.add_argument("--contender-tolerance", type=float, default=0.02)
     parser.add_argument("--samples", type=int, default=30)
     args = parser.parse_args()
+    profile = get_profile(args.profile)
     if args.maximum_contenders < 2 or args.samples <= 0:
         raise ValueError("finalization requires at least two contenders and positive samples")
     if not 0.0 <= args.contender_tolerance < 1.0:
@@ -223,7 +223,7 @@ def main() -> None:
         raise FileExistsError(args.output_dir)
     args.output_dir.mkdir(parents=True)
 
-    shapes = pilot_100_shapes()
+    shapes = profile.shapes()
     shape_by_id = {shape.id: shape for shape in shapes}
     before_rankings = _timing_rankings(args.db, shapes=shapes)
     baseline_rankings = _timing_rankings(args.baseline_db, shapes=shapes)
@@ -251,7 +251,7 @@ def main() -> None:
     candidate_hashes = sorted({candidate_hash for values in contenders.values() for candidate_hash in values})
     db = EvoTensileDB.connect(
         args.db,
-        environment_compatibility_tag=DEFAULT_PROFILE.environment_compatibility_tag,
+        environment_compatibility_tag=profile.environment_compatibility_tag,
     )
     candidate_by_hash = {candidate.hash: candidate for candidate in db.get_candidates(candidate_hashes)}
     missing_candidates = sorted(set(candidate_hashes) - set(candidate_by_hash))
@@ -275,6 +275,7 @@ def main() -> None:
     plan = {
         "database": str(args.db),
         "baseline_database": str(args.baseline_db),
+        "profile": profile.name,
         "incumbent_deployment": None if args.incumbent_deployment is None else str(args.incumbent_deployment),
         "maximum_contenders": args.maximum_contenders,
         "contender_tolerance": args.contender_tolerance,
@@ -286,23 +287,23 @@ def main() -> None:
     }
     _write_json(args.output_dir / "plan.json", plan)
 
-    source_ref = "grid100-production-final-confirmation"
+    source_ref = f"{profile.name}-production-final-confirmation"
     fresh_started_at = time.time()
     wall_started_at = time.monotonic()
     evaluator = RealEvaluator(
         RealEvaluatorContext(
             db=db,
             output_root=args.output_dir,
-            target_profile=DEFAULT_PROFILE,
-            protocol=DEFAULT_PROFILE.default_protocol,
-            runner_bin=DEFAULT_PROFILE.default_runner_bin,
+            target_profile=profile,
+            protocol=profile.default_protocol,
+            runner_bin=profile.default_runner_bin,
             candidate_batch_size=1,
-            shape_batch_size=DEFAULT_PROFILE.default_shape_batch_size,
-            build_timeout_s=DEFAULT_PROFILE.default_build_timeout_s,
-            runner_timeout_s=DEFAULT_PROFILE.default_runner_timeout_s,
-            prepare_workers=DEFAULT_PROFILE.default_prepare_workers,
-            prepare_wave_batches=DEFAULT_PROFILE.default_prepare_wave_batches,
-            validation_workers=DEFAULT_PROFILE.default_validation_workers,
+            shape_batch_size=profile.default_shape_batch_size,
+            build_timeout_s=profile.default_build_timeout_s,
+            runner_timeout_s=profile.default_runner_timeout_s,
+            prepare_workers=profile.default_prepare_workers,
+            prepare_wave_batches=profile.default_prepare_wave_batches,
+            validation_workers=profile.default_validation_workers,
             compile_cache_root=args.output_dir.parent / "compile_cache",
             cost_aware_scheduling=True,
             ignore_cache=True,
@@ -340,7 +341,7 @@ def main() -> None:
     }
     mappings = load_artifact_mappings(
         db,
-        problem_type_hash=DEFAULT_PROFILE.problem_type_hash,
+        problem_type_hash=profile.problem_type_hash,
         candidate_hashes=candidate_hashes,
         shape_ids=[shape.id for shape in shapes],
     )
@@ -398,6 +399,7 @@ def main() -> None:
     report = {
         "database": str(args.db),
         "baseline_database": str(args.baseline_db),
+        "profile": profile.name,
         "plan": str(args.output_dir / "plan.json"),
         "fresh_started_at": fresh_started_at,
         "wall_time_s": wall_time_s,

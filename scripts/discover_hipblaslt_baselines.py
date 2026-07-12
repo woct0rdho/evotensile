@@ -261,6 +261,9 @@ def _match_logic_solution(parsed: BenchOutput, logic_solutions: list[dict[str, A
 
 def _solution_to_candidate(solution: dict[str, Any]) -> Candidate:
     params = {key: solution[key] for key in DOMAINS if key in solution}
+    stagger_stride = params.get("StaggerUStride")
+    if isinstance(stagger_stride, float) and stagger_stride.is_integer():
+        params["StaggerUStride"] = int(stagger_stride)
     matrix_instruction = solution.get("MatrixInstruction")
     if isinstance(matrix_instruction, list):
         mi = list(matrix_instruction)

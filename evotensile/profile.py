@@ -4,7 +4,7 @@ from typing import Any
 
 from .candidate import Shape, stable_hash
 from .protocol import DEFAULT_BENCHMARK_PROTOCOL, BenchmarkProtocol, global_parameter_items
-from .shapes import pilot_100_shapes
+from .shapes import comfy_nt_1135_shapes, pilot_100_shapes
 from .yaml_writer import FP16_NT_HHS_PROBLEM_TYPE, LIBRARY_LOGIC_GRIDBASED_GFX1151
 
 BASE_GLOBAL_PARAMETERS: dict[str, Any] = {
@@ -79,7 +79,22 @@ GFX1151_NT_HHS = TargetProfile(
     compute_units_per_workgroup_processor=2,
 )
 
-PROFILES = {GFX1151_NT_HHS.name: GFX1151_NT_HHS}
+GFX1151_NT_HHS_COMFY1135 = TargetProfile(
+    name="gfx1151-nt-hhs-comfy1135",
+    problem_type=FP16_NT_HHS_PROBLEM_TYPE,
+    library_logic=LIBRARY_LOGIC_GRIDBASED_GFX1151,
+    default_protocol=DEFAULT_BENCHMARK_PROTOCOL,
+    shapes_fn=comfy_nt_1135_shapes,
+    environment_compatibility_tag="gfx1151-nt-hhs-v1",
+    compute_unit_count=40,
+    workgroup_processor_count=20,
+    compute_units_per_workgroup_processor=2,
+)
+
+PROFILES = {
+    GFX1151_NT_HHS.name: GFX1151_NT_HHS,
+    GFX1151_NT_HHS_COMFY1135.name: GFX1151_NT_HHS_COMFY1135,
+}
 DEFAULT_PROFILE = GFX1151_NT_HHS
 
 

@@ -6,6 +6,7 @@ import statistics
 import tempfile
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -518,28 +519,27 @@ def load_db_oracle_matrix(
         raise ValueError("oracle shapes must have unique shape IDs")
     if not shapes_by_id:
         return {}
-    con = sqlite3.connect(f"file:{Path(path).resolve()}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
     shape_placeholders = ",".join("?" for _ in shapes_by_id)
     protocol_clause = "AND bp.benchmark_protocol_hash = ?" if benchmark_protocol_hash is not None else ""
     params = list(shapes_by_id)
     if benchmark_protocol_hash is not None:
         params.append(benchmark_protocol_hash)
-    rows = con.execute(
-        f"""
-        SELECT s.shape_id, c.params_json, c.created_at, c.candidate_hash, be.status, bs.time_us
-        FROM benchmark_events AS be
-        LEFT JOIN benchmark_samples AS bs USING (event_id)
-        JOIN candidates AS c USING (candidate_id)
-        JOIN shapes AS s USING (shape_key)
-        JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
-        JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
-        WHERE s.shape_id IN ({shape_placeholders}) {protocol_clause}
-        ORDER BY c.created_at, s.shape_id, be.event_id, bs.sample_index
-        """,
-        params,
-    ).fetchall()
-    con.close()
+    with closing(sqlite3.connect(f"file:{Path(path).resolve()}?mode=ro", uri=True)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            f"""
+            SELECT s.shape_id, c.params_json, c.created_at, c.candidate_hash, be.status, bs.time_us
+            FROM benchmark_events AS be
+            LEFT JOIN benchmark_samples AS bs USING (event_id)
+            JOIN candidates AS c USING (candidate_id)
+            JOIN shapes AS s USING (shape_key)
+            JOIN benchmark_namespaces AS bn USING (benchmark_namespace_id)
+            JOIN benchmark_protocols AS bp USING (benchmark_protocol_id)
+            WHERE s.shape_id IN ({shape_placeholders}) {protocol_clause}
+            ORDER BY c.created_at, s.shape_id, be.event_id, bs.sample_index
+            """,
+            params,
+        ).fetchall()
     grouped: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
     payloads: dict[str, str] = {}
     order: dict[str, float] = {}

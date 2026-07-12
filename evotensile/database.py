@@ -4,7 +4,7 @@ import os
 import sqlite3
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -397,7 +397,7 @@ class EvoTensileDB:
     def _verify_environment_compatibility(self) -> None:
         if not self.path.exists():
             return
-        with sqlite3.connect(self.path, timeout=60.0) as con:
+        with closing(sqlite3.connect(self.path, timeout=60.0)) as con:
             metadata_table = con.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'database_metadata'"
             ).fetchone()

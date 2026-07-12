@@ -396,7 +396,7 @@ The final solution-bank tradeoffs are:
 
 ### Installed Zero-Tolerance Deployment
 
-After explicit approval, the zero-tolerance `finalization_v4` assignment was exported into all four required gfx1151 GridBased variants. Every generated file contains 42 solutions and 100 exact shape mappings with no missing or duplicate shape. The reviewed files were copied into hipBLASLt, rebuilt for gfx1151, and installed into `/home/wd/venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel`. The external source diff contains only those four GridBased YAML files.
+After explicit approval, the zero-tolerance `finalization_v4` assignment was exported into all four required gfx1151 GridBased variants. Every generated file contains 42 solutions and 100 exact shape mappings with no missing or duplicate shape. The reviewed files were copied into hipBLASLt, rebuilt for gfx1151, and installed into `~/venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel`. The external source diff contains only those four GridBased YAML files.
 
 Installed-library validation produced:
 - 6/6 default target and off-grid verifier cases passed.
