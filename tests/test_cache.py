@@ -293,8 +293,8 @@ def test_reusable_negative_insertion_is_idempotent(tmp_path):
 
 
 def test_run_tensilelite_use_cache_emits_cli_flag(tmp_path):
-    fake_tensile = tmp_path / "fake_tensile.py"
-    fake_tensile.write_text(
+    fake_tensilelite = tmp_path / "fake_tensile.py"
+    fake_tensilelite.write_text(
         dedent(
             """\
             #!/usr/bin/env python3
@@ -309,14 +309,16 @@ def test_run_tensilelite_use_cache_emits_cli_flag(tmp_path):
         ),
         encoding="utf-8",
     )
-    fake_tensile.chmod(0o755)
+    fake_tensilelite.chmod(0o755)
     yaml_path = tmp_path / "config.yaml"
     yaml_path.write_text("{}\n", encoding="utf-8")
 
-    result = run_tensilelite(yaml_path, tmp_path / "out", tensilelite_bin=fake_tensile, build_only=True, use_cache=True)
+    result = run_tensilelite(
+        yaml_path, tmp_path / "out", tensilelite_bin=fake_tensilelite, build_only=True, use_cache=True
+    )
 
     assert result.ok
-    assert result.command[:4] == [str(fake_tensile), str(yaml_path), str(tmp_path / "out"), "--use-cache"]
+    assert result.command[:4] == [str(fake_tensilelite), str(yaml_path), str(tmp_path / "out"), "--use-cache"]
     assert "--build-only" in result.command
 
 

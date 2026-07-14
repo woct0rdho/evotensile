@@ -5,6 +5,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from .tensilelite_parameter_types import validate_tensilelite_parameter_types
+
 
 def canonicalize(value: object) -> object:
     """Return a JSON-stable form for nested candidate/config values."""
@@ -34,6 +36,14 @@ class Candidate:
     source: str = "unknown"
     parent_hashes: tuple[str, ...] = field(default_factory=tuple)
     proposal_metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        params = canonicalize(dict(self.params))
+        if not isinstance(params, dict):
+            raise TypeError("candidate parameters must be a mapping")
+        typed_params = cast(dict[str, Any], params)
+        validate_tensilelite_parameter_types(typed_params)
+        object.__setattr__(self, "params", typed_params)
 
     def canonical_params(self) -> dict[str, Any]:
         return cast(dict[str, Any], canonicalize(dict(self.params)))

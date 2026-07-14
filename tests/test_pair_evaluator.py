@@ -15,7 +15,7 @@ from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.scheduling.models import EvidenceStage, PairRequest
 from evotensile.search.replay import ExactOracleReplayState, OracleRecord
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import fake_build_tensile, fake_structured_runner, sample_candidates
+from tests.helpers import fake_build_tensilelite, fake_structured_runner, sample_candidates
 
 
 def _replay_state(
@@ -86,7 +86,7 @@ def test_real_evaluator_records_native_exact_result_and_measured_costs(tmp_path:
             target_profile=DEFAULT_PROFILE,
             protocol=protocol,
             runner_bin=fake_structured_runner(tmp_path),
-            tensilelite_bin=fake_build_tensile(tmp_path),
+            tensilelite_bin=fake_build_tensilelite(tmp_path),
             candidate_batch_size=1,
             shape_batch_size=1,
         )
@@ -120,7 +120,7 @@ def test_real_confirmation_revalidates_and_remeasures_with_cache_ignored(tmp_pat
         environment_compatibility_tag=DEFAULT_PROFILE.environment_compatibility_tag,
     )
     runner_bin = fake_structured_runner(tmp_path)
-    tensilelite_bin = fake_build_tensile(tmp_path)
+    tensilelite_bin = fake_build_tensilelite(tmp_path)
     screening = RealEvaluator(
         RealEvaluatorContext(
             db=db,
@@ -185,7 +185,7 @@ def test_real_evaluator_measures_artifact_scope_expansion(tmp_path: Path):
             target_profile=DEFAULT_PROFILE,
             protocol=protocol,
             runner_bin=fake_structured_runner(tmp_path),
-            tensilelite_bin=fake_build_tensile(tmp_path),
+            tensilelite_bin=fake_build_tensilelite(tmp_path),
             candidate_batch_size=1,
             shape_batch_size=2,
             compile_cache_root=compile_cache,
@@ -246,7 +246,7 @@ def test_hybrid_evaluator_replays_known_pair_and_routes_absent_pair_to_native_ru
             target_profile=DEFAULT_PROFILE,
             protocol=protocol,
             runner_bin=fake_structured_runner(tmp_path),
-            tensilelite_bin=fake_build_tensile(tmp_path),
+            tensilelite_bin=fake_build_tensilelite(tmp_path),
             candidate_batch_size=1,
             shape_batch_size=1,
         ),

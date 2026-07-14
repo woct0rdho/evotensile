@@ -7,7 +7,7 @@ from pathlib import Path
 from evotensile.runner import DEFAULT_TENSILELITE_BIN
 from evotensile.tensilelite_diagnostics import (
     DiagnosticRecord,
-    _add_tensile_import_path,
+    _add_tensilelite_import_path,
     attribution_inserts_from_diagnostics,
     read_diagnostic_records,
 )
@@ -88,7 +88,7 @@ def test_tensilelite_internal_diagnostics_api_contract():
     tensilelite_bin = Path(DEFAULT_TENSILELITE_BIN)
     if not tensilelite_bin.exists():
         return
-    _add_tensile_import_path(tensilelite_bin)
+    _add_tensilelite_import_path(tensilelite_bin)
 
     import Tensile.SolutionStructs.Utilities as solution_utilities
     from Tensile.BenchmarkProblems import _generate_single_solution

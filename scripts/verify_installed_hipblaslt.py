@@ -177,14 +177,14 @@ def _command(bench: Path, case: Case, args: argparse.Namespace) -> list[str]:
     ]
 
 
-def _env(rocm_path: Path, tensile_libpath: Path) -> dict[str, str]:
+def _env(rocm_path: Path, tensilelite_libpath: Path) -> dict[str, str]:
     env = os.environ.copy()
     old_ld = env.get("LD_LIBRARY_PATH", "")
     ld_parts = [str(rocm_path / "lib"), str(rocm_path / "llvm/lib")]
     if old_ld:
         ld_parts.append(old_ld)
     env["LD_LIBRARY_PATH"] = ":".join(dict.fromkeys(ld_parts))
-    env["HIPBLASLT_TENSILE_LIBPATH"] = str(tensile_libpath)
+    env["HIPBLASLT_TENSILE_LIBPATH"] = str(tensilelite_libpath)
     return env
 
 
@@ -258,7 +258,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bench", type=Path, default=DEFAULT_BENCH)
     parser.add_argument("--rocm-path", type=Path, default=DEFAULT_ROCM_PATH)
-    parser.add_argument("--tensile-libpath", type=Path, default=None)
+    parser.add_argument("--tensilelite-libpath", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--shape", action="append", type=_parse_shape, default=[], help="Custom case: M,N,K or name,M,N,K; repeatable"
@@ -275,20 +275,22 @@ def main() -> int:
 
     bench = args.bench.expanduser().resolve()
     rocm_path = args.rocm_path.expanduser().resolve()
-    tensile_libpath = (args.tensile_libpath or (rocm_path / "lib/hipblaslt/library/gfx1151")).expanduser().resolve()
+    tensilelite_libpath = (
+        (args.tensilelite_libpath or (rocm_path / "lib/hipblaslt/library/gfx1151")).expanduser().resolve()
+    )
     cases = args.shape or list(DEFAULT_CASES)
     if args.limit:
         cases = cases[: args.limit]
 
     if not bench.exists():
         raise FileNotFoundError(f"hipblaslt-bench not found: {bench}")
-    if not tensile_libpath.exists():
-        raise FileNotFoundError(f"HIPBLASLT_TENSILE_LIBPATH not found: {tensile_libpath}")
+    if not tensilelite_libpath.exists():
+        raise FileNotFoundError(f"HIPBLASLT_TENSILE_LIBPATH not found: {tensilelite_libpath}")
 
     output_dir = args.output_dir
     logs_dir = output_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    env = _env(rocm_path, tensile_libpath)
+    env = _env(rocm_path, tensilelite_libpath)
 
     results = [_run_case(bench, case, args, env, logs_dir) for case in cases]
 
@@ -326,7 +328,7 @@ def main() -> int:
     summary = {
         "bench": str(bench),
         "rocm_path": str(rocm_path),
-        "tensile_libpath": str(tensile_libpath),
+        "tensile_libpath": str(tensilelite_libpath),
         "case_count": len(results),
         "ok_count": sum(1 for row in results if row["status"] == "ok"),
         "failed_count": sum(1 for row in results if row["status"] != "ok"),

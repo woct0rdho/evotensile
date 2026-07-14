@@ -25,6 +25,7 @@ from evotensile.scheduling.models import EvidenceStage, PairRequest
 from evotensile.search_space import DOMAINS, defaulted_params
 from evotensile.shapes import Shape, parse_shape
 from evotensile.subprocess_utils import resolve_timeout
+from evotensile.tensilelite_parameter_types import normalize_imported_solution_parameters
 
 DEFAULT_BENCH = Path.home() / "rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench"
 DEFAULT_ROCM_DEVEL = Path.home() / "venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel"
@@ -133,16 +134,16 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def runtime_env(rocm_devel: Path, rocm_libraries: Path, tensile_libpath: Path | None) -> dict[str, str]:
+def runtime_env(rocm_devel: Path, rocm_libraries: Path, tensilelite_libpath: Path | None) -> dict[str, str]:
     env = dict(os.environ)
     existing_ld = env.get("LD_LIBRARY_PATH", "")
     ld_parts = [str(rocm_devel / "llvm/lib"), str(rocm_libraries / "lib"), str(rocm_devel / "lib")]
     if existing_ld:
         ld_parts.append(existing_ld)
     env["LD_LIBRARY_PATH"] = ":".join(ld_parts)
-    if tensile_libpath is None:
-        tensile_libpath = rocm_libraries / "lib/hipblaslt/library/gfx1151"
-    env["HIPBLASLT_TENSILE_LIBPATH"] = str(tensile_libpath)
+    if tensilelite_libpath is None:
+        tensilelite_libpath = rocm_libraries / "lib/hipblaslt/library/gfx1151"
+    env["HIPBLASLT_TENSILE_LIBPATH"] = str(tensilelite_libpath)
     return env
 
 
@@ -261,9 +262,6 @@ def _match_logic_solution(parsed: BenchOutput, logic_solutions: list[dict[str, A
 
 def _solution_to_candidate(solution: dict[str, Any]) -> Candidate:
     params = {key: solution[key] for key in DOMAINS if key in solution}
-    stagger_stride = params.get("StaggerUStride")
-    if isinstance(stagger_stride, float) and stagger_stride.is_integer():
-        params["StaggerUStride"] = int(stagger_stride)
     matrix_instruction = solution.get("MatrixInstruction")
     if isinstance(matrix_instruction, list):
         mi = list(matrix_instruction)
@@ -275,7 +273,7 @@ def _solution_to_candidate(solution: dict[str, Any]) -> Candidate:
     if "StoreVectorWidth" not in params:
         params["StoreVectorWidth"] = solution.get("GlobalWriteVectorWidth", -1)
     return Candidate(
-        params=defaulted_params(params),
+        params=normalize_imported_solution_parameters(defaulted_params(params)),
         source="installed_hipblaslt_baseline",
     )
 
@@ -384,7 +382,7 @@ def main() -> int:
     parser.add_argument("--bench", type=Path, default=DEFAULT_BENCH)
     parser.add_argument("--rocm-devel", type=Path, default=DEFAULT_ROCM_DEVEL)
     parser.add_argument("--rocm-libraries", type=Path, default=DEFAULT_ROCM_LIBRARIES)
-    parser.add_argument("--tensile-libpath", type=Path, default=None)
+    parser.add_argument("--tensilelite-libpath", type=Path, default=None)
     parser.add_argument("--logic-yaml", type=Path, default=DEFAULT_LOGIC_YAML)
     parser.add_argument("--runner-bin", default=None)
     parser.add_argument("--tensilelite-bin", default=DEFAULT_TENSILELITE_BIN)
@@ -429,7 +427,7 @@ def main() -> int:
     profile, protocol = _profile_protocol(args)
     shapes = _parse_shapes(args, profile)
     runner_bin = args.runner_bin or profile.default_runner_bin
-    env = runtime_env(args.rocm_devel, args.rocm_libraries, args.tensile_libpath)
+    env = runtime_env(args.rocm_devel, args.rocm_libraries, args.tensilelite_libpath)
     discovery_started = time.perf_counter()
     selections = query_baselines(args, shapes, env)
     discovery_duration_s = time.perf_counter() - discovery_started

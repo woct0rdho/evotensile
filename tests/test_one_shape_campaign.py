@@ -11,7 +11,7 @@ from evotensile.campaign.store import CampaignStore
 from evotensile.profile import DEFAULT_PROFILE, PROFILES
 from evotensile.shapes import parse_shape
 from scripts import run_blind_one_shape
-from tests.helpers import fake_build_tensile, fake_structured_runner
+from tests.helpers import fake_build_tensilelite, fake_structured_runner
 
 
 def _small_campaign_configuration(request: CampaignConfigurationRequest, *, shape):
@@ -27,13 +27,13 @@ def test_campaign_driver_checkpoints_two_islands_and_resumes_finished_run(
     tmp_path: Path,
     capsys,
 ):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     output = tmp_path / "campaign"
     shape = parse_shape("512,128,1,256")
     request = CampaignConfigurationRequest(
         runner_bin=fake_runner,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         seed=12345,
         time_budget_s=30.0,
         hot_reserve_s=5.0,
@@ -120,7 +120,7 @@ def test_campaign_soft_budget_does_not_clamp_admitted_job_timeout(
     monkeypatch,
     capsys,
 ):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     output = tmp_path / "soft_budget"
     monkeypatch.setenv("EVOTENSILE_TEST_BUILD_SLEEP_S", "0.1")
@@ -153,7 +153,7 @@ def test_campaign_soft_budget_does_not_clamp_admitted_job_timeout(
             "--runner-bin",
             str(fake_runner),
             "--tensilelite-bin",
-            str(fake_tensile),
+            str(fake_tensilelite),
             "--build-timeout",
             "10",
             "--runner-timeout",

@@ -37,7 +37,7 @@ def main() -> None:
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--profile", choices=sorted(PROFILES), default=DEFAULT_PROFILE.name)
-    parser.add_argument("--candidate", action="append", required=True, dest="candidate_hashes")
+    parser.add_argument("--candidate-hashes", action="append", required=True)
     parser.add_argument("--num-benchmarks", type=int, default=None)
     parser.add_argument("--shape-file", type=Path)
     parser.add_argument("--unknown-only", action="store_true")

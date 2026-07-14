@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import yaml
 
-from .candidate import canonicalize
+from .candidate import canonical_json
 from .manifest import ManifestEntry
 from .shapes import Shape
 from .tensilelite_keys import (
@@ -21,6 +21,7 @@ from .tensilelite_keys import (
     SOLUTION_YAML_GLOBS,
     WORK_GROUP_KEY,
 )
+from .tensilelite_parameter_types import normalize_imported_solution_parameters
 
 
 @dataclass(frozen=True)
@@ -66,10 +67,7 @@ def _unique_entries(entries: list[ManifestEntry]) -> list[ManifestEntry]:
 
 
 def _value_equal(expected: object, actual: object) -> bool:
-    if isinstance(expected, bool) or isinstance(actual, bool):
-        if isinstance(expected, (bool, int)) and isinstance(actual, (bool, int)):
-            return int(expected) == int(actual)
-    return canonicalize(expected) == canonicalize(actual)
+    return canonical_json(expected) == canonical_json(actual)
 
 
 def _matrix_instruction_matches(candidate_mi: object, solution: dict[str, Any]) -> bool:
@@ -212,15 +210,16 @@ def read_solution_records(path: str | Path) -> list[SolutionRecord]:
     ]
     records: list[SolutionRecord] = []
     for ordinal, solution in enumerate(solutions):
-        solution_index = int(solution.get(SOLUTION_INDEX_KEY, ordinal))
-        solution_name = solution.get(KERNEL_NAME_MIN_KEY) or solution.get(SOLUTION_NAME_MIN_KEY)
+        normalized_solution = normalize_imported_solution_parameters(solution)
+        solution_index = int(normalized_solution.get(SOLUTION_INDEX_KEY, ordinal))
+        solution_name = normalized_solution.get(KERNEL_NAME_MIN_KEY) or normalized_solution.get(SOLUTION_NAME_MIN_KEY)
         records.append(
             SolutionRecord(
                 path=path,
                 solution_index=solution_index,
                 solution_name=str(solution_name) if solution_name else None,
                 shape_ids=shape_ids,
-                solution=solution,
+                solution=normalized_solution,
             )
         )
     return records

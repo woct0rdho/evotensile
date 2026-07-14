@@ -72,7 +72,7 @@ Discover the current hipBLASLt-selected configs once per DB/problem/grid. Discov
 python3 scripts/discover_hipblaslt_baselines.py \
   --db out/evotensile.sqlite \
   --output-dir out/hipblaslt_baselines \
-  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/<gfx-target>"
+  --tensilelite-libpath "$ROCM_PATH/lib/hipblaslt/library/<gfx-target>"
 ```
 
 Run planned batches with adaptive sampling:
@@ -174,7 +174,7 @@ The lightweight target-specific gate uses `hipblaslt-bench --verify` through the
 cd ~/evotensile
 python3 scripts/verify_installed_hipblaslt.py \
   --bench ~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench \
-  --tensile-libpath "$ROCM_PATH/lib/hipblaslt/library/<gfx-target>"
+  --tensilelite-libpath "$ROCM_PATH/lib/hipblaslt/library/<gfx-target>"
 ```
 
 For broader upstream regression coverage, run `hipblaslt-test` with GTest XML output:

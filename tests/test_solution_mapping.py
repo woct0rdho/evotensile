@@ -70,7 +70,12 @@ def test_solution_mapping_uses_final_yaml_not_group_order(tmp_path: Path):
     )
     final_yaml = tmp_path / "00_Final.yaml"
     solution = _final_solution_from_candidate(base, solution_index=0)
-    _write_solution_yaml(final_yaml, shape, solution)
+    imported_solution = {
+        **solution,
+        "SourceSwap": int(solution["SourceSwap"]),
+        "StaggerUStride": float(solution["StaggerUStride"]),
+    }
+    _write_solution_yaml(final_yaml, shape, imported_solution)
 
     assert solution_matches_candidate(solution, base.canonical_params())
     assert solution_matches_candidate(solution, deduped.canonical_params())

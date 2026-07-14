@@ -2,6 +2,7 @@ from evotensile.database import BaselineSelectionInsert, EvoTensileDB
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.search_space import DOMAINS
 from evotensile.shapes import pilot_100_shapes
+from evotensile.tensilelite_parameter_types import TENSILELITE_PARAMETER_TYPES
 from scripts.discover_hipblaslt_baselines import _solution_to_candidate
 from tests.helpers import sample_candidates
 
@@ -15,14 +16,23 @@ def test_installed_solution_import_materializes_complete_candidate():
     assert imported.hash == original.hash
 
 
-def test_installed_solution_import_normalizes_integral_stagger_stride():
+def test_installed_solution_import_normalizes_all_known_parameter_types():
     original = sample_candidates(1)[0]
-    solution = {**original.canonical_params(), "StaggerUStride": 32.0}
+    solution = original.canonical_params()
+    for name, expected_type in TENSILELITE_PARAMETER_TYPES.items():
+        value = solution[name]
+        if expected_type is int:
+            solution[name] = float(value)
+        elif expected_type is bool:
+            solution[name] = int(value)
+        elif expected_type is list:
+            solution[name] = [float(item) for item in value]
 
     imported = _solution_to_candidate(solution)
 
-    assert imported.params["StaggerUStride"] == 32
-    assert type(imported.params["StaggerUStride"]) is int
+    assert imported.hash == original.hash
+    for name, expected_type in TENSILELITE_PARAMETER_TYPES.items():
+        assert type(imported.params[name]) is expected_type
 
 
 def test_baseline_discovery_is_zero_evidence_planning_data(tmp_path):

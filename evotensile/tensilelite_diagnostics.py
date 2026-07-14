@@ -247,14 +247,14 @@ def _architecture_name(config: Mapping[str, object]) -> str:
     return str(architecture)
 
 
-def _add_tensile_import_path(tensilelite_bin: Path) -> None:
+def _add_tensilelite_import_path(tensilelite_bin: Path) -> None:
     parentdir = tensilelite_bin.resolve().parents[2]
     if str(parentdir) not in sys.path:
         sys.path.insert(0, str(parentdir))
 
 
 def _diagnose_with_tensilelite(config_path: Path, manifest_path: Path, output_path: Path, tensilelite_bin: Path) -> int:
-    _add_tensile_import_path(tensilelite_bin)
+    _add_tensilelite_import_path(tensilelite_bin)
 
     import rocisa
     import Tensile.SolutionStructs.Utilities as solution_utilities

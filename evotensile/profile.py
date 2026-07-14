@@ -3,11 +3,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from .candidate import Shape, stable_hash
-from .protocol import DEFAULT_BENCHMARK_PROTOCOL, BenchmarkProtocol, global_parameter_items
+from .protocol import (
+    DEFAULT_BENCHMARK_PROTOCOL,
+    BenchmarkProtocol,
+    ProtocolParameterValue,
+    global_parameter_items,
+)
 from .shapes import comfy_nt_1135_shapes, pilot_100_shapes
 from .yaml_writer import FP16_NT_HHS_PROBLEM_TYPE, LIBRARY_LOGIC_GRIDBASED_GFX1151
 
-BASE_GLOBAL_PARAMETERS: dict[str, Any] = {
+BASE_GLOBAL_PARAMETERS: dict[str, ProtocolParameterValue] = {
     "MinimumRequiredVersion": "5.0.0",
     "RuntimeLanguage": "HIP",
     "ValidationMaxToPrint": 4,
@@ -57,7 +62,7 @@ class TargetProfile:
     def benchmark_protocol_hash(self, protocol: BenchmarkProtocol | None = None) -> str:
         return (protocol or self.default_protocol).protocol_hash()
 
-    def global_parameters(self, protocol: BenchmarkProtocol | None = None) -> dict[str, Any]:
+    def global_parameters(self, protocol: BenchmarkProtocol | None = None) -> dict[str, ProtocolParameterValue]:
         return {**BASE_GLOBAL_PARAMETERS, **(protocol or self.default_protocol).global_parameters()}
 
     def global_parameter_items(self, protocol: BenchmarkProtocol | None = None) -> list[str]:
