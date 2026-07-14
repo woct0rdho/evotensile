@@ -25,18 +25,20 @@ NT_HHS_PROFILE = "gfx1151-nt-hhs"
 DEFAULT_FAMILY_ELITES_PER_CELL = 4
 DEFAULT_FAMILY_DIVERSITY_SCORE_SLACK = 0.25
 
+FamilyFieldValue = int | str
+
 
 @dataclass(frozen=True)
 class FamilyDescriptor:
     profile: str
-    fields: tuple[tuple[str, Any], ...]
+    fields: tuple[tuple[str, FamilyFieldValue], ...]
 
     @property
     def key(self) -> str:
         items = ",".join(f"{name}={_format_value(value)}" for name, value in self.fields)
         return f"{self.profile}:{items}"
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self) -> dict[str, object]:
         return {
             "profile": self.profile,
             "key": self.key,
@@ -66,7 +68,7 @@ class FamilyArchiveEntry:
     def leader_candidate_hash(self) -> str:
         return self.leader.hash
 
-    def summary(self) -> dict[str, Any]:
+    def summary(self) -> dict[str, object]:
         return {
             "descriptor": self.descriptor.as_dict(),
             "leader_candidate_hash": self.leader_candidate_hash,
@@ -94,10 +96,6 @@ def _format_value(value: object) -> str:
     return str(value)
 
 
-def _field(params: Mapping[str, Any], name: str, default: Any) -> Any:
-    return params.get(name, default)
-
-
 def _tile_area_log2(macro_tile0: int, macro_tile1: int) -> int:
     return int(math.floor(math.log2(macro_tile0 * macro_tile1)))
 
@@ -114,11 +112,11 @@ def _tile_aspect(macro_tile0: int, macro_tile1: int) -> str:
 def nt_hhs_family_descriptor(candidate: Candidate | Mapping[str, Any]) -> FamilyDescriptor:
     params = candidate.canonical_params() if isinstance(candidate, Candidate) else dict(candidate)
     macro_tile0, macro_tile1 = macro_tile(params["MatrixInstruction"])
-    fields: tuple[tuple[str, Any], ...] = (
+    fields: tuple[tuple[str, FamilyFieldValue], ...] = (
         ("TileAreaLog2", _tile_area_log2(macro_tile0, macro_tile1)),
         ("TileAspect", _tile_aspect(macro_tile0, macro_tile1)),
-        ("TransposeLDS", int(_field(params, "TransposeLDS", 0))),
-        ("GlobalSplitU", int(_field(params, "GlobalSplitU", 1))),
+        ("TransposeLDS", int(params.get("TransposeLDS", 0))),
+        ("GlobalSplitU", int(params.get("GlobalSplitU", 1))),
     )
     return FamilyDescriptor(profile=NT_HHS_PROFILE, fields=fields)
 

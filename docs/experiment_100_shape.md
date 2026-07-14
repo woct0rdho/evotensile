@@ -408,7 +408,7 @@ Using the same 10-cold/100-iteration query command as the retained pre-update tu
 
 A separate same-session comparison interleaved three current and two preserved-untuned verified passes. Six noisy shapes were stabilized with alternating 100-cold/1000-iteration checks. The resulting comparison improves 89/100 shapes, 84 by at least 1%, and 65 by at least 5%, with 26.02% mean and 19.57% median gain. Two shapes remain at least 5% below the untuned package in this hipblaslt-bench oracle: `m512_n128_b1_k1024` at -15.66% and `m640_n256_b1_k256` at -8.95%.
 
-Tensile finalization and installed hipblaslt-bench timing are distinct exact oracles, so their absolute throughput values are not compared directly. The installed deployment report, source and installed artifact hashes, build log, raw verifier outputs, and query results are under `out/gridbased_logic_finalization_v4/`.
+TensileLite finalization and installed hipblaslt-bench timing are distinct exact oracles, so their absolute throughput values are not compared directly. The installed deployment report, source and installed artifact hashes, build log, raw verifier outputs, and query results are under `out/gridbased_logic_finalization_v4/`.
 
 ### Convergence Criteria
 

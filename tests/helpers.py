@@ -179,7 +179,7 @@ def fake_structured_runner(path: Path) -> Path:
     return script
 
 
-def fake_build_tensile(path: Path) -> Path:
+def fake_build_tensilelite(path: Path) -> Path:
     script = path / "fake_tensile_build.py"
     script.write_text(
         dedent(

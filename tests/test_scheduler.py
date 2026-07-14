@@ -71,9 +71,9 @@ def test_execute_schedule_resolves_profile_and_explicit_timeouts(tmp_path: Path)
 
 
 def test_execute_schedule_records_shape_rule_rejection_without_build(tmp_path: Path):
-    fake_tensile = tmp_path / "fail_if_called.py"
-    fake_tensile.write_text("#!/usr/bin/env python3\nraise SystemExit(99)\n", encoding="utf-8")
-    fake_tensile.chmod(0o755)
+    fake_tensilelite = tmp_path / "fail_if_called.py"
+    fake_tensilelite.write_text("#!/usr/bin/env python3\nraise SystemExit(99)\n", encoding="utf-8")
+    fake_tensilelite.chmod(0o755)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidate = make_candidate(
         {**REFERENCE_CANDIDATE.canonical_params(), "GlobalSplitU": 2, "DepthU": 32},
@@ -87,7 +87,7 @@ def test_execute_schedule_records_shape_rule_rejection_without_build(tmp_path: P
         output_root=tmp_path / "batches",
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=tmp_path / "unused_runner",
     )
 
@@ -96,12 +96,12 @@ def test_execute_schedule_records_shape_rule_rejection_without_build(tmp_path: P
 
 
 def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path):
-    fake_tensile = tmp_path / "slow_tensile.py"
-    fake_tensile.write_text(
+    fake_tensilelite = tmp_path / "slow_tensile.py"
+    fake_tensilelite.write_text(
         "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n",
         encoding="utf-8",
     )
-    fake_tensile.chmod(0o755)
+    fake_tensilelite.chmod(0o755)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]
@@ -114,7 +114,7 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
         output_root=tmp_path / "batches",
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=tmp_path / "unused_runner",
         build_timeout_s=0.1,
     )
@@ -139,8 +139,8 @@ def test_execute_schedule_records_single_candidate_build_timeout(tmp_path: Path)
 
 
 def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_build(tmp_path: Path, monkeypatch):
-    fake_tensile = tmp_path / "fake_tensile.py"
-    fake_tensile.write_text(
+    fake_tensilelite = tmp_path / "fake_tensile.py"
+    fake_tensilelite.write_text(
         dedent(
             """\
             #!/usr/bin/env python3
@@ -177,7 +177,7 @@ def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_b
         ),
         encoding="utf-8",
     )
-    fake_tensile.chmod(0o755)
+    fake_tensilelite.chmod(0o755)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = [sample_candidates(1)[0], REFERENCE_CANDIDATE]
     shape = pilot_100_shapes()[0]
@@ -263,7 +263,7 @@ def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_b
         output_root=tmp_path / "batches",
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
     )
@@ -275,9 +275,9 @@ def test_execute_schedule_salvages_final_yaml_and_uses_diagnostics_for_nonzero_b
 
 
 def test_multi_candidate_build_failure_unattributed_is_not_reusable_cache(tmp_path: Path, monkeypatch):
-    fake_tensile = tmp_path / "fake_tensile.py"
-    fake_tensile.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n", encoding="utf-8")
-    fake_tensile.chmod(0o755)
+    fake_tensilelite = tmp_path / "fake_tensile.py"
+    fake_tensilelite.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n", encoding="utf-8")
+    fake_tensilelite.chmod(0o755)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
     shape = pilot_100_shapes()[0]
@@ -313,7 +313,7 @@ def test_multi_candidate_build_failure_unattributed_is_not_reusable_cache(tmp_pa
         output_root=tmp_path / "batches",
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=tmp_path / "unused_runner",
         keep_going=True,
     )
@@ -339,9 +339,9 @@ def test_multi_candidate_build_failure_unattributed_is_not_reusable_cache(tmp_pa
 
 
 def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path):
-    fake_tensile = tmp_path / "fake_tensile.py"
-    fake_tensile.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n", encoding="utf-8")
-    fake_tensile.chmod(0o755)
+    fake_tensilelite = tmp_path / "fake_tensile.py"
+    fake_tensilelite.write_text("#!/usr/bin/env python3\nimport sys\nsys.exit(2)\n", encoding="utf-8")
+    fake_tensilelite.chmod(0o755)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidate = sample_candidates(1)[0]
     shape = pilot_100_shapes()[0]
@@ -354,7 +354,7 @@ def test_execute_schedule_records_single_candidate_build_failure(tmp_path: Path)
         output_root=tmp_path / "batches",
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=tmp_path / "unused_runner",
     )
 

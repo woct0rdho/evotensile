@@ -5,11 +5,11 @@ from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.scheduler import execute_schedule
 from evotensile.search.measured_cost import load_candidate_measured_costs
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import fake_build_tensile, fake_structured_runner, pair_requests, sample_candidates
+from tests.helpers import fake_build_tensilelite, fake_structured_runner, pair_requests, sample_candidates
 
 
 def test_recorded_run_costs_cover_prepare_validation_and_screening(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "costs.sqlite")
     candidate = sample_candidates(1)[0]
@@ -23,7 +23,7 @@ def test_recorded_run_costs_cover_prepare_validation_and_screening(tmp_path: Pat
         protocol=protocol,
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         cost_aware_scheduling=True,
     )

@@ -22,7 +22,7 @@ from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL
 from evotensile.scheduling.models import PairRequest
 from evotensile.search.replay import ExactOracleReplayState, OracleRecord
 from evotensile.shapes import pilot_100_shapes
-from tests.helpers import fake_build_tensile, fake_structured_runner, sample_candidates
+from tests.helpers import fake_build_tensilelite, fake_structured_runner, sample_candidates
 
 
 class FakeClock:
@@ -270,7 +270,7 @@ def test_real_round_executes_exact_persisted_wave_through_scheduler(tmp_path):
             target_profile=DEFAULT_PROFILE,
             protocol=protocol,
             runner_bin=fake_structured_runner(tmp_path),
-            tensilelite_bin=fake_build_tensile(tmp_path),
+            tensilelite_bin=fake_build_tensilelite(tmp_path),
             candidate_batch_size=1,
             shape_batch_size=1,
             compile_cache_root=tmp_path / "compile-cache",

@@ -149,7 +149,7 @@ Monitoring for seeds `20260711` and `20260712` observed:
 - GPU busy medians of `88%` and `93%`.
 - peak package power of `137W` and `138W`.
 - peak edge temperature of `82C` and `83C`.
-- up to six concurrent Tensile compilers.
+- up to six concurrent TensileLite compilers.
 - up to six concurrent validation runners.
 - at most one benchmark-mode runner.
 

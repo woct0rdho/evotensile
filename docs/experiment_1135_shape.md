@@ -262,13 +262,15 @@ Representative final assignments:
 - `m128_n8192_b1_k1024`: `cand_88b52fcee5c07b57`, `34.264 TFLOP/s`.
 - `m1024_n1024_b1_k1024`: `cand_75e7051d292480cf`, `30.608 TFLOP/s`.
 
-Final database audit after artifact cleanup:
-- 1,822 candidates and 1,135 shapes.
+Final database audit after artifact cleanup and the one-time parameter-type migration:
+- 1,820 candidates and 1,135 shapes.
+- Two stale imported candidates with float-valued `StaggerUStride` merged into their existing integer-typed canonical candidates.
+- All 115 baseline selections, 115 benchmark events, and two run-cost rows from those candidates were preserved under the canonical candidate IDs.
 - 79,625 benchmark events and 824,202 samples.
 - 52,745 validations.
 - 125 retained content-verified artifact bundles and 2,647 mappings, covering every selected deployment pair.
 - 1,015 imported blind proposal occurrences.
-- SHA-256 `88a23466843d5ea3e47b28590fb467a66301aa84fbf08f555768d006e48000dc`.
+- SHA-256 `cefadd263c3f3b2bf2caaa3976bbeed597688d4321f160ae95b73da90662f7f7`.
 - integrity `ok`. Zero foreign-key violations.
 
 Production reporting must use `out/grid1135_search_20260712/finalization_v1/deployment_0.000.json` for maximum speed or an explicitly selected loss-bounded deployment from the same directory. Checkpoints and historical pooled rankings remain diagnostic only.
@@ -277,6 +279,7 @@ Production reporting must use `out/grid1135_search_20260712/finalization_v1/depl
 
 The zero-tolerance finalization was exported to all four gfx1151 GridBased variants and installed into `~/venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel`:
 - `hhs`, `hhs_auxh`, `bbs`, and `bbs_auxb` each contain 125 solutions and 1,135 exact mappings.
+- all 125 `StaggerUStride` values in each variant are YAML integer scalars.
 - source files are byte-identical to the reviewed staging files under `out/gridbased_logic_finalization_1135_v1`.
 - `libhipblaslt.so.1.4` SHA-256 is `d1bccc55bd0b9213bcc72d7e8955e407cdd378f065542c1bf5e29f5e43a7b2ce`.
 - `_rocm_sdk_libraries` resolves `libhipblaslt`, `librocroller`, and `hipblaslt/library` to the rebuilt devel installation.

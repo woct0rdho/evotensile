@@ -6,6 +6,8 @@ from .candidate import stable_hash
 
 VALIDATION_PROTOCOL_VERSION = 1
 
+ProtocolParameterValue = bool | int | float | str
+
 BENCHMARK_PROTOCOL_OVERRIDE_FIELDS = (
     "num_warmups",
     "num_benchmarks",
@@ -90,7 +92,7 @@ class BenchmarkProtocol:
         clean = {key: value for key, value in overrides.items() if value is not None}
         return replace(self, **clean)
 
-    def global_parameters(self) -> dict[str, Any]:
+    def global_parameters(self) -> dict[str, ProtocolParameterValue]:
         return {
             "KernelTime": self.kernel_time,
             "PreciseKernelTime": self.precise_kernel_time,
@@ -116,16 +118,16 @@ class BenchmarkProtocol:
             "ParallelGpuExecution": self.parallel_gpu_execution,
         }
 
-    def runner_parameters(self) -> dict[str, Any]:
+    def runner_parameters(self) -> dict[str, str]:
         return {"ValidationBackend": self.validation_backend}
 
-    def identity_parameters(self) -> dict[str, Any]:
+    def identity_parameters(self) -> dict[str, ProtocolParameterValue]:
         return {
             "BenchmarkRole": self.role,
             **{key: value for key, value in self.global_parameters().items() if key in BENCHMARK_PROTOCOL_KEYS},
         }
 
-    def validation_identity_parameters(self) -> dict[str, Any]:
+    def validation_identity_parameters(self) -> dict[str, ProtocolParameterValue]:
         return {
             "ValidationProtocolVersion": VALIDATION_PROTOCOL_VERSION,
             "ValidationBackend": self.validation_backend,
@@ -150,7 +152,7 @@ class BenchmarkProtocol:
 
 def apply_benchmark_protocol_overrides(
     protocol: BenchmarkProtocol,
-    overrides: Mapping[str, Any],
+    overrides: Mapping[str, object],
 ) -> BenchmarkProtocol:
     return protocol.with_overrides(**{field: overrides.get(field) for field in BENCHMARK_PROTOCOL_OVERRIDE_FIELDS})
 

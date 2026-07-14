@@ -15,6 +15,7 @@ from evotensile.database import BenchmarkSummary, EvoTensileDB
 from evotensile.profile import PROFILES, TargetProfile, get_profile
 from evotensile.protocol import BenchmarkProtocol, apply_benchmark_protocol_overrides
 from evotensile.solution_mapping import find_solution_yamls, solution_matches_candidate
+from evotensile.tensilelite_parameter_types import normalize_imported_solution_parameters
 
 DEFAULT_LOGIC_DIR = (
     Path.home()
@@ -237,14 +238,18 @@ def _solution_records_from_logic(path: Path) -> list[dict[str, Any]]:
     data = _load_yaml(path)
     if not isinstance(data, list) or len(data) < 6 or not isinstance(data[5], list):
         return []
-    return [solution for solution in data[5] if isinstance(solution, dict)]
+    return [normalize_imported_solution_parameters(solution) for solution in data[5] if isinstance(solution, dict)]
 
 
 def _solution_records_from_final_yaml(path: Path) -> list[dict[str, Any]]:
     data = _load_yaml(path)
     if not isinstance(data, list):
         return []
-    return [item for item in data if isinstance(item, dict) and "SolutionIndex" in item]
+    return [
+        normalize_imported_solution_parameters(item)
+        for item in data
+        if isinstance(item, dict) and "SolutionIndex" in item
+    ]
 
 
 def _collect_solution_pool(paths: list[Path]) -> list[dict[str, Any]]:
@@ -298,9 +303,6 @@ def _retarget_name(value: str, name_prefix: str) -> str:
 
 def _normalize_solution_scalars(solution: dict[str, Any]) -> None:
     solution.pop("ProblemType", None)
-    for key in ("ExpandPointerSwap", "SourceSwap"):
-        if key in solution and isinstance(solution[key], int):
-            solution[key] = bool(solution[key])
     if "GlobalReadPerMfma" in solution and isinstance(solution["GlobalReadPerMfma"], int):
         solution["GlobalReadPerMfma"] = float(solution["GlobalReadPerMfma"])
     code_object_version = solution.get("CodeObjectVersion")

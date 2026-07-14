@@ -25,7 +25,7 @@ from evotensile.structured_runner import (
 )
 from evotensile.subprocess_utils import run_logged_process
 from tests.helpers import (
-    fake_build_tensile,
+    fake_build_tensilelite,
     fake_structured_runner,
     insert_test_benchmark_event,
     pair_requests,
@@ -216,7 +216,7 @@ def test_run_structured_phase_passes_explicit_mode_and_backend(tmp_path: Path):
 
 
 def test_parallel_prepare_finishes_before_serial_benchmark_queue(tmp_path: Path, monkeypatch):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
@@ -233,7 +233,7 @@ def test_parallel_prepare_finishes_before_serial_benchmark_queue(tmp_path: Path,
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         prepare_workers=2,
@@ -251,7 +251,7 @@ def test_parallel_prepare_finishes_before_serial_benchmark_queue(tmp_path: Path,
 
 
 def test_cost_aware_prepare_order_does_not_change_timing_order(tmp_path: Path, monkeypatch):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
@@ -278,7 +278,7 @@ def test_cost_aware_prepare_order_does_not_change_timing_order(tmp_path: Path, m
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         prepare_workers=1,
@@ -291,7 +291,7 @@ def test_cost_aware_prepare_order_does_not_change_timing_order(tmp_path: Path, m
 
 
 def test_prepare_waves_allow_coordinator_to_stop_before_next_wave(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(3)
@@ -305,7 +305,7 @@ def test_prepare_waves_allow_coordinator_to_stop_before_next_wave(tmp_path: Path
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         prepare_workers=1,
@@ -321,7 +321,7 @@ def test_prepare_waves_allow_coordinator_to_stop_before_next_wave(tmp_path: Path
 
 
 def test_validation_worker_cap_serializes_gpu_validation(tmp_path: Path, monkeypatch):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(4)
@@ -336,7 +336,7 @@ def test_validation_worker_cap_serializes_gpu_validation(tmp_path: Path, monkeyp
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         prepare_workers=4,
@@ -349,7 +349,7 @@ def test_validation_worker_cap_serializes_gpu_validation(tmp_path: Path, monkeyp
 
 
 def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
@@ -374,7 +374,7 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         prepare_workers=2,
@@ -399,7 +399,7 @@ def test_adaptive_topup_reuses_prepared_artifacts(tmp_path: Path, monkeypatch):
 
 
 def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, monkeypatch):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
@@ -422,7 +422,7 @@ def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, mon
         protocol=main_protocol,
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         adaptive_policy=AdaptivePolicy(max_rounds=0),
@@ -473,7 +473,7 @@ def test_adaptive_probe_limits_slow_candidates_to_one_launch(tmp_path: Path, mon
 
 
 def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_path: Path, monkeypatch):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
@@ -492,7 +492,7 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
         protocol=main_protocol,
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         adaptive_policy=AdaptivePolicy(max_rounds=0),
@@ -505,7 +505,7 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
         protocol=main_protocol,
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         adaptive_policy=AdaptivePolicy(max_rounds=0),
@@ -519,7 +519,7 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
         protocol=main_protocol,
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         adaptive_policy=AdaptivePolicy(max_rounds=0),
@@ -539,7 +539,7 @@ def test_cached_probe_screening_skips_preparation_and_policy_change_retries(tmp_
 
 
 def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -571,7 +571,7 @@ def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch
         protocol=main_protocol,
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         adaptive_policy=AdaptivePolicy(max_rounds=0),
@@ -590,7 +590,7 @@ def test_adaptive_probe_uses_compatible_db_incumbent(tmp_path: Path, monkeypatch
 
 
 def test_singleton_nonzero_build_salvages_runnable_artifact(tmp_path: Path, monkeypatch):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     monkeypatch.setenv("EVOTENSILE_TEST_BUILD_RETURNCODE", "2")
@@ -602,7 +602,7 @@ def test_singleton_nonzero_build_salvages_runnable_artifact(tmp_path: Path, monk
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
     )
@@ -617,7 +617,7 @@ def test_singleton_nonzero_build_salvages_runnable_artifact(tmp_path: Path, monk
 
 
 def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
@@ -631,7 +631,7 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
         protocol=protocol,
         candidate_batch_size=2,
         shape_batch_size=2,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
     )
@@ -664,7 +664,7 @@ def test_structured_external_runner_ingests_exact_shape_candidate_rows(tmp_path:
 
 
 def test_sparse_requests_never_validate_time_or_insert_unrequested_pairs(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(2)
@@ -679,7 +679,7 @@ def test_sparse_requests_never_validate_time_or_insert_unrequested_pairs(tmp_pat
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         candidate_batch_size=2,
         shape_batch_size=2,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
     )
@@ -709,7 +709,7 @@ def test_sparse_requests_never_validate_time_or_insert_unrequested_pairs(tmp_pat
 
 
 def test_mixed_validation_state_runs_only_uncached_exact_pair(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     db.init()
@@ -738,7 +738,7 @@ def test_mixed_validation_state_runs_only_uncached_exact_pair(tmp_path: Path):
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
     )
@@ -754,7 +754,7 @@ def test_mixed_validation_state_runs_only_uncached_exact_pair(tmp_path: Path):
 
 
 def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidate = sample_candidates(1)[0]
@@ -767,7 +767,7 @@ def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
     )
@@ -778,7 +778,7 @@ def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
         candidate_batch_size=1,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
     )
@@ -797,8 +797,8 @@ def test_structured_external_runner_topup_reuses_prior_validation(tmp_path: Path
 
 
 def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
-    fake_tensile = tmp_path / "fake_tensile_cache.py"
-    fake_tensile.write_text(
+    fake_tensilelite = tmp_path / "fake_tensile_cache.py"
+    fake_tensilelite.write_text(
         dedent(
             """\
             #!/usr/bin/env python3
@@ -842,7 +842,7 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    fake_tensile.chmod(0o755)
+    fake_tensilelite.chmod(0o755)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "sched.sqlite")
     candidates = sample_candidates(3)
@@ -856,7 +856,7 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         compile_cache_root=compile_cache_root,
@@ -869,7 +869,7 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
         candidate_batch_size=2,
         shape_batch_size=1,
         ignore_cache=True,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         compile_cache_root=compile_cache_root,
@@ -895,7 +895,7 @@ def test_compile_cache_reuses_tensilelite_build_dir_across_runs(tmp_path: Path):
 
 
 def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     runner = tmp_path / "bad_runner.py"
     runner.write_text(
         dedent(
@@ -934,7 +934,7 @@ def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
         db,
         requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=runner,
         keep_going=True,
     )
@@ -947,7 +947,7 @@ def test_structured_external_backend_rejects_unexpected_pair(tmp_path: Path):
 
 
 def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     runner = tmp_path / "wrong_solution_runner.py"
     runner.write_text(
         dedent(
@@ -990,7 +990,7 @@ def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path
         requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=runner,
         keep_going=True,
     )
@@ -1003,7 +1003,7 @@ def test_structured_external_backend_rejects_wrong_solution_index(tmp_path: Path
 
 
 def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     runner = tmp_path / "incomplete_runner.py"
     runner.write_text(
         dedent(
@@ -1047,7 +1047,7 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
         requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=runner,
         keep_going=True,
     )
@@ -1060,7 +1060,7 @@ def test_structured_external_backend_rejects_incomplete_samples(tmp_path: Path):
 
 
 def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     runner = tmp_path / "duplicate_runner.py"
     runner.write_text(
         dedent(
@@ -1106,7 +1106,7 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
         requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=2),
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=runner,
         keep_going=True,
     )
@@ -1119,7 +1119,7 @@ def test_structured_external_backend_rejects_duplicate_sample_indices(tmp_path: 
 
 
 def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     runner = tmp_path / "nonzero_runner.py"
     runner.write_text(
         dedent(
@@ -1165,7 +1165,7 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
         requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=runner,
         keep_going=True,
     )
@@ -1179,7 +1179,7 @@ def test_structured_external_backend_rejects_nonzero_return_with_positive_rows(t
 
 
 def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     runner = tmp_path / "slow_runner.py"
     runner.write_text(
         dedent(
@@ -1219,7 +1219,7 @@ def test_structured_external_backend_records_runner_timeout(tmp_path: Path):
         requests=pair_requests(sample_candidates(1), pilot_100_shapes()[:1]),
         output_root=tmp_path / "batches",
         protocol=DEFAULT_BENCHMARK_PROTOCOL.with_overrides(num_benchmarks=1),
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=runner,
         runner_timeout_s=0.1,
         keep_going=True,

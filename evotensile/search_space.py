@@ -1,5 +1,5 @@
 import random
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -354,7 +354,10 @@ def _c_accumulator_vgprs(params: dict[str, Any]) -> int:
 
 
 def _ranked_valid_matrix_instructions(
-    params: dict[str, Any], predicate: Any, *, rng: random.Random | None = None
+    params: dict[str, Any],
+    predicate: Callable[[dict[str, Any]], bool],
+    *,
+    rng: random.Random | None = None,
 ) -> list[list[int]]:
     current_macro_tile = macro_tile(params["MatrixInstruction"])
     valid_instructions = [

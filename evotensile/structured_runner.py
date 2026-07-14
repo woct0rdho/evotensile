@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 from .candidate import Shape
 from .database import BenchmarkEventInsert, ValidationInsert
@@ -79,14 +79,8 @@ class ValidationOutcome:
     validations: list[ValidationInsert]
 
 
-def _finite_positive(value: Any) -> bool:
-    if value is None:
-        return False
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return False
-    return math.isfinite(number) and number > 0.0
+def _finite_positive(value: float | None) -> bool:
+    return value is not None and math.isfinite(value) and value > 0.0
 
 
 def _sample_from_json(value: StructuredSamplePayload) -> StructuredSample:

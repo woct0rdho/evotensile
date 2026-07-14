@@ -10,6 +10,7 @@ from evotensile.database import EvoTensileDB, ValidationInsert
 from evotensile.profile import DEFAULT_PROFILE
 from evotensile.structured_runner import RunnablePair
 from scripts.update_hipblaslt_gridbased_logic import (
+    REFERENCE_SCHEMA_FILES,
     VARIANTS,
     Winner,
     _load_winners_from_assignments,
@@ -180,15 +181,15 @@ def _logic_export_fixture(
     logic_dir = tmp_path / "logic"
     logic_dir.mkdir()
     template = [{}, {}, {}, {}, {"UseE": False}, [solution], {}, []]
-    (logic_dir / VARIANTS["hhs"].filename).write_text(
-        yaml.safe_dump(template, sort_keys=False),
-        encoding="utf-8",
-    )
+    template_text = yaml.safe_dump(template, sort_keys=False)
+    (logic_dir / VARIANTS["hhs"].filename).write_text(template_text, encoding="utf-8")
+    (logic_dir / REFERENCE_SCHEMA_FILES[0]).write_text(template_text, encoding="utf-8")
     if artifact:
         build_dir = tmp_path / "build"
         build_dir.mkdir()
         solution_yaml = build_dir / "00_Final.yaml"
-        solution_yaml.write_text(yaml.safe_dump([{}, {}, solution], sort_keys=False), encoding="utf-8")
+        artifact_solution = {**solution, "StaggerUStride": float(solution["StaggerUStride"])}
+        solution_yaml.write_text(yaml.safe_dump([{}, {}, artifact_solution], sort_keys=False), encoding="utf-8")
         library_dir = build_dir / "library" / str(profile.library_logic["ArchitectureName"])
         library_dir.mkdir(parents=True)
         (library_dir / "TensileLibrary.yaml").write_text("solutions: []\n", encoding="utf-8")
@@ -290,4 +291,7 @@ def test_logic_export_uses_registered_artifact_and_writes_output(tmp_path: Path)
     assert result["winner_source"] == "deployment-selection"
     assert result["registered_artifact_count"] == 1
     assert result["shape_count"] == 1
-    assert (destination / VARIANTS["hhs"].filename).exists()
+    output_path = destination / VARIANTS["hhs"].filename
+    assert output_path.exists()
+    output = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+    assert type(output[5][0]["StaggerUStride"]) is int

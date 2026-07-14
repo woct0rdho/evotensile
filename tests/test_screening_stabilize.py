@@ -16,7 +16,7 @@ from evotensile.search.screening_stabilize import (
 )
 from evotensile.shapes import pilot_100_shapes
 from evotensile.structured_runner import RunnablePair, StructuredRunOutput
-from tests.helpers import fake_build_tensile, fake_structured_runner, pair_requests, sample_candidates
+from tests.helpers import fake_build_tensilelite, fake_structured_runner, pair_requests, sample_candidates
 
 
 def _screening_protocol():
@@ -199,7 +199,7 @@ def test_screening_stabilization_runner_budget_skips_later_fair_pair(tmp_path: P
 
 
 def test_screening_stabilization_reuses_prior_artifacts(tmp_path: Path, monkeypatch):
-    fake_tensile = fake_build_tensile(tmp_path)
+    fake_tensilelite = fake_build_tensilelite(tmp_path)
     fake_runner = fake_structured_runner(tmp_path)
     db = EvoTensileDB.connect(tmp_path / "campaign.sqlite")
     candidates = sample_candidates(2)
@@ -215,7 +215,7 @@ def test_screening_stabilization_reuses_prior_artifacts(tmp_path: Path, monkeypa
         protocol=protocol,
         candidate_batch_size=2,
         shape_batch_size=1,
-        tensilelite_bin=fake_tensile,
+        tensilelite_bin=fake_tensilelite,
         runner_bin=fake_runner,
         keep_going=True,
         prepare_workers=2,
