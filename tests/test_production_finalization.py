@@ -1,4 +1,22 @@
-from scripts.finalize_grid100_production_search import TimingSummary, _select_contenders
+from pathlib import Path
+
+from scripts.finalize_grid100_production_search import (
+    DEFAULT_CONTENDER_TOLERANCE,
+    DEFAULT_MAXIMUM_CONTENDERS,
+    TimingSummary,
+    _default_baseline_database,
+    _default_output_directory,
+    _select_contenders,
+)
+
+
+def test_finalization_defaults_match_authoritative_campaign():
+    database = Path("out/evotensile.sqlite")
+
+    assert DEFAULT_MAXIMUM_CONTENDERS == 4
+    assert DEFAULT_CONTENDER_TOLERANCE == 0.05
+    assert _default_baseline_database(database) == Path("out/evotensile-seed.sqlite")
+    assert _default_output_directory(database) == Path("out/evotensile/finalization")
 
 
 def _summary(candidate_hash, performance):

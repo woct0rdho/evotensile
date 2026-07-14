@@ -31,11 +31,23 @@ from evotensile.search.replay import OracleRecord, load_db_oracle_matrix
 from evotensile.search.shape_clustering import ShapeClusteringConfiguration, cluster_shapes
 from evotensile.search.trust_region import interaction_grid_candidates
 
-DEFAULT_DB = Path("out/grid100_production_search_20260712.sqlite")
-DEFAULT_INITIAL_DB = Path("out/grid100_compatible_20260712.sqlite")
-DEFAULT_CAMPAIGN_ROOT = Path("out/grid100_production_search_20260712")
-DEFAULT_INCUMBENT_DEPLOYMENT = DEFAULT_CAMPAIGN_ROOT / "finalization_v3/deployment_0.000.json"
-DEFAULT_INCUMBENT_REPORT = DEFAULT_CAMPAIGN_ROOT / "finalization_v3/report.json"
+DEFAULT_DB = Path("out/evotensile.sqlite")
+
+
+def _default_seed_database(database: Path) -> Path:
+    return database.with_name(f"{database.stem}-seed{database.suffix}")
+
+
+def _default_campaign_root(database: Path) -> Path:
+    return database.with_suffix("")
+
+
+def _default_incumbent_deployment(campaign_root: Path) -> Path:
+    return campaign_root / "checkpoint-latest/deployment_0.000.json"
+
+
+def _default_incumbent_report(incumbent_deployment: Path) -> Path:
+    return incumbent_deployment.with_name("report.json")
 
 
 class DeploymentPayload(TypedDict):
@@ -534,10 +546,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--profile", choices=sorted(PROFILES), default=DEFAULT_PROFILE.name)
-    parser.add_argument("--initialize-from", type=Path, default=DEFAULT_INITIAL_DB)
-    parser.add_argument("--campaign-root", type=Path, default=DEFAULT_CAMPAIGN_ROOT)
-    parser.add_argument("--incumbent-deployment", type=Path, default=DEFAULT_INCUMBENT_DEPLOYMENT)
-    parser.add_argument("--incumbent-report", type=Path, default=DEFAULT_INCUMBENT_REPORT)
+    parser.add_argument("--initialize-from", type=Path)
+    parser.add_argument("--campaign-root", type=Path)
+    parser.add_argument("--incumbent-deployment", type=Path)
+    parser.add_argument("--incumbent-report", type=Path)
     parser.add_argument("--round-id", required=True)
     parser.add_argument("--strategy", choices=("interaction", "promotion"), default="interaction")
     parser.add_argument(
@@ -587,6 +599,10 @@ def main() -> None:
     )
     parser.add_argument("--plan-only", action="store_true")
     args = parser.parse_args()
+    args.initialize_from = args.initialize_from or _default_seed_database(args.db)
+    args.campaign_root = args.campaign_root or _default_campaign_root(args.db)
+    args.incumbent_deployment = args.incumbent_deployment or _default_incumbent_deployment(args.campaign_root)
+    args.incumbent_report = args.incumbent_report or _default_incumbent_report(args.incumbent_deployment)
     profile = get_profile(args.profile)
     if args.parent_count <= 0 or args.max_target_shapes <= 0 or args.candidate_pool_limit <= 0:
         raise ValueError("parent, target-shape, and candidate-pool limits must be positive")

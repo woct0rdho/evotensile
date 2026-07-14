@@ -4,16 +4,27 @@ Work in progress. README and docs are AI-generated and intended for AI to read.
 
 EvoTensile is a framework for TensileLite kernel tuning using smart search algorithms. It's inspired by [Helion](https://github.com/pytorch/helion), [rocm\_wmma\_gemm](https://github.com/adelj88/rocm_wmma_gemm), [Ductile](https://github.com/ROCm/rocm-libraries/pull/8831), and [GEKO](https://github.com/ROCm/rocm-libraries/pull/8832).
 
-It's equipped with family stratified seeding, GOMEA, learned linkage, learned tree surrogate, and joint search on neighboring shapes. It's suitable to search on whether a single shape or a large grid of shapes.
+Notable features:
+- high-throughput search on whether one shape or thousands of shapes.
+- family stratified seeding, GOMEA, learned linkage, learned tree surrogate on one or multi shapes.
+- Bayesian joint search on multi shapes, which borrows configs from neighboring shapes.
+- early screening of obviously slow configs.
+- multi-armed bandit algorithm to rank candidates with noisy measurements.
+- compilation cache and multiprocess compilation.
+- correctness validation against current hipBLASLt on GPU.
+- database for persisted search history.
+- simulated timing from known history when evaluating search strategy, without rerunning measurements.
 
-It separates search strategies from underlying measurements. When evaluating the efficiency of a search strategy, it supports simulated timing based on previous measurement results and running times, rather than actually rerun the measurements.
+There is not yet a fully automated top-level search loop, but the loop can be driven by AI.
+
+I've tuned the gfx1151 GEMM NT HHS kernel on an 1,135-shape grid. It's possible to support other kernels, notably GroupedGEMM.
 
 ## Workflow
 
 1. Define problem type, input shapes, and config search space.
-2. Discover installed hipBLASLt selections, then search them through the normal scheduler alongside family-QD candidates.
-3. Repair local outliers by rerunning search with neighbor-seeded configs.
-4. Update hipBLASLt configs.
+2. Import current hipBLASLt configs.
+3. Search configs in iterative rounds, interleaving generic search, measured promotion, and outlier repair. Finish with finalist selection.
+4. Update tuned hipBLASLt configs.
 5. Rebuild and reinstall hipBLASLt.
 6. Verify correctness and performance of reinstalled hipBLASLt.
 
@@ -40,20 +51,13 @@ When an installation provides another profile, select it explicitly with `--prof
 
 During real schedules, failed multi-candidate TensileLite builds are attributed through structured TensileLite diagnostics instead of log scraping or recursive isolation. Use those diagnostics to keep hard rules source-backed and exact, while keeping proposal heuristics separate from validity.
 
-### 2. Search Configs
+### 2. Import hipBLASLt Configs
 
-`schedule-batches` is the main entry point for searching. It plans missing `(shape, candidate)` work against the SQLite cache, emits TensileLite YAML batches, runs TensileLite build/codegen, maps accepted solutions from final YAML once, and ingests structured validation-gated result rows keyed directly by `shape_id` and `candidate_hash`.
+Start each campaign by importing the configs selected by the relevant hipBLASLt installations or preserved logic packages. Use one mutable SQLite database for all evidence-compatible imports and later search rounds. Keep incompatible hardware, toolchain, runtime, or validation environments in separate databases.
 
-Dry-run a plan:
+An imported hipBLASLt query is seed provenance, not native EvoTensile performance evidence. `discover_hipblaslt_baselines.py` identifies the selected solution for every target shape and records the external query context. Unless `--query-only` is used, it then schedules those exact candidate-shape pairs through the normal compilation, validation, timing, cost, and artifact pipeline.
 
-```bash
-python3 -m evotensile.cli schedule-batches \
-  --db out/evotensile.sqlite \
-  --output-dir out/search \
-  --dry-run
-```
-
-Build rocisa, TensileLite client, and EvoTensile structured runner:
+Build rocisa, the TensileLite client, and the EvoTensile structured runner before importing:
 
 ```bash
 cd ~/rocm-libraries/projects/hipblaslt/tensilelite/rocisa
@@ -66,61 +70,107 @@ scripts/build_structured_runner.sh
 
 The runner build script validates that the expected TensileLite client static libraries exist under `~/rocm-libraries/build/tensilelite-client` before compiling `./build/evotensile-structured-runner`.
 
-Discover the current hipBLASLt-selected configs once per DB/problem/grid. Discovery records planning pairs only. Unless `--query-only` is used, the command then schedules those exact pairs through normal compilation, validation, timing, cost, and artifact paths:
+Import and natively measure the current installed selections:
 
 ```bash
 python3 scripts/discover_hipblaslt_baselines.py \
   --db out/evotensile.sqlite \
-  --output-dir out/hipblaslt_baselines \
+  --profile <profile-name> \
+  --output-dir out/hipblaslt-current \
+  --baseline-label current \
   --tensilelite-libpath "$ROCM_PATH/lib/hipblaslt/library/<gfx-target>"
 ```
 
-Run planned batches with adaptive sampling:
+Repeat the import for any evidence-compatible comparison package that should remain a mandatory control, such as preserved untuned logic. Isolate its runtime assets, give it a distinct `--baseline-label`, and provide the matching `--logic-yaml`. Do not pool query timings or measurements from incompatible environments.
+
+After all seed imports, preserve an immutable database snapshot for final baseline comparisons and keep searching in the mutable campaign database:
+
+```bash
+sqlite3 out/evotensile.sqlite ".backup 'out/evotensile-seed.sqlite'"
+```
+
+### 3. Search Configs
+
+The 1,135-shape campaign used sparse evidence-driven rounds rather than one dense restart or a separate repair-only tail. Generic interaction search, measured promotion, integrated outlier repair, stabilization, and checkpoint refreshes can be interleaved according to the evidence produced by the previous round.
+
+The generalized practical-round and finalization scripts retain historical `grid100` filenames, but support every registered profile, including `gfx1151-nt-hhs-comfy1135`. They default to `out/evotensile.sqlite`, derive the seed database and campaign directories from that path, derive the incumbent report beside its deployment file, and use four contenders within 5% for finalization.
+
+First establish a fresh initial checkpoint from the imported corpus. Checkpoints anchor later comparisons. They are selection state, not attribution evidence for a search operator:
+
+```bash
+python3 scripts/finalize_grid100_production_search.py \
+  --profile <profile-name> \
+  --output-dir out/evotensile/checkpoint-initial \
+  --maximum-contenders 2 \
+  --samples 10
+```
+
+Run sparse interaction rounds over evidence-backed parameter families such as store, staging, mapping, vector, and LDS. Integrated repair can spend part of the same round on shapes with fresh checkpoint deficits, model uncertainty, weak gains, or nearby measured candidates:
+
+```bash
+python3 scripts/run_grid100_practical_round.py \
+  --profile <profile-name> \
+  --incumbent-deployment out/evotensile/checkpoint-initial/deployment_0.000.json \
+  --round-id round08-vector-repair \
+  --interaction-profile vector \
+  --integrated-repair-targets 24 \
+  --integrated-repair-weight 1.0 \
+  --seed <change seed each time>
+```
+
+Promote only children with exact measured gains, using the measured comparison parent from the originating round:
+
+```bash
+python3 scripts/run_grid100_practical_round.py \
+  --profile <profile-name> \
+  --incumbent-deployment out/evotensile/checkpoint-initial/deployment_0.000.json \
+  --round-id round09-promotion \
+  --strategy promotion \
+  --promote <candidate-hash>:<parent-hash> \
+  --seed <change seed each time>
+```
+
+A practical campaign loop is:
+- probe a broad or evidence-backed interaction family on a bounded shape set.
+- promote measured winners across parent-competitive shapes and mechanical neighbors.
+- interleave integrated repair when checkpoint deficits or uncertainty expose local headroom. Repair is not a correctness rule and every pair still requires exact validation and timing.
+- refresh the checkpoint after material generalists, stale assignments, or several rounds of accumulated gains. Include explicit baseline and incumbent controls whenever same-session comparison is required.
+- stabilize close or noisy contenders before attributing gains, and preserve failed validations and rejected proposals as evidence.
+- reopen a search family only for transferable gains. Isolated noise or a dominated same-shape competitor does not justify a broad restart.
+- declare convergence only after promotion is exhausted and diverse closure probes produce no material transferable multi-shape gain.
+
+`schedule-batches` remains the lower-level entry point for explicit candidate-shape work. It plans missing pairs against SQLite, emits TensileLite YAML, runs build/codegen, maps final solutions, and ingests validation-gated timing rows. It uses adaptive probe, screening, main-protocol, and top-up sampling by default:
 
 ```bash
 python3 -m evotensile.cli schedule-batches \
   --db out/evotensile.sqlite \
-  --output-dir out/search
+  --profile <profile-name> \
+  --output-dir out/search \
+  --dry-run
 ```
 
-The external runner consumes TensileLite build artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Each SQLite DB file is one evidence namespace for a target hardware/environment/campaign. Use separate DB paths when comparing incompatible campaigns. Compatible benchmark overlays can be consolidated into a new read-only replay snapshot with `scripts/merge_compatible_databases.py`. Source DBs remain unchanged and the merge records a source manifest. Each `schedule-batches` invocation writes `schedule_metadata.json` in `--output-dir` so runs can be audited without parsing stdout. Profiles provide compile and runner timeout defaults. Pass `0` to a timeout flag to disable it or `--stop-on-error` to fail fast.
+The external runner consumes TensileLite artifacts from either full-client `4_LibraryClient/library/gfx*` output or build-only `1_BenchmarkProblems/**/source/library/gfx*` cache output. Compile-cache builds are candidate-centric and reusable across proposal cohorts. Preparation performs build, mapping, diagnostics, and validation in parallel. Timing starts only after preparation drains and always runs serially. Validation is stored independently and remains a hard gate.
 
-Production CLI defaults favor reusable throughput: the selected profile supplies the preparation-worker cap, compile threads default to one, and compile-cache reuse is enabled under `OUTPUT_DIR/compile_cache`. Cache-backed schedules use singleton candidate libraries so artifacts remain reusable across proposal cohorts. With `--no-compile-cache`, a profile-bounded throughput heuristic chooses the candidate batch size. Preparation performs build/map/diagnostic/validation in parallel. Timing starts only after that pool drains and always runs serially.
+With no custom provider, proposal-generating commands use the built-in family-QD policy. Random, local and semantic mutation, DE, GOMEA, family archives, learned linkage, mechanical covering, adaptive operator allocation, contextual bundle acquisition, and measured transfer remain available building blocks. See `docs/custom_proposals.md`, `docs/campaign_policy_tuning.md`, and `docs/search_outlier_repair.md`.
 
-With no custom provider, proposal-generating commands run the built-in family-QD policy and record durable provider provenance `builtin:family-qd`. Exact-shape and nearest-shape validation-passed winners, including measured discovered hipBLASLt candidates when they remain best, can initialize its operators through `--transfer-shapes` / `--transfer-per-shape`. Random, local/semantic mutation, DE, GOMEA, family archive, linkage, covering, adaptive operator allocation, and contextual bundle acquisition remain supported building blocks. Singleton oversized-pool selection uses bundle acquisition after sufficient exact evidence while preserving mechanical cold start. Trusted custom compositions use `--proposal-script`. See `docs/custom_proposals.md` and `docs/campaign_policy_tuning.md`.
-
-Supported protocol overrides include `--num-benchmarks`, `--num-warmups`, `--enqueues-per-sync`, `--syncs-per-benchmark`, `--num-elements-to-validate`, and `--validation-backend`. The default performs full hipBLASLt GPU-oracle validation with `NumElementsToValidate=-1`. `--validation-backend cpu` selects CPU audit validation. There is no no-validation backend: benchmark-only execution is admitted only after compatible correctness evidence exists.
-
-Validation is a hard gate stored independently from timing. Adaptive top-ups reuse the original compiled and correctness-verified artifacts. They perform no recompilation or repeated verification.
-
-Search-time timing is noisy enough that top-1 screening can miss the final winner. `schedule-batches` uses adaptive sampling by default: it prepares all candidates once, gives each validation-passed pair one probe launch, tops up provisional probe survivors to three launches, runs the main timing protocol only for final probe survivors, then appends missing main-protocol samples for plausible contenders from the prepared-artifact index. Use `--fixed-sampling` only for debugging or fixed-budget utility runs.
-
-Structured scheduler runs ingest their own JSONL results directly into SQLite. The old TensileLite `LibraryClient` CSV/log ingestion path has been removed.
-
-### 3. Repair Weak Shapes
-
-Multi-shape campaigns reserve a staged repair phase for evidence-supported weak shapes. Repair combines capped reference, nearest-shape, cluster, and model-uncertainty deficits with each available candidate's posterior probability of closing useful headroom. Incumbent, neighbor, cluster, broad, and generic mutation seeds enter the same shared-cost bundle acquisition used by the rest of the campaign. Uniform shape weighting remains the default. Explicit call-count * baseline-latency workload weighting is documented in `docs/workload_weighting.md`.
-
-Repair is a search-budget heuristic, not a correctness rule: real performance cliffs from divisibility, edge handling, LDS pressure, or occupancy can legitimately sit below nearby shapes. Every selected repair pair still passes exact validation and timing on its target shape. See `docs/search_outlier_repair.md` and `scripts/simulate_repair_acquisition.py`.
-
-After searching, we can inspect the results.
-
-Summarize cache status:
+After convergence, run authoritative fresh finalization. It remeasures the bounded contender set for every shape, requires the original compatible control and current incumbent, and emits zero-tolerance plus explicit loss-bounded deployment selections:
 
 ```bash
-python3 -m evotensile.cli summarize-cache \
-  --db out/evotensile.sqlite
+python3 scripts/finalize_grid100_production_search.py \
+  --profile <profile-name> \
+  --incumbent-deployment out/evotensile/checkpoint-latest/deployment_0.000.json
 ```
 
-Rank validation-passed observations:
+Production updates must use a deployment file from fresh finalization, normally `deployment_0.000.json` for maximum measured speed or an explicitly selected loss-bounded alternative. Historical pooled rankings and intermediate checkpoints remain diagnostic only. See `docs/experiment_1135_shape.md` for the concrete round, repair, checkpoint, convergence, and finalization sequence from the 1,135-shape campaign.
+
+Summarize cache status and inspect validation-passed observations at any point:
 
 ```bash
-python3 -m evotensile.cli rank-benchmarks \
-  --db out/evotensile.sqlite \
-  --min-samples 2
+python3 -m evotensile.cli summarize-cache --db out/evotensile.sqlite
+python3 -m evotensile.cli rank-benchmarks --db out/evotensile.sqlite --min-samples 2
 ```
 
-### 4. Update hipBLASLt configs
+### 4. Update hipBLASLt Configs
 
 The updater requires the complete profile shape set, positive confirmation timing, latest compatible passed validation, and a content-verified registered artifact for every selected exact pair. Production export passes a serialized deployment assignment with `--selection-json`. This preserves optional solution-bank consolidation instead of re-ranking the DB. The no-selection path remains a DB-rank preview. See `docs/deployment_selection.md`.
 
@@ -134,7 +184,7 @@ Stage the complete variant set outside the hipBLASLt source tree for review:
 ```bash
 python3 scripts/update_hipblaslt_gridbased_logic.py \
   --db out/evotensile.sqlite \
-  --selection-json out/deployment-selection.json \
+  --selection-json out/evotensile/finalization/deployment_0.000.json \
   --output-dir out/gridbased-logic-staged
 ```
 
@@ -172,9 +222,7 @@ The lightweight target-specific gate uses `hipblaslt-bench --verify` through the
 
 ```bash
 cd ~/evotensile
-python3 scripts/verify_installed_hipblaslt.py \
-  --bench ~/rocm-libraries/build/hipblaslt-bench/clients/hipblaslt-bench \
-  --tensilelite-libpath "$ROCM_PATH/lib/hipblaslt/library/<gfx-target>"
+python3 scripts/verify_installed_hipblaslt.py
 ```
 
 For broader upstream regression coverage, run `hipblaslt-test` with GTest XML output:
