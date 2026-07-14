@@ -21,9 +21,17 @@ from evotensile.metrics import gflops_from_us
 from evotensile.profile import DEFAULT_PROFILE, PROFILES, get_profile
 from evotensile.scheduling.models import EvidenceStage, PairRequest
 
-DEFAULT_DB = Path("out/grid100_production_search_20260712.sqlite")
-DEFAULT_OUTPUT_DIR = Path("out/grid100_production_search_20260712/finalization")
-DEFAULT_BASELINE_DB = Path("out/grid100_compatible_20260712.sqlite")
+DEFAULT_DB = Path("out/evotensile.sqlite")
+DEFAULT_MAXIMUM_CONTENDERS = 4
+DEFAULT_CONTENDER_TOLERANCE = 0.05
+
+
+def _default_baseline_database(database: Path) -> Path:
+    return database.with_name(f"{database.stem}-seed{database.suffix}")
+
+
+def _default_output_directory(database: Path) -> Path:
+    return database.with_suffix("") / "finalization"
 
 
 class DeploymentAssignmentsPayload(TypedDict):
@@ -203,17 +211,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--profile", choices=sorted(PROFILES), default=DEFAULT_PROFILE.name)
-    parser.add_argument("--baseline-db", type=Path, default=DEFAULT_BASELINE_DB)
+    parser.add_argument("--baseline-db", type=Path)
     parser.add_argument(
         "--incumbent-deployment",
         type=Path,
         help="Deployment artifact whose incumbent remains mandatory for every shape",
     )
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--maximum-contenders", type=int, default=3)
-    parser.add_argument("--contender-tolerance", type=float, default=0.02)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--maximum-contenders", type=int, default=DEFAULT_MAXIMUM_CONTENDERS)
+    parser.add_argument("--contender-tolerance", type=float, default=DEFAULT_CONTENDER_TOLERANCE)
     parser.add_argument("--samples", type=int, default=30)
     args = parser.parse_args()
+    args.baseline_db = args.baseline_db or _default_baseline_database(args.db)
+    args.output_dir = args.output_dir or _default_output_directory(args.db)
     profile = get_profile(args.profile)
     if args.maximum_contenders < 2 or args.samples <= 0:
         raise ValueError("finalization requires at least two contenders and positive samples")

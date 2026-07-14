@@ -107,7 +107,7 @@ Production family-QD preserves mechanical cold-start covering. Singleton bundle 
 
 ## Multi-Shape Replay Characterization
 
-`scripts/simulate_bundle_acquisition.py` writes `out/grid100_bundle_acquisition_20260712.json`. Every policy starts from the same:
+`out/grid100_bundle_acquisition_20260712.json` preserves the historical multi-shape replay characterization. Every policy starts from the same:
 - retained exact-oracle snapshot.
 - 100 shapes and 217 candidate catalog.
 - 80 seed candidates evaluated on 16 deterministic medoids.

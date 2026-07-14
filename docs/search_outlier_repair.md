@@ -93,7 +93,7 @@ Candidate-pool origins, deficits, pair close probabilities, and the full acquisi
 
 ## Retained-Corpus Ablation
 
-`scripts/simulate_repair_acquisition.py` compares two equal-budget staged policies on `out/grid100_full_20260618_repaired.sqlite`. Both receive the identical 373-pair broad wave after the same 16-medoid seed. One spends the final 12 pairs on another broad acquisition. The other spends them through repair. New mutations are disabled only for this exact-oracle comparison because their historical pairs do not exist.
+The retained characterization compares two equal-budget staged policies on the historical `out/grid100_full_20260618_repaired.sqlite` oracle. Both receive the identical 373-pair broad wave after the same 16-medoid seed. One spends the final 12 pairs on another broad acquisition. The other spends them through repair. New mutations were disabled only for this exact-oracle comparison because their historical pairs did not exist.
 
 The selected characterization in `out/grid100_repair_acquisition_20260712.json` reports:
 

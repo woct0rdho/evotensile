@@ -1,10 +1,27 @@
+from pathlib import Path
+
 from evotensile.candidate import Candidate, Shape
 from evotensile.search_space import make_candidate, repair_linked_overrides
 from scripts.run_grid100_practical_round import (
+    _default_campaign_root,
+    _default_incumbent_deployment,
+    _default_incumbent_report,
+    _default_seed_database,
     _interaction_pool,
     _parent_diverse_selection,
     _parent_winner_count_payload,
 )
+
+
+def test_practical_round_paths_derive_from_database():
+    database = Path("out/evotensile.sqlite")
+    campaign_root = _default_campaign_root(database)
+    deployment = _default_incumbent_deployment(campaign_root)
+
+    assert _default_seed_database(database) == Path("out/evotensile-seed.sqlite")
+    assert campaign_root == Path("out/evotensile")
+    assert deployment == Path("out/evotensile/checkpoint-latest/deployment_0.000.json")
+    assert _default_incumbent_report(deployment) == Path("out/evotensile/checkpoint-latest/report.json")
 
 
 def _candidate(name: str, parent: str | None) -> Candidate:

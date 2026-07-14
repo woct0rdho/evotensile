@@ -1,4 +1,4 @@
-# 1,135-Shape Campaign Experiment Lo
+# 1,135-Shape Campaign Experiment Log
 
 This document is the live plan and historical evidence log for the gfx1151 FP16 NT HHS ComfyUI-biased 1,135-shape campaign. Stable subsystem behavior belongs in the focused design documents under `docs/`. This file owns campaign-specific decisions, commands, feedback, and convergence evidence.
 
@@ -160,7 +160,7 @@ Fresh checkpoints used 10 samples per contender and mandatory original/current c
 
 ## Blind `8192^3` Evidence Import
 
-The retained corrected blind campaign uses the legacy pre-namespace schema, so it could not be consumed by `merge_compatible_databases.py`. `scripts/import_legacy_blind_campaign.py` now performs a copy-on-write conversion after checking exact problem type, profile shape membership, benchmark protocol compatibility, validation protocol identity, candidate hashes, database integrity, and foreign keys.
+The retained corrected blind campaign used the legacy pre-namespace schema, so it could not be consumed by `merge_compatible_databases.py`. A one-time copy-on-write conversion checked exact problem type, profile shape membership, benchmark protocol compatibility, validation protocol identity, candidate hashes, database integrity, and foreign keys. The conversion utility was removed after the authoritative import completed.
 
 Source:
 - database: `out/blind_one_shape_next_v3_20260710_seed20260713/campaign.sqlite`.
@@ -213,7 +213,7 @@ Three campaign inefficiencies were fixed during execution:
 - staging interaction grids now include `ClusterLocalRead=(0,1)` after repair discovered a 21/21 transferring `ClusterLocalRead=0` child that the general lane could not generate.
 - explicit measured interaction parents may have zero current incumbent assignments. Plan serialization records a zero winner count instead of raising `KeyError`.
 - `scripts/evaluate_candidates.py` accepts exact ordered shape files, enabling sparse boundary extension instead of dense profile-wide evaluation.
-- the legacy blind importer converts compatible old-schema evidence copy-on-write and preserves native failures, costs, validation, proposal provenance, and hot confirmation.
+- the completed one-time legacy blind import preserved native failures, costs, validation, proposal provenance, and hot confirmation before its migration utility was removed.
 
 All implementation changes pass pre-commit and all 295 repository tests.
 
