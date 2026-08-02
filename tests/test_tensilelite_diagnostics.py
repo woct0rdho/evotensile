@@ -103,5 +103,5 @@ def test_tensilelite_internal_diagnostics_api_contract():
     assert "kernel" in inspect.signature(processKernelSource).parameters
     assert "debugConfig" in inspect.signature(KernelWriterAssembly).parameters
     assert callable(solution_utilities.reject)
-    assert getattr(solution_module, "reject") is solution_utilities.reject
+    assert solution_module.reject is solution_utilities.reject
     assert str(tensilelite_bin.resolve().parents[2]) in sys.path

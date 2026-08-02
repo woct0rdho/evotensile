@@ -60,6 +60,13 @@ def test_import_normalization_rejects_noncanonical_values(parameters, message):
         normalize_imported_solution_parameters(parameters)
 
 
+def test_streamk_is_an_integer_parameter():
+    assert TENSILELITE_PARAMETER_TYPES["StreamK"] is int
+    normalized = normalize_imported_solution_parameters({"StreamK": 3.0})
+
+    assert normalized == {"StreamK": 3}
+
+
 def test_candidate_requires_canonical_known_parameter_types():
     with pytest.raises(TypeError, match="DepthU must be int, not float"):
         Candidate(params={"DepthU": 32.0})

@@ -150,7 +150,7 @@ def load_proposal_config(path: str | Path | None) -> Mapping[str, object]:
         return MappingProxyType({})
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError("proposal config must contain one JSON object")
+        raise TypeError("proposal config must contain one JSON object")
     canonical_json(payload)
     return MappingProxyType(payload)
 
@@ -171,7 +171,7 @@ def load_proposal_script(path: str | Path) -> tuple[ProposalProvider, ProviderPr
         raise
     provider = getattr(module, "propose", None)
     if not callable(provider):
-        raise ValueError(f"proposal script must export callable propose(context): {resolved}")
+        raise TypeError(f"proposal script must export callable propose(context): {resolved}")
     provenance = ProviderProvenance(
         identity=f"script:{resolved}",
         script_path=str(resolved),

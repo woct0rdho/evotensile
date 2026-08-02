@@ -250,7 +250,7 @@ def allocate_operator_budget(
         score_sum = float(len(arms))
     exact = {arm: remaining * scores[arm] / score_sum for arm in arms}
     for arm in arms:
-        allocation[arm] += int(math.floor(exact[arm]))
+        allocation[arm] += math.floor(exact[arm])
     assigned = sum(allocation.values())
     order = sorted(arms, key=lambda arm: (-(exact[arm] - math.floor(exact[arm])), arm))
     for arm in order[: total - assigned]:

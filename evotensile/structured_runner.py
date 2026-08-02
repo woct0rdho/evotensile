@@ -309,12 +309,13 @@ def validate_benchmark_samples(
         indices = [sample.sample_index for sample in pair_samples]
         if any(index is None for index in indices):
             raise ValueError(f"benchmark runner emitted missing sample_index for {key}")
-        if len(indices) != len(set(indices)):
+        present_indices = [index for index in indices if index is not None]
+        if len(present_indices) != len(set(present_indices)):
             raise ValueError(f"benchmark runner emitted duplicate sample_index for {key}: {indices}")
-        if set(indices) != expected_indices:
+        if set(present_indices) != expected_indices:
             raise ValueError(
                 f"benchmark runner emitted incomplete sample set for {key}: "
-                f"expected {sorted(expected_indices)}, got {sorted(indices)}"
+                f"expected {sorted(expected_indices)}, got {sorted(present_indices)}"
             )
         ordered_samples = sorted(pair_samples, key=lambda item: item.sample_index or 0)
         for sample in ordered_samples:

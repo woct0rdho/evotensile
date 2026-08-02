@@ -238,7 +238,7 @@ def _benchmark_prepared_pairs(
                 run_id=output.run_id,
                 runner_returncode=output.returncode,
             )
-        except Exception as exc:
+        except ValueError as exc:
             timing_inserts = []
             errors.append(str(exc))
     if timing_inserts:

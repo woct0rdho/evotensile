@@ -138,17 +138,20 @@ def run_tensilelite_diagnostics(
     start = time.perf_counter()
     timed_out = False
     returncode = 0
-    with apu_activity_lock(exclusive=False):
-        with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
-            returncode, timed_out = run_logged_process(
-                command,
-                stdout=stdout,
-                stderr=stderr,
-                env=_merged_env(env),
-                timeout_s=timeout_s,
-            )
-            if timed_out:
-                stderr.write(f"\nTensileLite diagnostics timed out after {timeout_s} seconds\n")
+    with (
+        apu_activity_lock(exclusive=False),
+        stdout_path.open("w", encoding="utf-8") as stdout,
+        stderr_path.open("w", encoding="utf-8") as stderr,
+    ):
+        returncode, timed_out = run_logged_process(
+            command,
+            stdout=stdout,
+            stderr=stderr,
+            env=_merged_env(env),
+            timeout_s=timeout_s,
+        )
+        if timed_out:
+            stderr.write(f"\nTensileLite diagnostics timed out after {timeout_s} seconds\n")
     duration_s = time.perf_counter() - start
     records = read_diagnostic_records(results_path) if results_path.exists() else []
     result = DiagnosticRunResult(
@@ -271,7 +274,7 @@ def _diagnose_with_tensilelite(config_path: Path, manifest_path: Path, output_pa
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
-        raise ValueError(f"expected TensileLite config object: {config_path}")
+        raise TypeError(f"expected TensileLite config object: {config_path}")
     manifest = _manifest_rows(manifest_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -306,7 +309,7 @@ def _diagnose_with_tensilelite(config_path: Path, manifest_path: Path, output_pa
     solution_module = importlib.import_module("Tensile.SolutionStructs.Solution")
     captured_rejections: dict[int, list[str]] = {}
     original_utility_reject = solution_utilities.reject
-    original_solution_reject = getattr(solution_module, "reject")
+    original_solution_reject = solution_module.__dict__["reject"]
 
     def capture_reject(state, print_solution_rejection_reason=True, *args):
         candidate_index = None
@@ -324,7 +327,7 @@ def _diagnose_with_tensilelite(config_path: Path, manifest_path: Path, output_pa
         return original_utility_reject(state, False, *reason_args)
 
     solution_utilities.reject = capture_reject
-    setattr(solution_module, "reject", capture_reject)
+    solution_module.__dict__["reject"] = capture_reject
     try:
         with output_path.open("w", encoding="utf-8") as output:
             benchmark_problems = config.get("BenchmarkProblems") or []
@@ -392,7 +395,7 @@ def _diagnose_with_tensilelite(config_path: Path, manifest_path: Path, output_pa
                                         kernel,
                                         compress=False,
                                     )
-                                except Exception as exc:
+                                except Exception as exc:  # noqa: BLE001
                                     _write_record(
                                         output,
                                         **base,
@@ -440,7 +443,7 @@ def _diagnose_with_tensilelite(config_path: Path, manifest_path: Path, output_pa
                                 )
     finally:
         solution_utilities.reject = original_utility_reject
-        setattr(solution_module, "reject", original_solution_reject)
+        solution_module.__dict__["reject"] = original_solution_reject
     return 0
 
 
@@ -459,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         return _diagnose_with_tensilelite(args.config, args.manifest, args.output, args.tensilelite_bin)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("a", encoding="utf-8") as output:
             _write_record(

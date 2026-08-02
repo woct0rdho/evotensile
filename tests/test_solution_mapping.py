@@ -4,6 +4,7 @@ import yaml
 
 from evotensile.candidate import Candidate
 from evotensile.manifest import ManifestPair, write_manifest
+from evotensile.search_space import make_candidate, repair_linked_overrides
 from evotensile.shapes import Shape
 from evotensile.solution_mapping import build_solution_candidate_mapper, solution_matches_candidate
 from evotensile.tensilelite_keys import (
@@ -53,6 +54,15 @@ def _write_solution_yaml(path: Path, shape: Shape, solution: dict) -> None:
         solution,
     ]
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
+def test_solution_mapping_keeps_streamk_mode_distinct_from_streamk_off():
+    candidate = make_candidate(repair_linked_overrides({"StreamK": 3}), source="streamk3")
+    solution = _final_solution_from_candidate(candidate)
+
+    assert solution_matches_candidate(solution, candidate.canonical_params())
+    solution["StreamK"] = 0
+    assert not solution_matches_candidate(solution, candidate.canonical_params())
 
 
 def test_solution_mapping_uses_final_yaml_not_group_order(tmp_path: Path):

@@ -58,13 +58,15 @@ The default matrix-instruction shape is `(1, 1, 2, 2)`, which produces `MT32x32`
 ### Tunable Domains
 
 The remaining domain keys cover these solution families:
-- Tile and work shape: `MatrixInstruction`, `WorkGroup`, `DepthU`, `GlobalSplitU`.
+- Tile and work shape: `MatrixInstruction`, `WorkGroup`, `DepthU`, `GlobalSplitU`, `StreamK`.
 - Scheduling and prefetch: `PrefetchGlobalRead`, `PrefetchLocalRead`, `ScheduleIterAlg`, `1LDSBuffer`, `ClusterLocalRead`.
 - LDS layout and padding: `TransposeLDS`, `LdsBlockSizePerPadA`, `LdsBlockSizePerPadB`, `LdsPadA`, `LdsPadB`, `SourceSwap`.
 - Vectorization and stores: `VectorWidthA`, `VectorWidthB`, `GlobalReadVectorWidthA`, `GlobalReadVectorWidthB`, `StoreVectorWidth`, `StorePriorityOpt`, `StoreSyncOpt`, `GroupLoadStore`, `NumElementsPerBatchStore`.
 - Shape assertions and pointer/cache behavior: `AssertFree0ElementMultiple`, `AssertFree1ElementMultiple`, `AssertSummationElementMultiple`, `WorkGroupMapping`, `StaggerU`, `StaggerUStride`, `StaggerUMapping`, `ExpandPointerSwap`.
 
 `FIXED_PARAMS` supplies target-stable settings such as assembly kernels, wavefront size `32`, `GlobalSplitUAlgorithm=MultipleBuffer`, scheduled global/local reads, `LocalReadVectorWidth=16`, `StoreRemapVectorWidth=0`, and `MIArchVgpr=True`.
+
+`StreamK` currently has the profile domain `[0, 3]`. `0` is the normal data-parallel kernel. `3` is TensileLite's two-tile DP-first Stream-K mode. TensileLite requires `GlobalSplitU=0` for a nonzero StreamK value, so `GlobalSplitU=0` is part of the searchable domain and linked repair maps `StreamK=3` to it. Conversely, `StreamK=0` is repaired away from `GlobalSplitU=0` because TensileLite requires either GSU or Stream-K. The profile intentionally does not search StreamK modes `4` and `5`: current gfx1151 NN/TN tuned logic contains only `StreamK: 0`, while the upstream mode-4 dynamic per-XCD queue and mode-5 hybrid paths have no gfx1151 tuning evidence in this profile.
 
 ## Linked Repairs
 
@@ -76,6 +78,7 @@ Implemented repairs include:
 - `TransposeLDS=1` normalization to `0` for the NT TLU/TLU path.
 - `1LDSBuffer` and `ScheduleIterAlg=2` repairs that avoid `PrefetchGlobalRead=0`.
 - `1LDSBuffer` with scheduled local writes repaired to a compatible `ScheduleIterAlg`.
+- `StreamK!=0` repaired to `GlobalSplitU=0`. `StreamK=0` with `GlobalSplitU=0` repaired to `GlobalSplitU=1`.
 - `GlobalSplitU>1` repaired to `DepthU>=32`.
 - Global-read vector-width repairs so total global-read vectors divide the computed thread count.
 - TLDS2 repairs that force `PrefetchGlobalRead=2`, `PrefetchLocalRead=0`, and `VectorWidthB=1`, then remove incompatible TLDS2 pad-block choices.
@@ -111,6 +114,11 @@ The implemented global rules reject:
 - TLDS2 pad-block divisibility and LSP alignment failures.
 - TLDS2 without the observed `PGR=2`, `PLR=0`, `VectorWidthB=1` path.
 - Unsupported store-sync and grouped-load/store couplings.
+- StreamK/GlobalSplitU pairs that cannot be represented by the TensileLite Stream-K contract.
+
+### StreamK Rules
+
+Mode `3` uses TensileLite's non-atomic partials-and-fixup path by default, which allocates workspace. The search space therefore emits only the `StreamK` mode and leaves `StreamKAtomic`, `StreamKForceDPOnly`, `StreamKFixupTreeReduction`, `StreamKXCCMapping`, and `DebugStreamK` at TensileLite defaults rather than pretending those companion controls are independently tuned. TensileLite remains authoritative for the resulting kernel's workspace size, resource use, and correctness.
 
 ### Shape-Dependent Rules
 

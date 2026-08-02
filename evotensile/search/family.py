@@ -97,7 +97,7 @@ def _format_value(value: object) -> str:
 
 
 def _tile_area_log2(macro_tile0: int, macro_tile1: int) -> int:
-    return int(math.floor(math.log2(macro_tile0 * macro_tile1)))
+    return math.floor(math.log2(macro_tile0 * macro_tile1))
 
 
 def _tile_aspect(macro_tile0: int, macro_tile1: int) -> str:
@@ -248,7 +248,7 @@ def family_stratified_random_candidates(
             break
         tie_break = {cell.key: rng.random() for cell in available}
 
-        def priority(cell: FamilyDescriptor) -> tuple[int, int, float]:
+        def priority(cell: FamilyDescriptor, *, tie_break=tie_break) -> tuple[int, int, float]:
             attempts = counts.get(cell.key, 0)
             has_positive = cell.key in positive_family_keys
             if not has_positive and attempts == 1:
@@ -322,7 +322,9 @@ def _select_diverse_family_scores(
         eligible = [item for item in remaining if item.aggregate_score <= quality_limit] or remaining
         selected_hashes = [item.candidate_hash for item, _ in selected]
 
-        def selection_key(item: _FamilyCandidateScore) -> tuple[int, float, int, int, str]:
+        def selection_key(
+            item: _FamilyCandidateScore, *, selected_hashes=tuple(selected_hashes)
+        ) -> tuple[int, float, int, int, str]:
             genome = candidate_to_genome(candidates[item.candidate_hash])
             novelty = min(
                 hamming_distance(genome, candidate_to_genome(candidates[selected_hash]))

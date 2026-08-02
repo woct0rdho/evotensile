@@ -37,18 +37,18 @@ class ProposalEvent:
         def hashes(key: str) -> tuple[str, ...]:
             values = payload[key]
             if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
-                raise ValueError(f"proposal event {key} must be a sequence")
+                raise TypeError(f"proposal event {key} must be a sequence")
             return tuple(str(value) for value in values)
 
         def number(key: str) -> float:
             value = payload[key]
             if not isinstance(value, (int, float, str)):
-                raise ValueError(f"proposal event {key} must be numeric")
+                raise TypeError(f"proposal event {key} must be numeric")
             return float(value)
 
         proposal_args = payload["proposal_args"]
         if not isinstance(proposal_args, Mapping):
-            raise ValueError("proposal event arguments must be a mapping")
+            raise TypeError("proposal event arguments must be a mapping")
         return cls(
             island_id=str(payload["island_id"]),
             seed=int(number("seed")),

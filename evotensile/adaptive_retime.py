@@ -442,14 +442,16 @@ def load_timing_stats(
     clauses = [
         "pt.problem_type_hash = ?",
         "be.status = 'ok'",
-        "EXISTS (SELECT 1 FROM validations AS v "
-        "WHERE v.validation_namespace_id = be.validation_namespace_id "
-        "AND v.shape_key = be.shape_key AND v.candidate_id = be.candidate_id AND v.status = 'passed' "
-        "AND NOT EXISTS (SELECT 1 FROM validations AS newer "
-        "WHERE newer.validation_namespace_id = v.validation_namespace_id "
-        "AND newer.shape_key = v.shape_key AND newer.candidate_id = v.candidate_id "
-        "AND (newer.created_at > v.created_at OR "
-        "(newer.created_at = v.created_at AND newer.validation_id > v.validation_id))))",
+        (
+            "EXISTS (SELECT 1 FROM validations AS v "
+            "WHERE v.validation_namespace_id = be.validation_namespace_id "
+            "AND v.shape_key = be.shape_key AND v.candidate_id = be.candidate_id AND v.status = 'passed' "
+            "AND NOT EXISTS (SELECT 1 FROM validations AS newer "
+            "WHERE newer.validation_namespace_id = v.validation_namespace_id "
+            "AND newer.shape_key = v.shape_key AND newer.candidate_id = v.candidate_id "
+            "AND (newer.created_at > v.created_at OR "
+            "(newer.created_at = v.created_at AND newer.validation_id > v.validation_id))))"
+        ),
     ]
     params: list[str] = [problem_type_hash]
     protocol_hashes = list(benchmark_protocol_hashes or [])

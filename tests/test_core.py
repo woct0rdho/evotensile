@@ -1,5 +1,5 @@
 from evotensile.protocol import DEFAULT_BENCHMARK_PROTOCOL, apply_benchmark_protocol_overrides
-from evotensile.search_space import DOMAINS
+from evotensile.search_space import DOMAINS, make_candidate, repair_linked_overrides
 from evotensile.shapes import pilot_100_shapes
 from evotensile.yaml_writer import tensilelite_config
 from tests.helpers import sample_candidates
@@ -28,6 +28,20 @@ def test_expanded_space_contains_artifact_backed_knobs():
     assert 64 in DOMAINS["StaggerU"]
     assert True in DOMAINS["GroupLoadStore"]
     assert 10 in DOMAINS["NumElementsPerBatchStore"]
+
+
+def test_streamk3_is_a_complete_candidate_branch_and_is_emitted():
+    params = repair_linked_overrides({"StreamK": 3, "GlobalSplitU": 4})
+    candidate = make_candidate(params, source="streamk3")
+
+    assert params["StreamK"] == 3
+    assert params["GlobalSplitU"] == 0
+    assert candidate.hash != make_candidate(repair_linked_overrides({}), source="streamk0").hash
+
+    data = tensilelite_config([candidate], pilot_100_shapes()[:1])
+    entry = data["BenchmarkProblems"][0][1]["ForkParameters"][0]["Groups"][0][0]
+    assert entry["StreamK"] == 3
+    assert entry["GlobalSplitU"] == 0
 
 
 def test_yaml_shape():

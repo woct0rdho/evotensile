@@ -32,11 +32,15 @@ def candidate_shape_mechanics(
     tiles_m = math.ceil(shape.m / macro_tile0)
     tiles_n = math.ceil(shape.n / macro_tile1)
     output_tiles = tiles_m * tiles_n * shape.batch
-    workgroups = output_tiles * params["GlobalSplitU"]
+    # TensileLite encodes Stream-K with GlobalSplitU=0, but Stream-K still
+    # launches workgroups and performs a K reduction. Use one effective split
+    # for search heuristics so GSU=0 does not create a zero-sized grid.
+    effective_gsu = max(1, int(params["GlobalSplitU"]))
+    workgroups = output_tiles * effective_gsu
     workgroups_per_wgp = workgroups / workgroup_processor_count
     wgp_rounds = max(1, math.ceil(workgroups_per_wgp))
     wgp_granularity = workgroups_per_wgp / wgp_rounds
-    depth_per_split = max(1, params["DepthU"] * params["GlobalSplitU"])
+    depth_per_split = max(1, params["DepthU"] * effective_gsu)
     reduction_iterations = math.ceil(shape.k / depth_per_split)
     covered_k = reduction_iterations * depth_per_split
     k_fill = shape.k / covered_k
@@ -102,7 +106,7 @@ def mechanical_prior_score(
 
 
 def _fraction_bucket(value: float, *, buckets: int = 20) -> int:
-    return min(buckets, max(0, int(math.floor(value * buckets))))
+    return min(buckets, max(0, math.floor(value * buckets)))
 
 
 def mechanical_coverage_tokens(
@@ -119,9 +123,9 @@ def mechanical_coverage_tokens(
         f"family:{family_descriptor(candidate).key}",
         f"mi-wave-tile:{instruction[5]}x{instruction[6]}",
         f"mi-wave-group:{instruction[7]}x{instruction[8]}",
-        f"macro-area-log2:{int(math.floor(math.log2(macro_tile0 * macro_tile1)))}",
-        f"macro-aspect-log2:{int(round(math.log2(macro_tile0 / macro_tile1)))}",
-        f"wgp-round-log2:{int(math.floor(math.log2(max(mechanics['wgp_rounds'], 1.0))))}",
+        f"macro-area-log2:{math.floor(math.log2(macro_tile0 * macro_tile1))}",
+        f"macro-aspect-log2:{round(math.log2(macro_tile0 / macro_tile1))}",
+        f"wgp-round-log2:{math.floor(math.log2(max(mechanics['wgp_rounds'], 1.0)))}",
         f"wgp-granularity:{_fraction_bucket(mechanics['wgp_granularity'])}",
         f"wave-count:{mechanics['waves_per_workgroup']:g}",
         f"k-fill:{_fraction_bucket(mechanics['k_fill'])}",
@@ -165,7 +169,7 @@ def select_covering_cold_pool(
     token_counts = Counter(token for candidate_tokens in tokens.values() for token in candidate_tokens)
 
     def token_priority(token: str) -> float:
-        if token.startswith("mi-wave-") or token.startswith("macro-"):
+        if token.startswith(("mi-wave-", "macro-")):
             return 2.0
         if token.startswith("family:"):
             return 1.5
@@ -191,8 +195,8 @@ def select_covering_cold_pool(
     selected: list[Candidate] = []
     remaining = list(deduped)
     covered: set[str] = set(precovered_tokens or ())
-    coverage_target = min(count, max(1, int(round(count * coverage_fraction))))
-    prior_target = min(count - coverage_target, int(round(count * prior_fraction)))
+    coverage_target = min(count, max(1, round(count * coverage_fraction)))
+    prior_target = min(count - coverage_target, round(count * prior_fraction))
 
     while remaining and len(selected) < coverage_target:
 

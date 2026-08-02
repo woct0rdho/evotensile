@@ -325,7 +325,7 @@ class ContextualPairModel:
             validity = [self._constant_validity] * len(requests)
         elif self._validity_model is not None:
             probabilities = self._validity_model.predict_proba(matrix)
-            positive_index = list(self._validity_model.classes_).index(1)
+            positive_index = int(np.flatnonzero(self._validity_model.classes_ == 1)[0])
             validity = [float(row[positive_index]) for row in probabilities]
         else:
             raise ValueError("pair model validity state is incomplete")

@@ -306,7 +306,7 @@ def _prepare_current_batch(
                     run_id=validation_result.run_id,
                     runner_returncode=validation_result.returncode,
                 )
-            except Exception as exc:
+            except ValueError as exc:
                 errors.append(str(exc))
             else:
                 db.insert_validations(outcome.validations)

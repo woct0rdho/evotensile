@@ -1,7 +1,7 @@
 from evotensile.search.encoding import PARAM_NAMES
 
 NT_HHS_SEMANTIC_GROUPS: tuple[tuple[str, ...], ...] = (
-    ("MatrixInstruction", "WorkGroup", "DepthU", "GlobalSplitU"),
+    ("MatrixInstruction", "WorkGroup", "DepthU", "GlobalSplitU", "StreamK"),
     ("TransposeLDS", "LdsBlockSizePerPadA", "LdsBlockSizePerPadB", "LdsPadA", "LdsPadB"),
     ("PrefetchGlobalRead", "PrefetchLocalRead", "1LDSBuffer", "ClusterLocalRead", "VectorWidthB"),
     ("GlobalReadVectorWidthA", "GlobalReadVectorWidthB", "VectorWidthA", "VectorWidthB"),

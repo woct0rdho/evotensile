@@ -448,7 +448,7 @@ def stabilize_screening_leaders(
                 validation_protocol_hash=validation_protocol_hash,
                 runner_returncode=output.returncode,
             )
-        except Exception as exc:
+        except ValueError as exc:
             errors.append(str(exc))
             skipped.extend(
                 ScreeningSkippedPair(request.shape_id, request.candidate_hash, "result_ingest_failed")

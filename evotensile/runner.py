@@ -84,17 +84,20 @@ def run_tensilelite(
     start = time.perf_counter()
     timed_out = False
     returncode = 0
-    with apu_activity_lock(exclusive=False):
-        with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
-            returncode, timed_out = run_logged_process(
-                cmd,
-                stdout=stdout,
-                stderr=stderr,
-                env=_merged_env(env),
-                timeout_s=timeout_s,
-            )
-            if timed_out:
-                stderr.write(f"\nTensileLite build timed out after {timeout_s} seconds\n")
+    with (
+        apu_activity_lock(exclusive=False),
+        stdout_path.open("w", encoding="utf-8") as stdout,
+        stderr_path.open("w", encoding="utf-8") as stderr,
+    ):
+        returncode, timed_out = run_logged_process(
+            cmd,
+            stdout=stdout,
+            stderr=stderr,
+            env=_merged_env(env),
+            timeout_s=timeout_s,
+        )
+        if timed_out:
+            stderr.write(f"\nTensileLite build timed out after {timeout_s} seconds\n")
     duration_s = time.perf_counter() - start
 
     result = RunResult(

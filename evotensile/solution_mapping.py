@@ -75,13 +75,17 @@ def _matrix_instruction_matches(candidate_mi: object, solution: dict[str, Any]) 
         return False
     if not _value_equal(candidate_mi[:4], solution.get(MATRIX_INSTRUCTION_KEY)):
         return False
-    if len(candidate_mi) >= 7 and MI_WAVE_TILE_KEY in solution:
-        if not _value_equal([candidate_mi[5], candidate_mi[6]], solution.get(MI_WAVE_TILE_KEY)):
-            return False
-    if len(candidate_mi) >= 9 and MI_WAVE_GROUP_KEY in solution:
-        if not _value_equal([candidate_mi[7], candidate_mi[8]], solution.get(MI_WAVE_GROUP_KEY)):
-            return False
-    return True
+    if (
+        len(candidate_mi) >= 7
+        and MI_WAVE_TILE_KEY in solution
+        and not _value_equal([candidate_mi[5], candidate_mi[6]], solution.get(MI_WAVE_TILE_KEY))
+    ):
+        return False
+    return not (
+        len(candidate_mi) >= 9
+        and MI_WAVE_GROUP_KEY in solution
+        and not _value_equal([candidate_mi[7], candidate_mi[8]], solution.get(MI_WAVE_GROUP_KEY))
+    )
 
 
 _INACTIVE_STAGGER_DERIVED_KEYS = frozenset({"StaggerUMapping", "StaggerUStride"})
@@ -144,9 +148,10 @@ def solution_matches_candidate(solution: dict[str, Any], candidate_params: dict[
     before writing `*_Final.yaml`. Matching against that final YAML is the stable
     source of truth; input group order is only a fallback/debug aid.
     """
-    if MATRIX_INSTRUCTION_KEY in candidate_params:
-        if not _matrix_instruction_matches(candidate_params[MATRIX_INSTRUCTION_KEY], solution):
-            return False
+    if MATRIX_INSTRUCTION_KEY in candidate_params and not _matrix_instruction_matches(
+        candidate_params[MATRIX_INSTRUCTION_KEY], solution
+    ):
+        return False
     for key in sorted(DIRECT_SOLUTION_MATCH_KEYS):
         if key not in candidate_params:
             continue

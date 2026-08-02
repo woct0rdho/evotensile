@@ -129,9 +129,11 @@ def test_compile_cache_lock_times_out_on_live_owner(tmp_path: Path):
         fcntl.flock(owner_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         owner_file.write('{"pid": 1, "token": "live"}\n')
         owner_file.flush()
-        with pytest.raises(TimeoutError, match="waiting for compile-cache lock"):
-            with compile_cache_lock(cache_dir, wait_timeout_s=0.01):
-                pass
+        with (
+            pytest.raises(TimeoutError, match="waiting for compile-cache lock"),
+            compile_cache_lock(cache_dir, wait_timeout_s=0.01),
+        ):
+            pass
 
     assert lock_path.exists()
 

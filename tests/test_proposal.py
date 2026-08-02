@@ -115,7 +115,7 @@ def test_proposal_config_requires_json_object(tmp_path: Path):
     config = tmp_path / "provider.json"
     config.write_text("[]", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="one JSON object"):
+    with pytest.raises(TypeError, match="one JSON object"):
         cli_main(
             [
                 "proposal-coverage",

@@ -106,9 +106,7 @@ def _random_group_trial(
     for name in group:
         values = ordered_domain_values(name, current.get(name))
         alternatives = values[1:]
-        if name == changed_name and alternatives:
-            trial[name] = rng.choice(alternatives)
-        elif alternatives and rng.random() < 0.5:
+        if name == changed_name and alternatives or alternatives and rng.random() < 0.5:
             trial[name] = rng.choice(alternatives)
     return trial
 

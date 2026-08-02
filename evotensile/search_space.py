@@ -90,7 +90,9 @@ DOMAINS: dict[str, list[Any]] = {
     "MatrixInstruction": MATRIX_INSTRUCTIONS,
     "WorkGroup": [[16, 16, 1], [16, 2, 1], [16, 4, 1], [16, 8, 1], [32, 2, 1], [32, 4, 1], [64, 2, 1], [64, 4, 1]],
     "DepthU": [16, 32, 64, 128],
-    "GlobalSplitU": [1, 2, 4],
+    # Stream-K disables GSU in TensileLite. Keep GSU=0 in the domain so the
+    # StreamK=3 branch remains representable by the categorical search encodings.
+    "GlobalSplitU": [1, 2, 4, 0],
     "PrefetchGlobalRead": [1, 0, 2],
     "PrefetchLocalRead": [1, 0],
     "ScheduleIterAlg": [2, 1, 3],
@@ -120,6 +122,7 @@ DOMAINS: dict[str, list[Any]] = {
     "LdsBlockSizePerPadB": [0, 128, 256, 512, 1024, 1536, 2048, 3072, 4096, 6144, 8192],
     "LdsPadA": [0, 4, 8, 16],
     "LdsPadB": [0, 4, 8, 16],
+    "StreamK": [0, 3],
 }
 
 FIXED_PARAMS: dict[str, Any] = {
@@ -258,7 +261,7 @@ def _invalid_unroll_major_lds_pad_block(params: dict[str, Any], suffix: str) -> 
 
 
 def _nt_hhs_lds_bytes(params: dict[str, Any]) -> int:
-    bytes_a, aligned_a = _lds_num_bytes_ab(params, "A")
+    _bytes_a, aligned_a = _lds_num_bytes_ab(params, "A")
     bytes_b, aligned_b = _lds_num_bytes_ab(params, "B")
     if params["PrefetchGlobalRead"] >= 3:
         num_lds_blocks = params["PrefetchGlobalRead"]
@@ -511,14 +514,15 @@ def _repair_matrix_instruction_dependent_params(params: dict[str, Any]) -> None:
         params["VectorWidthA"] = _largest_divisor_choice(mi_wave_tile0, DOMAINS["VectorWidthA"])
     if mi_wave_tile1 % params["VectorWidthB"] != 0:
         params["VectorWidthB"] = _largest_divisor_choice(mi_wave_tile1, DOMAINS["VectorWidthB"])
-    if params["StoreVectorWidth"] != -1:
-        if params["SourceSwap"] and params["VectorWidthA"] % params["StoreVectorWidth"] != 0:
-            params["StoreVectorWidth"] = -1
-        elif (
+    if params["StoreVectorWidth"] != -1 and (
+        params["SourceSwap"]
+        and params["VectorWidthA"] % params["StoreVectorWidth"] != 0
+        or (
             not params["SourceSwap"]
             and params["VectorWidthA"] * NT_HHS_WMMA_V1_OUTPUT_VECTOR_WIDTH % params["StoreVectorWidth"] != 0
-        ):
-            params["StoreVectorWidth"] = -1
+        )
+    ):
+        params["StoreVectorWidth"] = -1
 
 
 def _repair_linked_params(params: dict[str, Any], *, rng: random.Random | None = None) -> dict[str, Any]:
@@ -528,11 +532,17 @@ def _repair_linked_params(params: dict[str, Any], *, rng: random.Random | None =
     _repair_matrix_instruction_dependent_params(params)
     if params["TransposeLDS"] == 1:
         params["TransposeLDS"] = 0
-    if params["1LDSBuffer"] or params["ScheduleIterAlg"] == 2:
-        if params["PrefetchGlobalRead"] == 0:
-            params["PrefetchGlobalRead"] = 1
+    if (params["1LDSBuffer"] or params["ScheduleIterAlg"] == 2) and params["PrefetchGlobalRead"] == 0:
+        params["PrefetchGlobalRead"] = 1
     if params["1LDSBuffer"] and params["ScheduleIterAlg"] == 1 and params["ScheduleLocalWrite"]:
         params["ScheduleIterAlg"] = 2
+    if params["StreamK"] != 0:
+        # TensileLite forcibly disables GSU for every Stream-K mode. Mode 3 is
+        # the only Stream-K variant in this profile, and uses the non-atomic
+        # workspace path selected by TensileLite's defaults.
+        params["GlobalSplitU"] = 0
+    elif params["GlobalSplitU"] == 0:
+        params["GlobalSplitU"] = 1
     if params["GlobalSplitU"] > 1 and params["DepthU"] < 32:
         params["DepthU"] = 32
     for suffix in ("A", "B"):
@@ -670,6 +680,24 @@ def explain_invalid_nt_hhs(params: dict[str, Any], *, shape: Shape | None = None
             )
         )
 
+    if params["StreamK"] == 0 and params["GlobalSplitU"] == 0:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.streamk_off.requires_gsu",
+                "TensileLite requires either StreamK or a positive GlobalSplitU.",
+                ("StreamK", "GlobalSplitU"),
+                source="solutionstructs",
+            )
+        )
+    if params["StreamK"] != 0 and params["GlobalSplitU"] != 0:
+        reasons.append(
+            InvalidReason(
+                "nt_hhs.streamk.requires_gsu_zero",
+                "TensileLite disables GlobalSplitU for Stream-K kernels; StreamK candidates must submit GSU=0.",
+                ("StreamK", "GlobalSplitU"),
+                source="solutionstructs",
+            )
+        )
     if params["GlobalSplitU"] > 1 and params["DepthU"] < 32:
         reasons.append(
             InvalidReason(
@@ -924,7 +952,18 @@ def make_candidate(
 
 
 def _random_domain_overrides(rng: random.Random) -> dict[str, Any]:
-    return {name: rng.choice(values) for name, values in DOMAINS.items()}
+    overrides: dict[str, Any] = {}
+    for name, values in DOMAINS.items():
+        if name == "StreamK":
+            continue
+        # Keep the pre-StreamK random distribution for ordinary GSU kernels;
+        # GSU=0 is selected below only for the StreamK branch.
+        choices = (1, 2, 4) if name == "GlobalSplitU" else values
+        overrides[name] = rng.choice(choices)
+    overrides["StreamK"] = rng.choice(DOMAINS["StreamK"])
+    if overrides["StreamK"] != 0:
+        overrides["GlobalSplitU"] = 0
+    return overrides
 
 
 def _random_tlds0_direct_overrides(rng: random.Random) -> dict[str, Any]:

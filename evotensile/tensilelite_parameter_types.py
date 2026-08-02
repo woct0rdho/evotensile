@@ -26,6 +26,7 @@ _INTEGER_PARAMETERS = frozenset(
         "StaggerU",
         "StaggerUMapping",
         "StaggerUStride",
+        "StreamK",
         "StoreRemapVectorWidth",
         "StoreSyncOpt",
         "StoreVectorWidth",

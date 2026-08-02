@@ -11,7 +11,7 @@ from .tensilelite_parameter_types import validate_tensilelite_parameter_types
 def canonicalize(value: object) -> object:
     """Return a JSON-stable form for nested candidate/config values."""
     if isinstance(value, Mapping):
-        return {str(k): canonicalize(value[k]) for k in sorted(value)}
+        return {str(key): canonicalize(item) for key, item in sorted(value.items(), key=lambda entry: str(entry[0]))}
     if isinstance(value, tuple):
         return [canonicalize(v) for v in value]
     if isinstance(value, list):
@@ -58,11 +58,11 @@ class Candidate:
         parent_hashes = payload.get("parent_hashes", [])
         proposal_metadata = payload.get("proposal_metadata", {})
         if not isinstance(params, Mapping):
-            raise ValueError("candidate params must be a mapping")
+            raise TypeError("candidate params must be a mapping")
         if not isinstance(parent_hashes, (list, tuple)):
-            raise ValueError("candidate parent hashes must be a sequence")
+            raise TypeError("candidate parent hashes must be a sequence")
         if not isinstance(proposal_metadata, Mapping):
-            raise ValueError("candidate proposal metadata must be a mapping")
+            raise TypeError("candidate proposal metadata must be a mapping")
         candidate = cls(
             params={str(key): value for key, value in params.items()},
             source=str(payload.get("source", "unknown")),

@@ -40,6 +40,7 @@ DIRECT_SOLUTION_MATCH_KEYS = frozenset(
         "SourceSwap",
         "StaggerU",
         "StaggerUMapping",
+        "StreamK",
         "StorePriorityOpt",
         "StoreRemapVectorWidth",
         "StoreSyncOpt",

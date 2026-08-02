@@ -198,7 +198,7 @@ def _run_case(
     cmd = _command(bench, case, args)
     started = time.perf_counter()
     with apu_activity_lock(exclusive=True):
-        proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=args.timeout)
+        proc = subprocess.run(cmd, env=env, text=True, capture_output=True, timeout=args.timeout, check=False)
     elapsed = time.perf_counter() - started
 
     log_prefix = logs_dir / case.name
@@ -227,7 +227,7 @@ def _run_case(
                 "hipblaslt_version": _match(HIPBLASLT_VERSION_RE, proc.stdout),
                 "hipblaslt_git_version": _match(HIPBLASLT_GIT_VERSION_RE, proc.stdout),
             }
-        except Exception as exc:
+        except ValueError as exc:
             error = f"parse_error: {exc}"
     else:
         error = f"returncode={proc.returncode}"

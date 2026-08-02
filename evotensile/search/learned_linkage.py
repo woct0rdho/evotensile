@@ -336,7 +336,7 @@ def learn_linkage_models(
 
     models: list[LinkageModel] = []
     for cluster in leader_clusters(selected, max_clusters=max_clusters, hamming_threshold=hamming_threshold):
-        leader = sorted(cluster, key=_sort_key)[0]
+        leader = min(cluster, key=_sort_key)
         genomes = [item.genome for item in cluster]
         if len(cluster) < 2:
             fos = [(index,) for index in range(len(leader.genome))]
