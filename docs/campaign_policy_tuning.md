@@ -38,8 +38,6 @@ One common schema represents three separately tuned regimes:
 
 The anchored overlays each contain current validation plus ten timing samples for all 100 selected pairs. Untuned uses 10 unique candidates. Tuned uses 22. Initialization evidence does not mark candidates as prepared search artifacts.
 
-The untuned discovery records source-logic SHA-256 `9cbf840639705192fb0a8123ef08aaa7c6ecd2bf63e0b71d8dc44e86a6187ab6` and installed-logic SHA-256 `900723b8a5fd64bd4024b875893fcd318fa672d6a7b5d20d4e13618b2a2317a1`. Tuned records source-logic SHA-256 `16e55e16636edf6a328c0bc0f0d55603b2636e874b9e0e9fe8bfb201190df2e5` and installed-logic SHA-256 `6538190f1e53c39c4ffa8448393b43c1378d1082a0d877ac18946b39dd37f87c`.
-
 ## Controlled Sweep
 
 `scripts/tune_campaign_policy.py` evaluates 12 generic configurations across the three initialization profiles. Each configuration receives:

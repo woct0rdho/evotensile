@@ -105,6 +105,25 @@ def test_gfx1151_dispatch_mechanics_use_wgps_not_physical_cus():
     assert mechanics["wgp_granularity"] == 1.0
 
 
+def test_streamk_mechanics_account_for_partial_workspace():
+    base = random_candidate(random.Random(12345))
+    params = base.canonical_params()
+    params.update({"StreamK": 3, "GlobalSplitU": 0})
+    candidate = Candidate(params=params)
+    shape = Shape(1024, 1024, 1, 1024)
+    macro_tile0, macro_tile1 = macro_tile(params["MatrixInstruction"])
+
+    mechanics = candidate_shape_mechanics(
+        candidate,
+        shape,
+        workgroup_processor_count=WORKGROUP_PROCESSOR_COUNT,
+    )
+
+    expected_workspace = macro_tile0 * macro_tile1 * 4 * WORKGROUP_PROCESSOR_COUNT
+    assert mechanics["workspace_bytes"] == expected_workspace
+    assert mechanics["workspace_fraction"] > 0.0
+
+
 def test_surrogate_activation_requires_unique_candidate_variation():
     shapes = [Shape(512, 128, 1, 256), Shape(1024, 1024, 1, 1024)]
     candidate = _shape_candidates(shapes[0], 12345, 1)[0]

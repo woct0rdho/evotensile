@@ -58,6 +58,39 @@ class TimingSummary:
         }
 
 
+def _rank_grouped_timings(
+    times_by_pair: Mapping[tuple[str, str], Sequence[float]],
+    *,
+    shape_by_id: Mapping[str, Shape],
+) -> dict[str, tuple[TimingSummary, ...]]:
+    summaries_by_shape: dict[str, list[TimingSummary]] = defaultdict(list)
+    for (shape_id, candidate_hash), times in times_by_pair.items():
+        shape = shape_by_id.get(shape_id)
+        if shape is None:
+            continue
+        median_time_us = statistics.median(times)
+        mad_us = statistics.median(abs(value - median_time_us) for value in times)
+        summaries_by_shape[shape_id].append(
+            TimingSummary(
+                shape_id=shape_id,
+                candidate_hash=candidate_hash,
+                samples=len(times),
+                median_time_us=median_time_us,
+                median_gflops=gflops_from_us(shape, median_time_us),
+                relative_mad=mad_us / median_time_us,
+            )
+        )
+    return {
+        shape_id: tuple(
+            sorted(
+                summaries_by_shape.get(shape_id, ()),
+                key=lambda summary: (summary.median_time_us, summary.candidate_hash),
+            )
+        )
+        for shape_id in shape_by_id
+    }
+
+
 def _timing_rankings(
     path: Path,
     *,
@@ -90,28 +123,7 @@ def _timing_rankings(
     times_by_pair: dict[tuple[str, str], list[float]] = defaultdict(list)
     for row in rows:
         times_by_pair[(str(row["shape_id"]), str(row["candidate_hash"]))].append(float(row["time_us"]))
-    rankings: dict[str, tuple[TimingSummary, ...]] = {}
-    for shape_id, shape in shape_by_id.items():
-        summaries = []
-        for (pair_shape_id, candidate_hash), times in times_by_pair.items():
-            if pair_shape_id != shape_id:
-                continue
-            median_time_us = statistics.median(times)
-            mad_us = statistics.median(abs(value - median_time_us) for value in times)
-            summaries.append(
-                TimingSummary(
-                    shape_id=shape_id,
-                    candidate_hash=candidate_hash,
-                    samples=len(times),
-                    median_time_us=median_time_us,
-                    median_gflops=gflops_from_us(shape, median_time_us),
-                    relative_mad=mad_us / median_time_us,
-                )
-            )
-        rankings[shape_id] = tuple(
-            sorted(summaries, key=lambda summary: (summary.median_time_us, summary.candidate_hash))
-        )
-    return rankings
+    return _rank_grouped_timings(times_by_pair, shape_by_id=shape_by_id)
 
 
 def _latest_fresh_validation_states(
@@ -221,17 +233,36 @@ def main() -> None:
     parser.add_argument("--maximum-contenders", type=int, default=DEFAULT_MAXIMUM_CONTENDERS)
     parser.add_argument("--contender-tolerance", type=float, default=DEFAULT_CONTENDER_TOLERANCE)
     parser.add_argument("--samples", type=int, default=30)
+    parser.add_argument(
+        "--resume-postprocess",
+        action="store_true",
+        help="Skip execution and finish an interrupted finalization from fresh evidence already ingested for its plan",
+    )
     args = parser.parse_args()
-    args.baseline_db = args.baseline_db or _default_baseline_database(args.db)
     args.output_dir = args.output_dir or _default_output_directory(args.db)
+    resume_plan = None
+    if args.resume_postprocess:
+        plan_path = args.output_dir / "plan.json"
+        if not plan_path.exists():
+            raise FileNotFoundError(plan_path)
+        resume_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        args.baseline_db = args.baseline_db or Path(resume_plan["baseline_database"])
+        if args.incumbent_deployment is None and resume_plan.get("incumbent_deployment") is not None:
+            args.incumbent_deployment = Path(resume_plan["incumbent_deployment"])
+    else:
+        args.baseline_db = args.baseline_db or _default_baseline_database(args.db)
     profile = get_profile(args.profile)
     if args.maximum_contenders < 2 or args.samples <= 0:
         raise ValueError("finalization requires at least two contenders and positive samples")
     if not 0.0 <= args.contender_tolerance < 1.0:
         raise ValueError("contender tolerance must be in [0, 1)")
-    if args.output_dir.exists():
-        raise FileExistsError(args.output_dir)
-    args.output_dir.mkdir(parents=True)
+    if args.resume_postprocess:
+        if (args.output_dir / "report.json").exists():
+            raise FileExistsError(args.output_dir / "report.json")
+    else:
+        if args.output_dir.exists():
+            raise FileExistsError(args.output_dir)
+        args.output_dir.mkdir(parents=True)
 
     shapes = profile.shapes()
     shape_by_id = {shape.id: shape for shape in shapes}
@@ -249,15 +280,22 @@ def main() -> None:
         incumbent_candidate_by_shape = dict(incumbent_payload["assignments"])
         if set(incumbent_candidate_by_shape) != set(shape_by_id):
             raise ValueError("incumbent deployment assignments must cover the finalization shapes")
-    contenders = _select_contenders(
-        before_rankings,
-        maximum_contenders=args.maximum_contenders,
-        relative_tolerance=args.contender_tolerance,
-        mandatory_candidate_by_shape=baseline_candidate_by_shape,
-        additional_mandatory_candidates_by_shape={
-            shape_id: (candidate_hash,) for shape_id, candidate_hash in incumbent_candidate_by_shape.items()
-        },
-    )
+    if resume_plan is None:
+        contenders = _select_contenders(
+            before_rankings,
+            maximum_contenders=args.maximum_contenders,
+            relative_tolerance=args.contender_tolerance,
+            mandatory_candidate_by_shape=baseline_candidate_by_shape,
+            additional_mandatory_candidates_by_shape={
+                shape_id: (candidate_hash,) for shape_id, candidate_hash in incumbent_candidate_by_shape.items()
+            },
+        )
+    else:
+        if resume_plan["profile"] != profile.name or Path(resume_plan["database"]) != args.db:
+            raise ValueError("resume plan does not match the requested profile and database")
+        contenders = {
+            shape_id: tuple(candidate_hashes) for shape_id, candidate_hashes in resume_plan["contenders"].items()
+        }
     candidate_hashes = sorted({candidate_hash for values in contenders.values() for candidate_hash in values})
     db = EvoTensileDB.connect(
         args.db,
@@ -282,52 +320,62 @@ def main() -> None:
     artifact_shapes_by_candidate: dict[str, list[Shape]] = defaultdict(list)
     for request in requests:
         artifact_shapes_by_candidate[request.candidate.hash].append(request.shape)
-    plan = {
-        "database": str(args.db),
-        "baseline_database": str(args.baseline_db),
-        "profile": profile.name,
-        "incumbent_deployment": None if args.incumbent_deployment is None else str(args.incumbent_deployment),
-        "maximum_contenders": args.maximum_contenders,
-        "contender_tolerance": args.contender_tolerance,
-        "samples": args.samples,
-        "shape_count": len(shapes),
-        "candidate_count": len(candidate_hashes),
-        "pair_count": len(requests),
-        "contenders": {shape_id: list(values) for shape_id, values in sorted(contenders.items())},
-    }
-    _write_json(args.output_dir / "plan.json", plan)
+    if resume_plan is None:
+        fresh_started_at = time.time()
+        plan = {
+            "database": str(args.db),
+            "baseline_database": str(args.baseline_db),
+            "profile": profile.name,
+            "incumbent_deployment": None if args.incumbent_deployment is None else str(args.incumbent_deployment),
+            "maximum_contenders": args.maximum_contenders,
+            "contender_tolerance": args.contender_tolerance,
+            "samples": args.samples,
+            "shape_count": len(shapes),
+            "candidate_count": len(candidate_hashes),
+            "pair_count": len(requests),
+            "fresh_started_at": fresh_started_at,
+            "contenders": {shape_id: list(values) for shape_id, values in sorted(contenders.items())},
+        }
+        _write_json(args.output_dir / "plan.json", plan)
+    else:
+        plan = resume_plan
+        fresh_started_at = float(plan.get("fresh_started_at", (args.output_dir / "plan.json").stat().st_mtime))
 
     source_ref = f"{profile.name}-production-final-confirmation"
-    fresh_started_at = time.time()
-    wall_started_at = time.monotonic()
-    evaluator = RealEvaluator(
-        RealEvaluatorContext(
-            db=db,
-            output_root=args.output_dir,
-            target_profile=profile,
-            protocol=profile.default_protocol,
-            runner_bin=profile.default_runner_bin,
-            candidate_batch_size=1,
-            shape_batch_size=profile.default_shape_batch_size,
-            build_timeout_s=profile.default_build_timeout_s,
-            runner_timeout_s=profile.default_runner_timeout_s,
-            prepare_workers=profile.default_prepare_workers,
-            prepare_wave_batches=profile.default_prepare_wave_batches,
-            validation_workers=profile.default_validation_workers,
-            compile_cache_root=args.output_dir.parent / "compile_cache",
-            cost_aware_scheduling=True,
-            ignore_cache=True,
-        ),
-        source_ref=source_ref,
-    )
-    evaluation = evaluator.evaluate(
-        requests,
-        artifact_shapes_by_candidate={
-            candidate_hash: tuple({shape.id: shape for shape in candidate_shapes}.values())
-            for candidate_hash, candidate_shapes in artifact_shapes_by_candidate.items()
-        },
-    )
-    wall_time_s = time.monotonic() - wall_started_at
+    if args.resume_postprocess:
+        wall_time_s = 0.0
+        phase_time_s = {"resume_postprocess_s": 0.0}
+    else:
+        wall_started_at = time.monotonic()
+        evaluator = RealEvaluator(
+            RealEvaluatorContext(
+                db=db,
+                output_root=args.output_dir,
+                target_profile=profile,
+                protocol=profile.default_protocol,
+                runner_bin=profile.default_runner_bin,
+                candidate_batch_size=1,
+                shape_batch_size=profile.default_shape_batch_size,
+                build_timeout_s=profile.default_build_timeout_s,
+                runner_timeout_s=profile.default_runner_timeout_s,
+                prepare_workers=profile.default_prepare_workers,
+                prepare_wave_batches=profile.default_prepare_wave_batches,
+                validation_workers=profile.default_validation_workers,
+                compile_cache_root=args.output_dir.parent / "compile_cache",
+                cost_aware_scheduling=True,
+                ignore_cache=True,
+            ),
+            source_ref=source_ref,
+        )
+        evaluation = evaluator.evaluate(
+            requests,
+            artifact_shapes_by_candidate={
+                candidate_hash: tuple({shape.id: shape for shape in candidate_shapes}.values())
+                for candidate_hash, candidate_shapes in artifact_shapes_by_candidate.items()
+            },
+        )
+        wall_time_s = time.monotonic() - wall_started_at
+        phase_time_s = evaluation.phase_time_s
     fresh_rankings = _timing_rankings(args.db, shapes=shapes, created_after=fresh_started_at)
     validation_states = _latest_fresh_validation_states(args.db, created_after=fresh_started_at)
     fresh_outcomes = _fresh_outcomes(
@@ -413,7 +461,7 @@ def main() -> None:
         "plan": str(args.output_dir / "plan.json"),
         "fresh_started_at": fresh_started_at,
         "wall_time_s": wall_time_s,
-        "phase_time_s": evaluation.phase_time_s,
+        "phase_time_s": phase_time_s,
         "requested_pairs": len(requests),
         "requested_candidates": len(candidate_hashes),
         "fresh_ok_pairs": sum(outcome.status == "ok" for outcome in fresh_outcomes),

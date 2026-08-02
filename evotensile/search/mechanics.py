@@ -11,6 +11,7 @@ from evotensile.search_space import (
     NT_HHS_MAX_GSU_WORKSPACE_BYTES,
     NT_HHS_MAX_LDS_BYTES,
     NT_HHS_MAX_VGPR,
+    NT_HHS_WORKSPACE_SIZE_PER_ELEM_C,
     _gsu_workspace_bytes,
     _nt_hhs_lds_bytes,
     _valu_vgpr_lower_bound,
@@ -54,6 +55,13 @@ def candidate_shape_mechanics(
     lds_bytes = _nt_hhs_lds_bytes(params)
     valu_vgprs = _valu_vgpr_lower_bound(params)
     workspace_bytes = _gsu_workspace_bytes(params, shape)
+    if params["StreamK"] != 0:
+        # Stream-K uses a partial tile per launched Stream-K workgroup. The
+        # mechanics API receives WGP topology rather than TensileLite's CU
+        # grid, so use one WGP's worth of partial tiles as a stable proxy.
+        workspace_bytes = (
+            macro_tile0 * macro_tile1 * NT_HHS_WORKSPACE_SIZE_PER_ELEM_C * max(1, workgroup_processor_count)
+        )
     input_output_bytes = (
         2 * shape.batch * shape.m * shape.k + 2 * shape.batch * shape.n * shape.k + 4 * shape.batch * shape.m * shape.n
     )

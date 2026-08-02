@@ -1,11 +1,13 @@
 from pathlib import Path
 
+from evotensile.candidate import Shape
 from scripts.finalize_grid100_production_search import (
     DEFAULT_CONTENDER_TOLERANCE,
     DEFAULT_MAXIMUM_CONTENDERS,
     TimingSummary,
     _default_baseline_database,
     _default_output_directory,
+    _rank_grouped_timings,
     _select_contenders,
 )
 
@@ -28,6 +30,32 @@ def _summary(candidate_hash, performance):
         median_gflops=performance,
         relative_mad=0.0,
     )
+
+
+def test_rank_grouped_timings_scans_pair_groups_once():
+    first = Shape(512, 128, 1, 256)
+    second = Shape(1024, 64, 1, 128)
+
+    class CountingPairs(dict):
+        items_calls = 0
+
+        def items(self):
+            self.items_calls += 1
+            return super().items()
+
+    times = CountingPairs(
+        {
+            (first.id, "cand_slow"): [2.0, 2.2],
+            (first.id, "cand_fast"): [1.0, 1.2],
+            (second.id, "cand_other"): [3.0, 3.2],
+        }
+    )
+
+    rankings = _rank_grouped_timings(times, shape_by_id={first.id: first, second.id: second})
+
+    assert times.items_calls == 1
+    assert [summary.candidate_hash for summary in rankings[first.id]] == ["cand_fast", "cand_slow"]
+    assert [summary.candidate_hash for summary in rankings[second.id]] == ["cand_other"]
 
 
 def test_select_contenders_keeps_close_candidates_and_mandatory_baseline():

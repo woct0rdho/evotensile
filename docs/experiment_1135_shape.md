@@ -19,7 +19,6 @@ The implementation is `evotensile.shapes.comfy_nt_1135_shapes`. It is an exact s
 Provenance:
 - workload rationale: `~/ComfyUI-FeatherOps/doc/input_shapes.md`.
 - target decomposition: `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/shape_data/large_grid_target_union_decomposition.json`.
-- target decomposition SHA-256: `3d9eb39eef6b754c834fad652345a32ba20784a985fb8488a1a9c53fe02f88ea`.
 - known guarded 8192 winner: `~/ComfyUI-FeatherOps/tmp_tensile_fp16_nt_hhs/configs/hhs_nt_scale_bias_mt128x128_tlds0_rocblas_1ldsb_vwb2_static_wgm_nepbs10_sia3_nostoreprio_probe_8192.yaml`.
 
 ## Operating Rules
@@ -37,7 +36,6 @@ Provenance:
 
 - Add and validate the named 1,135-shape profile and generic profile selection in baseline, practical-round, and finalization scripts.
 - Copy `out/grid100_production_search_20260712.sqlite` into the new mutable campaign database, preserving all authoritative grid100 evidence.
-- Recover the matching untuned GridBased YAML from hipBLASLt revision `6c767e113cf31590326cc72d980586a597095cca`. Its YAML SHA-256 is `9cbf840639705192fb0a8123ef08aaa7c6ecd2bf63e0b71d8dc44e86a6187ab6` and its preserved device database SHA-256 is `900723b8a5fd64bd4024b875893fcd318fa672d6a7b5d20d4e13618b2a2317a1`.
 - Discover and natively measure current installed hipBLASLt selections over all 1,135 shapes.
 - Discover and natively measure preserved untuned hipBLASLt selections over all 1,135 shapes.
 - Extend the known guarded SIA3/no-store-priority candidate from its retained 100-shape evidence to all previously unknown shapes.
@@ -164,9 +162,8 @@ The retained corrected blind campaign used the legacy pre-namespace schema, so i
 
 Source:
 - database: `out/blind_one_shape_next_v3_20260710_seed20260713/campaign.sqlite`.
-- source SHA-256: `451e66d83f541f3e0ac5864f752d4be531fdb934e8582c5a79be53d6d2395768`.
 - import report: `out/grid1135_search_20260712/blind_import_report.json`.
-- pre-import campaign backup: `out/grid1135_pre_blind_import_20260712.sqlite`, SHA-256 `db0e34e15fdee872548be8b265c05b11203fa2c86bf5a4340de361d13347d99b`.
+- pre-import campaign backup: `out/grid1135_pre_blind_import_20260712.sqlite`.
 
 Imported evidence:
 - 1,015 candidates with proposal source, parent hashes, and metadata.
@@ -270,7 +267,6 @@ Final database audit after artifact cleanup and the one-time parameter-type migr
 - 52,745 validations.
 - 125 retained content-verified artifact bundles and 2,647 mappings, covering every selected deployment pair.
 - 1,015 imported blind proposal occurrences.
-- SHA-256 `cefadd263c3f3b2bf2caaa3976bbeed597688d4321f160ae95b73da90662f7f7`.
 - integrity `ok`. Zero foreign-key violations.
 
 Production reporting must use `out/grid1135_search_20260712/finalization_v1/deployment_0.000.json` for maximum speed or an explicitly selected loss-bounded deployment from the same directory. Checkpoints and historical pooled rankings remain diagnostic only.
@@ -281,7 +277,6 @@ The zero-tolerance finalization was exported to all four gfx1151 GridBased varia
 - `hhs`, `hhs_auxh`, `bbs`, and `bbs_auxb` each contain 125 solutions and 1,135 exact mappings.
 - all 125 `StaggerUStride` values in each variant are YAML integer scalars.
 - source files are byte-identical to the reviewed staging files under `out/gridbased_logic_finalization_1135_v1`.
-- `libhipblaslt.so.1.4` SHA-256 is `d1bccc55bd0b9213bcc72d7e8955e407cdd378f065542c1bf5e29f5e43a7b2ce`.
 - `_rocm_sdk_libraries` resolves `libhipblaslt`, `librocroller`, and `hipblaslt/library` to the rebuilt devel installation.
 
 Installed correctness and dispatch evidence:
@@ -300,3 +295,183 @@ Performance is reported by oracle and must not be pooled:
 - the same FeatherOps run reports PyTorch NT `25.887`, `31.073`, `41.505`, and `41.478 TFLOP/s` at sizes 1024 through 8192.
 
 The complete machine-readable install, hash, correctness, dispatch, and performance record is `out/gridbased_logic_finalization_1135_v1/deployment_validation_report.json`.
+
+## StreamK 3 Extension
+
+The search-space extension added `StreamK: [0, 3]` with the TensileLite-required linked behavior: `StreamK: 3` uses `GlobalSplitU: 0`, while normal kernels retain positive GSU. The mechanics model was corrected after inspecting TensileLite's `ContractionSolution::partialTileSize()`: StreamK partial-result workspace is `macro_tile_m * macro_tile_n * WorkspaceSizePerElemC * streamk_grid`, even when GSU is zero. EvoTensile now charges a stable one-WGP grid proxy for nonzero StreamK candidates instead of incorrectly returning zero workspace. The regression test is `test_streamk_mechanics_account_for_partial_workspace`.
+
+The historical campaign database was migrated in place to canonicalize `StreamK: 0` on the 1,820 existing candidates. Candidate row IDs and evidence foreign keys were preserved. The pre-migration database is `out/grid1135_pre_streamk_migration_20260802.sqlite`. The migration report and hash mapping are under `out/grid1135_search_20260712/`.
+
+### StreamK Assignment Probe
+
+`streamk_round01_assignment_probe` evaluated the finalization assignment's normal candidate against a direct `StreamK: 3` variant for all 1,135 shapes, with 10 samples per pair. It completed 1,135 requested pairs in 116 batches and produced 115 unique StreamK variants. There were 1,118 valid comparisons, 12 build failures attributed to TensileLite's `No valid solutions found`, and five validation failures. Among valid comparisons, StreamK was faster on 214 shapes, gained at least 1% on 157, and gained at least 3% on 136. The aggregate median and mean speedups were `-3.39%` and `-3.76%`, so StreamK was not promoted globally from this probe. The complete report is `out/grid1135_search_20260712/streamk_round01_assignment_probe/analysis.json`.
+
+### StreamK Confirmation
+
+Two focused confirmation passes used fresh normal-kernel controls and the existing compatible campaign database:
+- `streamk_round02_confirmation` remeasured the 136 first-probe cases at or above 3%. All 272 requested pairs and 2,720 samples were successful. StreamK won 126 cases, retained at least 1% on 123, and retained at least 3% on 119. The median and mean speedups were `16.20%` and `19.60%`. The range was `-27.75%` to `124.13%`.
+- `streamk_round03_confirmation` remeasured the remaining 21 first-probe cases in the 1-3% band. All 42 requested pairs and 420 samples were successful. StreamK won 15 cases and retained at least 1% on 13. The median and mean speedups were `2.05%` and `2.91%`. The range was `-6.29%` to `18.59%`.
+
+This exhausts all 157 first-probe cases with an apparent material gain of at least 1%. The confirmed StreamK assignment contains 132 shape assignments across 29 StreamK candidates. The staged selection is `out/grid1135_search_20260712/streamk_round02_confirmation/selection_candidate.json`. The four staged GridBased YAMLs contain 1,135 exact mappings and 29 `StreamK: 3` solution records each. Confirmed losses and all untested sub-1% probe cases remain on their normal assignments.
+
+The staged export completed without a TensileLite run and without rebuilding hipBLASLt. It is not authoritative production finalization: it uses 10-sample confirmation evidence and must receive a fresh 30-sample finalization before any source update or installation. No hipBLASLt source files were modified.
+
+### StreamK Parameter Search: Staging Interaction
+
+The existing `scripts/run_grid100_practical_round.py` was reused with `--interaction-profile staging`, the confirmed StreamK deployment candidate as the incumbent, the same campaign database, and seed `12400`. The round directory is `out/grid1135_search_20260712/streamk_round04_staging`.
+
+The round admitted 74 exact candidate-shape pairs and all 74 completed successfully. It found 37 incumbent improvements, including 27 at least 1%. Of those, 25 improvements came from StreamK variants. 17 were at least 1% and 14 were at least 3%. The strongest confirmed StreamK interaction children were:
+- `cand_27effc4cc199acfe`: `DepthU=32`, `PrefetchGlobalRead=2`, `ClusterLocalRead=0`. It improved several `N=128`, `K=1024...8192` cases, including `m64_n128_b1_k2048` by `50.11%` in this round.
+- `cand_43133e7b88b125cd`: the same main staging changes, improving `m16_n128_b1_k1024` by `21.09%` and `m64_n128_b1_k1024` by `4.43%`.
+- `cand_556b4c2dbcebc9f6`: `DepthU=64`, `PrefetchGlobalRead=2`, `ClusterLocalRead=1`. It improved `m512_n16_b1_k2048` by `59.54%`.
+- `cand_3dd8ccc8c577fa87`: `DepthU=64`, `PrefetchGlobalRead=2`, `ClusterLocalRead=1`. It improved `m256_n16_b1_k512` by `15.15%`.
+
+These are exact measured comparisons, not deployment decisions. The next step is promotion against each child's measured parent and remaining parent-competitive shapes. The round report and plan retain the complete candidate, parent, shape, and sample provenance.
+
+### StreamK Staging Promotion
+
+The same practical-round CLI then promoted the measured staging children using their recorded parent hashes. `streamk_round05_promotion` evaluated 69 exact pairs. All completed successfully. Five children transferred to additional parent-competitive shapes, producing 14 incumbent improvements overall, 10 at least 1% and six at least 3%. Two transferring children retained `StreamK: 3`: `cand_a60199abb2f6e476` and `cand_e192c9218858d732`. The remaining transfers were normal-kernel children and are retained as compatible campaign evidence. The round report is `out/grid1135_search_20260712/streamk_round05_promotion/report.json`.
+
+### StreamK Mapping Interaction
+
+The existing practical-round CLI was reused again with `--interaction-profile mapping`, restricted to the 29 measured StreamK parents from the confirmed assignment. `streamk_round06_mapping` completed 80 exact pairs with no failures. It found 41 incumbent improvements, 23 at least 1% and 17 at least 3%, all from `StreamK: 3` children. The strongest result was `cand_6f2fad6edac99e62`, which improved `m16_n3840_b1_k32` by `112.82%`. Other strong cases included `m64_n128_b1_k2048` at `48.87%` and `m16_n128_b1_k1024` at `35.94%`. The dominant measured mapping pattern was `WorkGroupMapping=8` with shape-dependent `StaggerU`, `StaggerUMapping`, and occasionally `SourceSwap`. The round report and plan are under `out/grid1135_search_20260712/streamk_round06_mapping/`.
+
+### StreamK Mapping Promotion
+
+`streamk_round07_mapping_promotion` promoted the measured mapping children through 96 exact pairs, all successful. It retained 17 incumbent improvements, eight at least 1% and four at least 3%. The strongest transfers were `cand_63286bb7c96d1e51` on `m16_n1024_b1_k512` at `13.23%`, `cand_afd734bfa7a499a0` on `m640_n640_b1_k2048` at `7.97%`, and `cand_3bfb7928d1fa300a` on `m32_n2048_b1_k2048` at `6.93%`. The promotion report is `out/grid1135_search_20260712/streamk_round07_mapping_promotion/report.json`.
+
+### StreamK Vector Interaction
+
+`streamk_round08_vector` reused the practical-round CLI against the 29 StreamK parents and completed 80 requested pairs. Seventy-two pairs were valid. Eight failed validation and were retained as failures. Among valid outcomes, the round found 30 incumbent improvements, 22 at least 1% and 14 at least 3%. Strong examples included `m384_n64_b1_k2048` at `57.23%`, `m64_n128_b1_k2048` at `49.05%`, `m1024_n16_b1_k2048` at `38.54%`, and `m16_n3840_b1_k32` at `34.92%`. The report is `out/grid1135_search_20260712/streamk_round08_vector/report.json`.
+
+The eight validation failures remain excluded from promotion. The next round enables the existing integrated repair reserve for local outlier work. In parallel, StreamK candidates that show transferable staging, mapping, or vector parameters will be compared with `StreamK: 0` counterparts before any normal-kernel promotion.
+
+### StreamK Local Outlier Repair
+
+`streamk_round09_local_repair` reused the CLI's integrated repair reserve with 32 deficit targets, repair weight `1.0`, and four mutations per target. It admitted 96 exact pairs: 87 valid and nine validation failures. Five repair-lane candidates were selected. Nine repair comparisons improved their incumbents by at least 1%. The largest were `cand_c9773c1b6fe0c8e4` on `m512_n16_b1_k2048` at `123.61%`, `cand_64930acbfc294c0d` on `m128_n128_b1_k1024` at `71.15%`, and the same `cand_64930acbfc294c0d` on `m384_n32_b1_k2048` at `51.17%`. The failed validation pairs remain excluded. The repair plan and evidence are in `out/grid1135_search_20260712/streamk_round09_local_repair/`.
+
+### Repair Promotion Closure
+
+`streamk_round10_repair_promotion` promoted the two repair children with material measured gains through eight exact parent-competitive pairs. All eight were valid, but neither child produced an additional incumbent improvement. The repair candidates therefore remain shape-local and are not generalized further. The report is `out/grid1135_search_20260712/streamk_round10_repair_promotion/report.json`.
+
+### StreamK-to-Normal Propagation
+
+The eight strongest StreamK configurations were converted to linked normal counterparts by changing only `StreamK: 3, GlobalSplitU: 0` to `StreamK: 0, GlobalSplitU: 1`. `streamk_round11_propagation` measured 368 counterpart pairs, all valid. On the 176 normal-incumbent comparisons, 48 gained at least 1% and 39 gained at least 3%. The best per-shape normal propagation selected 13 shapes at or above 3%. The aggregate was negative because the propagation set was intentionally broad, so only per-shape winners are eligible. The analysis and selection checkpoint are under `out/grid1135_search_20260712/streamk_round11_propagation/`.
+
+The existing practical-round CLI then searched staging interactions around the eight normal counterparts in `streamk_round12_normal_propagation_staging`. It admitted 24 pairs: 16 valid and eight TensileLite build failures. The valid pairs produced six gains, all at least 3%. Two normal children were promising: `cand_2340cfb1045e7b83` improved `m16_n3840_b1_k32` by `161.45%`, and `cand_e197883f411a0296` improved five shapes by `18.40-48.13%`. The build failures remain attributed and excluded. No hipBLASLt rebuild was performed.
+
+### Normal Propagation Promotion
+
+`streamk_round13_normal_propagation_promotion` promoted the two normal staging children through eight valid pairs. It retained one additional normal-kernel improvement: `cand_2340cfb1045e7b83` improved `m384_n64_b1_k2048` by `8.14%`. The other child did not transfer further. The report is under `out/grid1135_search_20260712/streamk_round13_normal_propagation_promotion/`.
+
+### Vector Transfer Closure
+
+`streamk_round14_vector_promotion` promoted the vector-lane children with passed material source measurements. It admitted 68 pairs, with 67 valid and one validation failure. No new improvement reached 1%. The only positive comparisons were `0.26%` and `0.07%`. The vector transfer lane is closed at the current measured candidate set, with the validation failure retained and excluded.
+
+### StreamK LDS Interaction
+
+`streamk_round15_lds` reused the practical-round CLI against the 29 StreamK parents with the LDS interaction profile and 24 integrated repair targets. All 80 admitted pairs were valid. The round found 42 incumbent improvements, 22 at least 1% and 17 at least 3%. Strong LDS children improved `m64_n128_b1_k2048` by `49.08%`, `m384_n32_b1_k2048` by `47.60%`, `m16_n3840_b1_k32` by `37.29%`, and `m16_n128_b1_k1024` by `34.45%`. The round retained 24 local repair targets and one repair-lane candidate for follow-up. Its report is `out/grid1135_search_20260712/streamk_round15_lds/report.json`.
+
+### StreamK LDS Promotion
+
+`streamk_round16_lds_promotion` promoted the passed LDS children through 76 exact pairs, all valid. It retained 14 positive comparisons, six at least 1% and four at least 3%. The strongest transfers were `cand_9d27e25fe29863f7` on `m640_n640_b1_k2048` at `19.97%`, the same child on `m1536_n256_b1_k8192` at `4.67%`, and `cand_369807f97d269c3c` on `m128_n64_b1_k1024` at `11.42%`. The promotion report is `out/grid1135_search_20260712/streamk_round16_lds_promotion/report.json`.
+
+### StreamK Store Interaction
+
+`streamk_round17_store` reused the practical-round CLI with the store interaction profile and 24 integrated repair targets. All 80 admitted pairs were valid. It found 37 incumbent improvements, 20 at least 1% and 18 at least 3%. The strongest store children improved `m16_n3840_b1_k32` by `97.58%`, `m384_n64_b1_k2048` by `54.76%`, `m64_n128_b1_k2048` by `48.39%`, and `m16_n128_b1_k1024` by `28.55%`. One repair-lane candidate was selected for follow-up. The report is `out/grid1135_search_20260712/streamk_round17_store/report.json`.
+
+### StreamK Store Promotion
+
+`streamk_round18_store_promotion` promoted the passed store children through 67 exact pairs, all valid. It retained six positive comparisons, but only two reached 1%: `cand_66dfc96d8a95a6de` improved `m1536_n256_b1_k8192` by `4.25%` and `m640_n640_b1_k4096` by `3.29%`. The remaining four gains were below 1%, so broad store transfer is considered closed. The report is `out/grid1135_search_20260712/streamk_round18_store_promotion/report.json`.
+
+### Consolidated Promotion Exhaustion
+
+`streamk_round19_promotion_exhaustion` combined the passed material children from the staging, mapping, vector, repair, LDS, store, and normal-propagation lanes. It admitted 128 exact pairs. 127 were valid and one failed validation. The pass retained 30 positive comparisons, 14 at least 1% and six at least 3%. Notable remaining transfers were `m128_n16_b1_k8192` at `16.63%`, `m640_n640_b1_k2048` at `10.50%`, and `m32_n2048_b1_k3072` at `8.39%`. Because material transfers remained, the campaign is continuing with a final child-promotion pass. The report is `out/grid1135_search_20260712/streamk_round19_promotion_exhaustion/report.json`.
+
+### Final Child Promotion
+
+`streamk_round20_final_promotion` evaluated 68 exact pairs, all valid. It retained three gains of at least 1%: `cand_66dfc96d8a95a6de` improved `m8192_n16_b1_k2048` by `3.78%`, `cand_8a2d15b254a87f66` improved `m128_n32_b1_k4096` by `2.63%`, and `cand_afd734bfa7a499a0` improved `m1024_n256_b1_k1024` by `1.64%`. One additional comparison was above 3% only in the earlier scope. This pass found no broader family expansion. The report is `out/grid1135_search_20260712/streamk_round20_final_promotion/report.json`.
+
+### Convergence Check
+
+`streamk_round21_convergence_check` evaluated 26 exact pairs, all valid. It found one remaining material transfer: `cand_afd734bfa7a499a0` improved `m4096_n32_b1_k4096` by `8.58%`. No other candidate transferred. The campaign therefore continues with one single-candidate closure pass rather than reopening a broad interaction family. The report is `out/grid1135_search_20260712/streamk_round21_convergence_check/report.json`.
+
+### Single-Candidate Closure And Checkpoint
+
+`streamk_round22_single_candidate_closure` evaluated the final three parent-competitive pairs for `cand_afd734bfa7a499a0`. All were valid and none improved. Promotion is therefore exhausted across the measured staging, mapping, vector, LDS, store, repair, and normal-propagation children.
+
+The consolidated candidate checkpoint is `out/grid1135_search_20260712/streamk_round22_single_candidate_closure/selection_candidate.json`. Relative to the propagated-normal base checkpoint, it changes 137 shape assignments, selects StreamK on 170 shapes, and uses 175 candidate solutions across all 1,135 mappings. A staged four-variant export succeeded with complete confirmation timing, passed validation, and 3,769 registered artifact mappings. The exporter performed no TensileLite run and no hipBLASLt rebuild. This checkpoint remains non-authoritative until fresh 30-sample finalization completes.
+
+### Authoritative StreamK Finalization
+
+`out/grid1135_search_20260712/finalization_streamk_v1` freshly finalized the converged normal and StreamK campaign. The preserved pre-StreamK baseline used old candidate hashes, so a one-time copy-on-write remap produced `out/grid1135_baseline_streamk_compatible_20260802.sqlite` from `out/grid1135_pre_streamk_migration_20260802.sqlite` using the retained exact hash mapping. The remapped baseline contains all 1,820 historical candidates with canonical `StreamK: 0` parameters, passes integrity and foreign-key checks, and preserves the original-control timing corpus. No migration utility remains in the repository.
+
+Results:
+- 3,535/3,535 fresh valid exact pairs from 332 candidates and 106,050 fresh timing samples.
+- zero-tolerance deployment: 180 solutions, including 63 StreamK solutions assigned to 197 shapes.
+- 0.5% deployment: 159 solutions with `0.00600%` uniform mean loss and `0.492%` worst-shape loss.
+- 1% deployment: 142 solutions with `0.02088%` uniform mean loss and `0.968%` worst-shape loss.
+- 2% deployment: 123 solutions with `0.08672%` uniform mean loss and `1.972%` worst-shape loss.
+- relative to the fresh same-session round-22 incumbent, zero tolerance improves 295 shapes, 114 by at least 1%, with `1.025%` mean improvement and `70.41%` maximum improvement.
+- relative to the fresh same-session original compatible winner, zero tolerance improves 395 shapes, 252 by at least 1%, with `4.166%` mean improvement and `107.48%` maximum improvement.
+- database integrity is `ok`, with zero foreign-key violations and complete 1,135-shape coverage in all four deployment files.
+
+The benchmark phase completed all 332 candidate batches before an interrupted serial report phase. Inspection found that `_timing_rankings()` rescanned every candidate-shape group for every profile shape, causing approximately 90 million Python comparisons on one CPU core after GPU work had ended. The implementation now groups timing summaries by shape in one pass and has a regression test that asserts a single pair-group scan. Finalization plans also record `fresh_started_at`, and `--resume-postprocess` can finish an interrupted report from already-ingested fresh evidence without repeating validation or GPU timing. The recovered postprocessing completed in under two seconds while monitored at zero GPU use. The authoritative report is `out/grid1135_search_20260712/finalization_streamk_v1/report.json`.
+
+The zero-tolerance deployment was exported in staged mode to `out/grid1135_search_20260712/finalization_streamk_v1/logic_staged`. All four `hhs`, `hhs_auxh`, `bbs`, and `bbs_auxb` YAMLs contain 180 solutions and 1,135 exact mappings. Each has 63 `StreamK: 3` solution records, no unsupported StreamK value, and no violation of the linked `StreamK: 3`/`GlobalSplitU: 0` rule. The exporter resolved 3,927 registered artifact mappings. No hipBLASLt source file was modified, no TensileLite run occurred, and hipBLASLt was not rebuilt or installed at that checkpoint.
+
+### StreamK Auxiliary-E Investigation
+
+The four-variant preview exposed a TensileLite code-generation bug for `StreamK > 0` with auxiliary E output (`ProblemType.UseE`). `AsmStoreState` allocated the E-address VGPR only for normal `GlobalSplitU == 1/-1` kernels, leaving `addrEVgpr=None` in StreamK global writes. The correction introduces a shared `useE` condition that also covers non-workspace StreamK stores and applies it consistently to E-address allocation, accounting, setup, and gradient E data. Related StreamK-aware E-pointer conditions were corrected in `AsmAddressCalculation.py`, `Components/ComputeStoreVgprs.py`, and `Components/GlobalWriteBatch.py`. Isolated AuxH, BBS, and AuxB full-library generation then completed successfully, and the prior AuxH memory fault disappeared.
+
+The first address-allocation repair removed the memory fault but left the original `m=512,n=16,k=2048` AuxH diagnostic at approximately `1.0` normalized error. The remaining defect was E row-address state: row-pointer initialization and advancement still used GSU-only conditions, so StreamK output rows could target stale E offsets. E itself must not be accumulated in StreamK workspace. Partial workgroups write raw accumulators, fixup adds those partials to `ValuC`, and only the tile's final owner executes the ordinary epilogue and writes E once.
+
+The final TensileLite implementation encodes that ownership in `useEForStore(kernel, isWorkspace)`. A final-output StreamK `StoreState` allocates and advances E addressing, while StreamK partial/fixup workspace states do not enable E. `Components/GlobalWriteBatch.py` uses the same store-state predicate for E loads, conversion, stores, and issued-operation accounting. The temporary `_validateStreamKUseE` rejection was removed. `Tests/unit/test_streamk_use_e.py` covers normal, StreamK final-output, and StreamK workspace phases.
+
+The original failing AuxH case now passes with normalized error `6.39533e-05` and an `SK3_GSU0` kernel. Initial varied matrices covered tiny, long-K, tall, wide, and partial/fixup cases. The final installed validation then exercised every one of the 197 deployed SK3 mappings and all 63 distinct SK3 solutions in both Aux variants. FP16 AuxH passed 197/197 with maximum normalized error `0.000260617`. BF16 AuxB passed 197/197 with maximum normalized error `0.00482834`. The exhaustive summaries are under `install_validation/installed_auxh_streamk_usee_full/` and `install_validation/installed_auxb_streamk_usee_full/`.
+
+### Final Uniform Deployment
+
+E-specific tuning is deferred. The authoritative zero-tolerance `deployment_0.000.json` assignment is copied unchanged from HHS/BBS to AuxH/AuxB. The staged logic is under `out/grid1135_search_20260712/finalization_streamk_v1/logic_streamk_usee`. Each of the four variants contains:
+- 180 solutions: 117 `StreamK: 0` and 63 `StreamK: 3`.
+- 1,135 unique exact mappings: 938 SK0 and 197 SK3 assignments.
+- no unsupported StreamK value and no linked StreamK/GSU violation.
+
+The staged files were copied to the corresponding gfx1151 GridBased source files in `~/rocm-libraries/projects/hipblaslt/library/src/amd_detail/rocblaslt/src/Tensile/Logic/asm_full/gfx1151/GridBased/`. Every source file is byte-for-byte identical to its staged `logic_streamk_usee` counterpart. This deliberately treats the non-E configurations as the Aux candidate and assignment bank. No performance claim from E-specific retuning is implied.
+
+### hipBLASLt Build And Install
+
+The existing gfx1151 release target was cleaned before rebuilding and installing hipBLASLt from `~/rocm-libraries/projects/hipblaslt` into `~/venv_torch/lib/python3.14/site-packages/_rocm_sdk_devel`. This forced regeneration of all TensileLite code objects from the corrected source. The installed client reports hipBLASLt version `100401` and git version `95d71d4372-dirty`. The complete build/install log is `out/grid1135_search_20260712/finalization_streamk_v1/install_validation/build_hipblaslt_streamk_usee.log`.
+
+Installed validation explicitly used:
+
+```bash
+export HIPBLASLT_TENSILE_LIBPATH="$ROCM_PATH/lib/hipblaslt/library/gfx1151"
+export LD_LIBRARY_PATH="$ROCM_PATH/llvm/lib:$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
+```
+
+The installed library, the eight relevant base/Aux code-object and logic assets, their timestamps, sizes, and SHA-256 digests are recorded in `out/grid1135_search_20260712/finalization_streamk_v1/install_validation/deployment_validation_report.json`.
+
+### Installed Correctness And Dispatch Validation
+
+The full 1,135-shape FP16 NT HHS grid was rerun against the installed library with `scripts/verify_installed_hipblaslt.py`, using one cold plus one measured iteration. All 1,135 cases passed in 418.57 seconds with zero failures and maximum normalized error `0.00013322`. Runtime dispatch exactly matched the deployed assignment: 938 SK0 cases and 197 SK3 cases, with zero StreamK-mode mismatches. Every runtime solution index was the YAML-local solution index plus 2,239, reflecting the enlarged combined library. The command and result are in `install_validation/installed_full_grid_streamk_usee_command.txt` and `install_validation/installed_full_grid_streamk_usee/summary.json`.
+
+Installed Aux checks passed all 197 FP16 SK3 mappings and all 197 BF16 SK3 mappings. Each set covered all 63 distinct deployed SK3 solutions, every solution name contained `_SK3_`, and all results stayed within the corresponding client tolerance. The exhaustive runs completed in approximately 60.06 seconds for AuxH and 58.63 seconds for AuxB.
+
+hipBLASLt client/gtest validation used the installed gfx1151 library explicitly. The full quick suite passed 7,609/7,609 tests. The parameterized FP16 NT GELU auxiliary filter `*matmul_bias_gelu_aux_fp16*_NT_*` passed 32/32 tests. The XML results are `install_validation/hipblaslt_test_streamk_usee_quick.xml` and `install_validation/hipblaslt_test_streamk_usee_auxh_nt.xml`.
+
+### Application Benchmark And Final Repository Checks
+
+`~/ComfyUI-FeatherOps/benchmark_mm_hipblaslt_fp16.py` completed successfully against the installed library. It exercised FP16 NT/NN and BF16 NT/NN square matrix multiplication from 128 through 8,192. The recorded private-auto-tuning path used solution index `-2`, so the output is an application integration and performance check rather than production-heuristic dispatch evidence. For FP16 NT, measured hipBLASLt throughput ranged from 0.583 TFLOP/s at 128 to 42.28 TFLOP/s at 4,096 and 41.39 TFLOP/s at 8,192. The complete output is `install_validation/featherops_benchmark_mm_hipblaslt_fp16.log`.
+
+Final repository checks after deployment were:
+- TensileLite targeted generation tests: 101 passed.
+- TensileLite unit suite: 5,311 passed, 989 skipped, 16 expected failures, with one unrelated stale client-config golden deselected.
+- EvoTensile: 307 passed in 28.03 seconds.
+- EvoTensile `pre-commit --all-files`: pyupgrade, Ruff format, and ty passed, while Ruff check reported pre-existing executable-bit errors on unrelated scripts. Those modes were not changed as part of this work.
+
+The consolidated machine-readable deployment, source/hash, installed-asset, correctness, dispatch, gtest, and test evidence is `install_validation/deployment_validation_report.json`.
+
+### Final Status
+
+The gfx1151 1,135-shape campaign is deployed and validated with one uniform copied configuration bank across HHS, BBS, AuxH, and AuxB. All four variants retain the 197 fresh-evidence StreamK assignments. StreamK + `UseE` is enabled through final-owner-only E output, while partial/fixup work remains raw-accumulator workspace traffic. E-specific tuning remains deferred.

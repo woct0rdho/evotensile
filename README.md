@@ -60,8 +60,11 @@ An imported hipBLASLt query is seed provenance, not native EvoTensile performanc
 Build rocisa, the TensileLite client, and the EvoTensile structured runner before importing:
 
 ```bash
-cd ~/rocm-libraries/projects/hipblaslt/tensilelite/rocisa
-CXX=$ROCM_PATH/llvm/bin/amdclang++ pip install -U --no-deps -e .
+cd ~/rocm-libraries/projects/hipblaslt/tensilelite
+CC="$ROCM_PATH/lib/llvm/bin/amdclang" \
+CXX="$ROCM_PATH/lib/llvm/bin/amdclang++" \
+CMAKE_ARGS='-DROCISA_INCLUDE_BUILD_INFO=ON' \
+python -m pip install -U --no-build-isolation -e ./rocisa
 cd ~/rocm-libraries
 ./build_tensilelite_client.sh
 cd ~/evotensile
@@ -225,13 +228,15 @@ cd ~/evotensile
 python3 scripts/verify_installed_hipblaslt.py
 ```
 
-For broader upstream regression coverage, run `hipblaslt-test` with GTest XML output:
+For broader upstream regression coverage, run the combined quick and smoke categories with GTest XML output:
 
 ```bash
 cd ~/rocm-libraries/build/hipblaslt-bench/clients
 HIPBLASLT_TENSILE_LIBPATH="$ROCM_PATH/lib/hipblaslt/library/<gfx-target>" \
 LD_LIBRARY_PATH="$ROCM_PATH/llvm/lib:$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}" \
-./hipblaslt-test --gtest_filter='<test-filter>' --gtest_output=xml:/tmp/hipblaslt_test.xml
+./hipblaslt-test \
+  --gtest_filter='*quick*:*smoke*' \
+  --gtest_output=xml:/tmp/hipblaslt_test.xml
 ```
 
 Then run an application-level benchmark, such as:
