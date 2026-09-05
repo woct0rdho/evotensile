@@ -219,6 +219,8 @@ TARGET=hipblaslt-bench GPU_TARGETS=<gfx-target> ./build_hipblaslt_bench.sh
 TARGET=hipblaslt-test GPU_TARGETS=<gfx-target> ./build_hipblaslt_bench.sh
 ```
 
+The local build helpers discover the SDK's architecture-specific `libomp.so` location and add it to the build RPATH. This is needed for venv SDKs that store it below `lib/llvm/lib/<host-triple>`.
+
 ### 6. Verify Correctness and Performance
 
 The lightweight target-specific gate uses `hipblaslt-bench --verify` through the EvoTensile verifier and writes `summary.json`, `results.csv`, and per-case logs:
@@ -233,7 +235,7 @@ For broader upstream regression coverage, run the combined quick and smoke categ
 ```bash
 cd ~/rocm-libraries/build/hipblaslt-bench/clients
 HIPBLASLT_TENSILE_LIBPATH="$ROCM_PATH/lib/hipblaslt/library/<gfx-target>" \
-LD_LIBRARY_PATH="$ROCM_PATH/llvm/lib:$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}" \
+LD_LIBRARY_PATH="$ROCM_PATH/lib/llvm/lib/<host-triple>:$ROCM_PATH/lib/llvm/lib:$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}" \
 ./hipblaslt-test \
   --gtest_filter='*quick*:*smoke*' \
   --gtest_output=xml:/tmp/hipblaslt_test.xml

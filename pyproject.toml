@@ -31,7 +31,6 @@ where = ["."]
 include = ["evotensile*"]
 
 [tool.ruff]
-exclude = ["*/SOURCE/assembly/"]
 line-length = 120
 target-version = "py310"
 
