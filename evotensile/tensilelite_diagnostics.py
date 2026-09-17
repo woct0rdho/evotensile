@@ -301,7 +301,7 @@ def _diagnose_with_tensilelite(config_path: Path, manifest_path: Path, output_pa
     debug_config = makeDebugConfig({**config.get("GlobalParameters", {}), "PrintSolutionRejectionReason": False})
     debug_config = debug_config._replace(printSolutionRejectionReason=False)
     kernel_writer = KernelWriterAssembly(asm_toolchain.assembler, debug_config)
-    ti = rocisa.rocIsa.getInstance()  # ty: ignore[unresolved-attribute]
+    ti = rocisa.rocIsa.getInstance()
     ti.init(isa, cxx_compiler, False)
     out_options = ti.getOutputOptions()
     split_gsu = debug_config.splitGSU

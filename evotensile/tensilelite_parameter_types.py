@@ -81,8 +81,16 @@ def validate_tensilelite_parameter_types(parameters: Mapping[str, object]) -> No
             )
 
 
+def strip_generator_bound_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
+    stripped = dict(parameters)
+    internal = stripped.get("InternalSupportParams")
+    if isinstance(internal, Mapping) and "KernArgsVersion" in internal:
+        stripped["InternalSupportParams"] = {key: value for key, value in internal.items() if key != "KernArgsVersion"}
+    return stripped
+
+
 def normalize_imported_solution_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
-    normalized = dict(parameters)
+    normalized = strip_generator_bound_parameters(parameters)
     for name, value in parameters.items():
         expected_type = TENSILELITE_PARAMETER_TYPES.get(name)
         if expected_type is None:

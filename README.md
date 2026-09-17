@@ -221,6 +221,8 @@ TARGET=hipblaslt-test GPU_TARGETS=<gfx-target> ./build_hipblaslt_bench.sh
 
 The local build helpers discover the SDK's architecture-specific `libomp.so` location and add it to the build RPATH. This is needed for venv SDKs that store it below `lib/llvm/lib/<host-triple>`.
 
+`HIPBLASLT_ENABLE_YAML` selects the host library backend rather than adding to it: `build_hipblaslt.sh` leaves it off (msgpack-only, exports `TensileLite::LoadLibraryMapping` and is what the installed `libhipblaslt` uses), while `build_tensilelite_client.sh` turns it on (YAML-only, no `LoadLibraryMapping`). Keeping the two apart is what makes the common tests and these clients need opposite `LD_LIBRARY_PATH` orders.
+
 ### 6. Verify Correctness and Performance
 
 The lightweight target-specific gate uses `hipblaslt-bench --verify` through the EvoTensile verifier and writes `summary.json`, `results.csv`, and per-case logs:
@@ -240,6 +242,8 @@ LD_LIBRARY_PATH="$ROCM_PATH/lib/llvm/lib/<host-triple>:$ROCM_PATH/lib/llvm/lib:$
   --gtest_filter='*quick*:*smoke*' \
   --gtest_output=xml:/tmp/hipblaslt_test.xml
 ```
+
+Keep `$ROCM_PATH/lib` ahead of any client build directory for these tools: they use the installed msgpack-only host library. The TensileLite common tests are the opposite case, because the client writes YAML libraries and its own YAML-only host library has to win. See `~/ComfyUI-FeatherOps/docs/tensilelite_unit_tests.md` for that invocation (`LD_LIBRARY_PATH` with the client build directory first, plus `-p no:transformersci_otel`).
 
 Then run an application-level benchmark, such as:
 
